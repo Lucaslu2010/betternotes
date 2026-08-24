@@ -212,58 +212,6 @@ final class BetterNotesTests: XCTestCase {
         XCTAssertEqual(TrashRetention.deletedLabel(now, now: now), "Deleted today")
     }
 
-    func testSyncConfigAcceptsHTTPSAndLocalHTTPOnly() {
-        XCTAssertTrue(SyncConfig.isValid("https://notes.example.com"))
-        XCTAssertTrue(SyncConfig.isValid("http://localhost:3000"))
-        XCTAssertTrue(SyncConfig.isValid("http://127.0.0.1:3000"))
-        XCTAssertTrue(SyncConfig.isValid("http://192.168.1.106:3000"))
-        XCTAssertTrue(SyncConfig.isValid("http://10.0.0.5:3000"))
-        XCTAssertTrue(SyncConfig.isValid("http://172.16.4.1:3000"))
-        XCTAssertTrue(SyncConfig.isValid("http://macbook.local:3000"))
-
-        // Plain http to a public host must never be allowed.
-        XCTAssertFalse(SyncConfig.isValid("http://notes.example.com"))
-        // 172.32 is outside the private range.
-        XCTAssertFalse(SyncConfig.isValid("http://172.32.4.1:3000"))
-        XCTAssertFalse(SyncConfig.isValid("ftp://example.com"))
-        XCTAssertFalse(SyncConfig.isValid("not a url"))
-        XCTAssertFalse(SyncConfig.isValid(""))
-    }
-
-    func testSyncConfigFlagsLANAddressesAsNeedingATSException() {
-        XCTAssertFalse(SyncConfig.requiresATSException("https://notes.example.com"))
-        XCTAssertFalse(SyncConfig.requiresATSException("http://localhost:3000"))
-        XCTAssertFalse(SyncConfig.requiresATSException("http://127.0.0.1:3000"))
-        // This is the address that was sitting unused in secrets.json.
-        XCTAssertTrue(SyncConfig.requiresATSException("http://192.168.1.106:3000"))
-    }
-
-    func testSyncConfigOverrideRoundTripsAndStripsTrailingSlash() throws {
-        let original = UserDefaults.standard.string(forKey: "sync.baseURL")
-        defer {
-            if let original {
-                UserDefaults.standard.set(original, forKey: "sync.baseURL")
-            } else {
-                UserDefaults.standard.removeObject(forKey: "sync.baseURL")
-            }
-        }
-
-        try SyncConfig.setBaseURL(nil)
-        XCTAssertFalse(SyncConfig.hasOverride)
-        XCTAssertEqual(SyncConfig.baseURL, SyncConfig.defaultBaseURL)
-
-        try SyncConfig.setBaseURL("https://notes.example.com/")
-        XCTAssertTrue(SyncConfig.hasOverride)
-        XCTAssertEqual(SyncConfig.baseURL, "https://notes.example.com")
-
-        XCTAssertThrowsError(try SyncConfig.setBaseURL("http://notes.example.com"))
-        // A rejected value must leave the previous override intact.
-        XCTAssertEqual(SyncConfig.baseURL, "https://notes.example.com")
-
-        try SyncConfig.setBaseURL("")
-        XCTAssertFalse(SyncConfig.hasOverride)
-    }
-
     func testRecentColorsPersist() {
         let suiteName = "BetterNotesTests.recentColors.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

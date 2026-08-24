@@ -20,17 +20,7 @@ targets:
       - path: BetterNotes
         excludes:
           - Config/secrets.json
-          # Consumed as INFOPLIST_FILE below, not bundled as a resource.
-          - Info-Debug.plist
     settings:
-      configs:
-        # Debug-only App Transport Security exception so the sync server can be
-        # reached over plain http on the local network. Release builds use the
-        # fully generated Info.plist and have no exception.
-        # GENERATE_INFOPLIST_FILE stays on: Xcode merges the INFOPLIST_KEY_*
-        # settings below into this file.
-        Debug:
-          INFOPLIST_FILE: BetterNotes/Info-Debug.plist
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.betternotes.app
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"

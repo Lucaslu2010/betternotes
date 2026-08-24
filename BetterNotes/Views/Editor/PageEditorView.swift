@@ -9,7 +9,6 @@ import UIKit
 private enum EditorSaveStatus: Equatable {
     case saving
     case failed(String)
-    case conflict
 }
 
 struct PageEditorView: View {
@@ -34,7 +33,6 @@ struct PageEditorView: View {
     var onPageSwipe: (PageSwipeDirection) -> Void = { _ in }
 
     @Environment(\.modelContext) private var context
-    @EnvironmentObject private var syncEngine: SyncEngine
     @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = true
 
     @State private var canvas: PKCanvasView = PencilInputCanvasView()
@@ -378,8 +376,7 @@ struct PageEditorView: View {
                             Spacer()
                             AutosaveStatusView(
                                 status: displayedSaveStatus,
-                                onRetry: saveChanges,
-                                onDismissConflict: { syncEngine.acknowledgeConflicts() }
+                                onRetry: saveChanges
                             )
                         }
                         Spacer()
@@ -565,9 +562,7 @@ struct PageEditorView: View {
         }
     }
 
-    private var displayedSaveStatus: EditorSaveStatus? {
-        syncEngine.conflictCount > 0 ? .conflict : saveStatus
-    }
+    private var displayedSaveStatus: EditorSaveStatus? { saveStatus }
 
     private func execute(_ command: EditorCommand?) {
         guard let command, command.targetPageID == page.persistentModelID else { return }
@@ -1896,7 +1891,6 @@ private struct SmartImportProgressOverlay: View {
 private struct AutosaveStatusView: View {
     let status: EditorSaveStatus
     var onRetry: () -> Void
-    var onDismissConflict: () -> Void = {}
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1908,14 +1902,6 @@ private struct AutosaveStatusView: View {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
                 Text("Save failed")
                 Button("Retry", action: onRetry).bold()
-            case .conflict:
-                Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
-                // Explain what happened and give the badge a way out. It used
-                // to sit on screen permanently with no affordance at all.
-                Text("Cloud conflict — your edits were kept in a Conflict Copy")
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("OK", action: onDismissConflict).bold()
-                    .accessibilityLabel("Dismiss cloud conflict notice")
             }
         }
         .font(.caption.weight(.medium))

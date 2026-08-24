@@ -112,7 +112,6 @@ private enum SearchDateFilter: String, CaseIterable {
 
 struct LibraryView: View {
     @Environment(\.modelContext) private var context
-    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var corpusStore: NoteCorpusStore
     @EnvironmentObject private var assistantCoordinator: AssistantCoordinator
@@ -154,18 +153,6 @@ struct LibraryView: View {
     @State private var indexingCompleted = 0
     @AppStorage(AppPreferenceKey.librarySort) private var librarySort = LibrarySort.modified.rawValue
     @AppStorage(AppPreferenceKey.searchAnswersEnabled) private var searchAnswersEnabled = true
-
-    // Cloud sync state. Created together so the engine always references the
-    // same auth instance.
-    @StateObject private var syncState: SyncState
-    @State private var showingSyncLogin = false
-    @State private var showingSyncAccount = false
-
-    init() {
-        let auth = SyncAuth()
-        let engine = SyncEngine(auth: auth)
-        _syncState = StateObject(wrappedValue: SyncState(auth: auth, engine: engine))
-    }
 
     private let columns = [
         GridItem(.adaptive(minimum: 200), spacing: 24)
@@ -252,18 +239,6 @@ struct LibraryView: View {
             .sorted { $0.page.modifiedAt > $1.page.modifiedAt }
     }
 
-    private var syncableNotebooks: [Notebook] {
-        notebooks.filter { notebook in
-            // Live notebooks always sync. Trashed ones sync too — but only if
-            // they were pushed before (they have a cloudID), so the server
-            // learns about the deletion instead of keeping a copy that a later
-            // pull would resurrect. A notebook trashed before it ever synced
-            // has nothing to tell the server about.
-            if notebook.trashedAt == nil { return true }
-            return !(notebook.cloudID ?? "").isEmpty
-        }
-    }
-
     var body: some View {
         Group {
             if horizontalSizeClass == .regular {
@@ -277,7 +252,6 @@ struct LibraryView: View {
                 libraryNavigation
             }
         }
-        .environmentObject(syncState.engine)
     }
 
     /// Main library content. Extracted from `libraryNavigation` because the
@@ -408,31 +382,6 @@ struct LibraryView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 4) {
                     Button {
-                        if syncState.auth.isLoggedIn {
-                            showingSyncAccount = true
-                        } else {
-                            showingSyncLogin = true
-                        }
-                    } label: {
-                        Group {
-                            if syncState.engine.isSyncing {
-                                ProgressView()
-                            } else {
-                                Image(systemName: syncState.auth.isLoggedIn ? "icloud.fill" : "icloud")
-                                    .font(.title3)
-                            }
-                        }
-                        .frame(width: 44, height: 44)
-                        .accessibilityHidden(true)
-                    }
-                    .contentShape(Rectangle())
-                    .accessibilityLabel(
-                        syncState.engine.isSyncing
-                            ? "Syncing Notes"
-                            : (syncState.auth.isLoggedIn ? "Cloud Sync Account" : "Sign in to Cloud Sync")
-                    )
-
-                    Button {
                         showingNewNotebook = true
                     } label: {
                         Image(systemName: "plus")
@@ -502,37 +451,10 @@ struct LibraryView: View {
                 NotebookWorkspaceView(initialNotebook: quickNotebook, sidebarVisibility: $columnVisibility)
             }
         }
-        .sheet(isPresented: $showingSyncLogin) {
-            SyncLoginView(auth: syncState.auth)
-                .onDisappear {
-                    // After successful login, kick off a sync.
-                    if syncState.auth.isLoggedIn {
-                        Task { await syncState.engine.fullSync(notebooks: syncableNotebooks, into: context) }
-                    }
-                }
-        }
-        .sheet(isPresented: $showingSyncAccount) {
-            SyncAccountSheet(
-                auth: syncState.auth,
-                engine: syncState.engine,
-                onSyncNow: {
-                    Task { await syncState.engine.fullSync(notebooks: syncableNotebooks, into: context) }
-                }
-            )
-        }
     }
 
     private var libraryStageC: some View {
         libraryStageB
-        .refreshable {
-            // Pull-to-refresh triggers a full sync when logged in. When signed
-            // out it used to complete silently, which read as a broken sync.
-            if syncState.auth.isLoggedIn {
-                await syncState.engine.fullSync(notebooks: syncableNotebooks, into: context)
-            } else {
-                showingSyncLogin = true
-            }
-        }
         .confirmationDialog(
             "Empty Trash?",
             isPresented: $confirmingEmptyTrash,
@@ -556,15 +478,6 @@ struct LibraryView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .noteCorpusDidChange)) { _ in
             corpusStore.scheduleRebuild(notebooks: notebooks)
-        }
-        .task {
-            if syncState.auth.isLoggedIn && syncState.engine.lastSyncDate == nil {
-                await syncState.engine.fullSync(notebooks: syncableNotebooks, into: context)
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            guard phase != .active, syncState.auth.isLoggedIn, !syncState.engine.isSyncing else { return }
-            Task { await syncState.engine.fullSync(notebooks: syncableNotebooks, into: context) }
         }
     }
 
@@ -1878,20 +1791,8 @@ struct BetterNotesSettingsSheet: View {
     @EnvironmentObject private var ai: AIService
     @EnvironmentObject private var aiSettings: AISettingsStore
     @State private var showingAIProviderSettings = false
-    @State private var syncServer = SyncConfig.baseURL
-    @State private var syncServerError: String?
     @AppStorage(AppPreferenceKey.assistantEnabled) private var assistantEnabled = true
     @AppStorage(AppPreferenceKey.searchAnswersEnabled) private var searchAnswersEnabled = true
-
-    private func saveSyncServer() {
-        do {
-            try SyncConfig.setBaseURL(syncServer)
-            syncServer = SyncConfig.baseURL
-            syncServerError = nil
-        } catch {
-            syncServerError = error.localizedDescription
-        }
-    }
 
     var body: some View {
         NavigationStack {
@@ -1912,32 +1813,6 @@ struct BetterNotesSettingsSheet: View {
                             Label(sort.label, systemImage: sort.icon).tag(sort.rawValue)
                         }
                     }
-                }
-
-                Section {
-                    TextField(SyncConfig.defaultBaseURL, text: $syncServer)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .accessibilityLabel("Sync server address")
-                    if let syncServerError {
-                        Text(syncServerError)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                    Button("Save Server") { saveSyncServer() }
-                        .disabled(syncServer.trimmingCharacters(in: .whitespacesAndNewlines) == SyncConfig.baseURL)
-                    if SyncConfig.hasOverride {
-                        Button("Use Default Server", role: .destructive) {
-                            try? SyncConfig.setBaseURL(nil)
-                            syncServer = SyncConfig.baseURL
-                            syncServerError = nil
-                        }
-                    }
-                } header: {
-                    Text("Cloud Sync")
-                } footer: {
-                    Text("Currently syncing with \(SyncConfig.baseURL). Use https, or http on localhost or your local network.")
                 }
 
                 Section("AI") {
