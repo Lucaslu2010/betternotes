@@ -1,0 +1,79 @@
+name: BetterNotes
+options:
+  bundleIdPrefix: com.betternotes
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    GENERATE_INFOPLIST_FILE: "YES"
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.1"
+targets:
+  BetterNotes:
+    type: application
+    platform: iOS
+    sources:
+      - path: BetterNotes
+        excludes:
+          - Config/secrets.json
+          # Consumed as INFOPLIST_FILE below, not bundled as a resource.
+          - Info-Debug.plist
+    settings:
+      configs:
+        # Debug-only App Transport Security exception so the sync server can be
+        # reached over plain http on the local network. Release builds use the
+        # fully generated Info.plist and have no exception.
+        # GENERATE_INFOPLIST_FILE stays on: Xcode merges the INFOPLIST_KEY_*
+        # settings below into this file.
+        Debug:
+          INFOPLIST_FILE: BetterNotes/Info-Debug.plist
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.betternotes.app
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UIRequiresFullScreen: "NO"
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "BetterNotes uses the microphone to record audio memos in your notes."
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "BetterNotes needs access to your photo library to insert images into notes."
+        INFOPLIST_KEY_NSCameraUsageDescription: "BetterNotes uses the camera when you choose to scan a document into a note."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "BetterNotes uses speech recognition when you choose to transcribe an audio note."
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: "YES"
+        SWIFT_EMIT_LOC_STRINGS: "YES"
+  BetterNotesTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: BetterNotesTests
+    dependencies:
+      - target: BetterNotes
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.betternotes.app.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+  BetterNotesUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: BetterNotesUITests
+    dependencies:
+      - target: BetterNotes
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.betternotes.app.uitests
+        GENERATE_INFOPLIST_FILE: "YES"
+
+schemes:
+  BetterNotes:
+    build:
+      targets:
+        BetterNotes: all
+        BetterNotesTests: [test]
+    test:
+      targets:
+        - BetterNotesTests
+        - BetterNotesUITests

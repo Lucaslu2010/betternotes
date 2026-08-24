@@ -1,0 +1,26 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "11479C2A-2836-4848-ADA6-23037FB4A573",
+        "deviceName" : "iPad (A16)",
+        "exportedFileName" : "3AF1795B-F2B5-488B-9923-95C9BE9CCBCB.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "iPad Workspace_0_8394B354-3414-4631-B13F-C2C1B8616B88.png",
+        "timestamp" : 1785165332.074
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "11479C2A-2836-4848-ADA6-23037FB4A573",
+        "deviceName" : "iPad (A16)",
+        "exportedFileName" : "203C6121-6EBC-4A8D-9565-40CEE7E88B5C.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "iPad Library_0_E7A20A7C-9E46-41F6-B490-6AEC241343C2.png",
+        "timestamp" : 1785165306.02
+      }
+    ],
+    "testIdentifier" : "BetterNotesUITests/testRegularWidthWorkspaceSwitchingAndRemovalPreservesNotebook()",
+    "testIdentifierURL" : "test://com.apple.xcode/BetterNotes/BetterNotesUITests/BetterNotesUITests/testRegularWidthWorkspaceSwitchingAndRemovalPreservesNotebook"
+  }
+]

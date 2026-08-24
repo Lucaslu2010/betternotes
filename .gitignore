@@ -1,0 +1,7 @@
+.DS_Store
+BetterNotes/Config/secrets.json
+*.xcuserstate
+DerivedData/
+.build/
+__pycache__/
+*.pyc

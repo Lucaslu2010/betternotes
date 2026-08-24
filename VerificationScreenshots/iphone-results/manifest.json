@@ -1,0 +1,26 @@
+[
+  {
+    "attachments" : [
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "21CE361F-7169-4641-BE95-551809988216",
+        "deviceName" : "iPhone 17",
+        "exportedFileName" : "96881670-5BF5-4C5F-BF1C-E535CC73CBB7.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "iPhone Editor_0_0A236849-7041-476B-B306-18F5965B18AA.png",
+        "timestamp" : 1785159422.084
+      },
+      {
+        "configurationName" : "Test Scheme Action",
+        "deviceId" : "21CE361F-7169-4641-BE95-551809988216",
+        "deviceName" : "iPhone 17",
+        "exportedFileName" : "48B66246-830F-4748-9DD5-288B1400B928.png",
+        "isAssociatedWithFailure" : false,
+        "suggestedHumanReadableName" : "iPhone Library_0_0DAB9546-BD09-49A2-8487-062D7BDDF34A.png",
+        "timestamp" : 1785159414.028
+      }
+    ],
+    "testIdentifier" : "BetterNotesUITests/testCreateNotebookAndReachPrimaryEditorControls()",
+    "testIdentifierURL" : "test://com.apple.xcode/BetterNotes/BetterNotesUITests/BetterNotesUITests/testCreateNotebookAndReachPrimaryEditorControls"
+  }
+]
