@@ -1,4 +1,6 @@
 .DS_Store
+# Removed 24 Aug 2026 — the app is BYOK and reads its key from the
+# Keychain. Rule kept so a stray copy can never be committed.
 BetterNotes/Config/secrets.json
 *.xcuserstate
 DerivedData/
