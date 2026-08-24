@@ -30,6 +30,12 @@ targets:
         INFOPLIST_KEY_NSCameraUsageDescription: "BetterNotes uses the camera when you choose to scan a document into a note."
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "BetterNotes uses speech recognition when you choose to transcribe an audio note."
         CODE_SIGN_STYLE: Automatic
+        # Personal (free) Apple team, read from the signing certificate's OU.
+        # Needed to build for a physical device at all -- and installing a
+        # development build is what makes iOS reveal Settings > Privacy &
+        # Security > Developer Mode, which is hidden until then.
+        # The paid Developer Program is only required later, for TestFlight.
+        DEVELOPMENT_TEAM: RQLD7J8CV7
         ENABLE_PREVIEWS: "YES"
         SWIFT_EMIT_LOC_STRINGS: "YES"
   BetterNotesTests:
