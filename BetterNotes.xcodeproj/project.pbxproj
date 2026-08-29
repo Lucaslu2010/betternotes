@@ -305,9 +305,15 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					0A91805EBBC057DA05D5E039 = {
+						DevelopmentTeam = RQLD7J8CV7;
+						ProvisioningStyle = Automatic;
 						TestTargetID = 4FA6279A23AA3F2BD25B2710;
 					};
 					4FA6279A23AA3F2BD25B2710 = {
+						DevelopmentTeam = RQLD7J8CV7;
+						ProvisioningStyle = Automatic;
+					};
+					8AACF36026F61719EA9E069E = {
 						DevelopmentTeam = RQLD7J8CV7;
 						ProvisioningStyle = Automatic;
 					};
@@ -468,9 +474,11 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = RQLD7J8CV7;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -528,9 +536,11 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = RQLD7J8CV7;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -584,8 +594,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = RQLD7J8CV7;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "BetterNotes uses the camera when you choose to scan a document into a note.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "BetterNotes uses the microphone to record audio memos in your notes.";
@@ -645,8 +653,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = RQLD7J8CV7;
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "BetterNotes uses the camera when you choose to scan a document into a note.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "BetterNotes uses the microphone to record audio memos in your notes.";

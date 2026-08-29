@@ -12,6 +12,19 @@ settings:
     GENERATE_INFOPLIST_FILE: "YES"
     CURRENT_PROJECT_VERSION: "1"
     MARKETING_VERSION: "0.1"
+    CODE_SIGN_STYLE: Automatic
+    # Personal (free) Apple team, read from the signing certificate's OU.
+    # Needed to build for a physical device at all -- and installing a
+    # development build is what makes iOS reveal Settings > Privacy &
+    # Security > Developer Mode, which is hidden until then.
+    # The paid Developer Program is only required later, for TestFlight.
+    #
+    # Project-wide rather than on the app target alone: a UI test runs from a
+    # second signed bundle and the unit tests from a third, so `xcodebuild
+    # build-for-testing` against a device failed with "Signing for
+    # BetterNotesUITests requires a development team" while the app itself
+    # built and installed perfectly well.
+    DEVELOPMENT_TEAM: RQLD7J8CV7
 targets:
   BetterNotes:
     type: application
@@ -29,13 +42,6 @@ targets:
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "BetterNotes needs access to your photo library to insert images into notes."
         INFOPLIST_KEY_NSCameraUsageDescription: "BetterNotes uses the camera when you choose to scan a document into a note."
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "BetterNotes uses speech recognition when you choose to transcribe an audio note."
-        CODE_SIGN_STYLE: Automatic
-        # Personal (free) Apple team, read from the signing certificate's OU.
-        # Needed to build for a physical device at all -- and installing a
-        # development build is what makes iOS reveal Settings > Privacy &
-        # Security > Developer Mode, which is hidden until then.
-        # The paid Developer Program is only required later, for TestFlight.
-        DEVELOPMENT_TEAM: RQLD7J8CV7
         ENABLE_PREVIEWS: "YES"
         SWIFT_EMIT_LOC_STRINGS: "YES"
   BetterNotesTests:

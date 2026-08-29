@@ -1999,13 +1999,24 @@ private struct SelectionHandles: View {
                 .accessibilityHidden(true)
 
             // Drag-to-move body (tap to clear, drag to move).
+            //
+            // Positioned rather than offset. `.offset` is a rendering
+            // transform: it moves what you see and what a finger hits, but
+            // leaves the layout frame at the ZStack's top-leading corner, and
+            // that stale frame is what the accessibility system publishes. A
+            // person dragging the outline was always fine; XCUITest, which
+            // derives its touch points from the accessibility frame, aimed at
+            // the page's top-left instead of at the selection -- landing
+            // outside it, so the lasso layer below took the touch, cleared the
+            // selection and began drawing a new one. `.position` places the
+            // view's centre, so the layout frame and the visible outline agree.
             Button(action: onClear) {
                 Rectangle()
                     .fill(Color.black.opacity(0.001))
                     .frame(width: bounds.width, height: bounds.height)
             }
                 .buttonStyle(.plain)
-                .offset(x: bounds.minX, y: bounds.minY)
+                .position(x: bounds.midX, y: bounds.midY)
                 .contentShape(Rectangle())
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 4)
