@@ -154,6 +154,29 @@ struct ElementOverlay: View {
             onRotate: { deltaDeg in rotateElement(element, by: deltaDeg) },
             onRotateEnded: { finishControlMutation(for: element) }
         )
+        // Page elements carried no accessibility identity at all, so nothing
+        // could address them: not a UI test, and not VoiceOver or Switch
+        // Control either. An image, note or recording on the page was simply
+        // absent from the accessibility tree.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("page-element")
+        .accessibilityLabel(accessibilityLabel(for: element))
+    }
+
+    /// A spoken description of one element. Falls back to the type alone when
+    /// the element carries no text of its own.
+    private func accessibilityLabel(for element: PageElement) -> String {
+        let kind: String
+        switch element.type {
+        case .textBox:        kind = "Text box"
+        case .stickyNote:     kind = "Sticky note"
+        case .shape:          kind = "Shape"
+        case .image:          kind = "Image"
+        case .audioRecording: kind = "Recording"
+        case .tape:           kind = "Tape"
+        }
+        let text = (element.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? kind : "\(kind), \(text)"
     }
 
     // MARK: - Gestures
