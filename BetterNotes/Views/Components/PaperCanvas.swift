@@ -155,6 +155,11 @@ struct PaperCanvas: UIViewRepresentable {
         // clobber the shared canvas with the NEW page's ink BEFORE
         // switchLoadedPage() has saved the OLD page's ink — permanently
         // destroying the previous page's content.
+        // The ink surface itself, so a test can aim at it rather than at the
+        // outer zoomable scroll view that wraps it. Without this there is no
+        // way to address PencilKit from the accessibility tree, which is why
+        // the handwriting path had no automated coverage at all.
+        c.accessibilityIdentifier = "ink-canvas"
         c.tool = context.coordinator.makeTool()
         c.isUserInteractionEnabled = context.coordinator.canvasAcceptsInput
         c.delegate = context.coordinator

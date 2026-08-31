@@ -26,6 +26,14 @@ struct BetterNotesApp: App {
             defaults.set(true, forKey: AppPreferenceKey.assistantEnabled)
             defaults.set(true, forKey: AppPreferenceKey.searchAnswersEnabled)
             defaults.set(false, forKey: AppPreferenceKey.automaticWritingSuggestions)
+            // Pin finger drawing on. Every other preference the tests depend
+            // on is pinned here, but this one was left to whatever the host
+            // had stored -- so a drawing test passed in a fresh simulator
+            // (which defaults to true) and failed on a real iPad belonging to
+            // someone who draws with a Pencil and had switched it off. The
+            // synthesised touches XCUITest delivers are `.direct`, and
+            // PaperCanvas only observes those when this is true.
+            defaults.set(true, forKey: AppPreferenceKey.allowsFingerDrawing)
         }
         let settings = AISettingsStore()
         let client = AIClient()

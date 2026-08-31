@@ -397,6 +397,132 @@ final class BetterNotesUITests: XCTestCase {
     }
 
     @discardableResult
+    // MARK: - Handwriting
+
+    /// Draw, lasso, then resize by a handle.
+    ///
+    /// Every other UI test builds its content from the Insert menu, so the
+    /// PencilKit path -- the thing this app is for -- had no coverage at all,
+    /// and the bug this covers went unnoticed through a full device run: the
+    /// resize handles were 12-16pt against a 44pt guideline, so a drag aimed
+    /// at one usually missed, fell through to the lasso overlay that covers
+    /// the whole page, and was read as the start of a new selection. The
+    /// selection you were trying to stretch was discarded instead.
+    func testDrawnStrokesCanBeResizedByTheirHandlesWithoutLosingSelection() {
+        openNotebook(named: uniqueTitle("Stroke Resize"))
+
+        app.buttons["Pen"].tap()
+        drawStroke(from: CGVector(dx: 0.32, dy: 0.30), to: CGVector(dx: 0.62, dy: 0.34))
+        drawStroke(from: CGVector(dx: 0.32, dy: 0.42), to: CGVector(dx: 0.62, dy: 0.46))
+
+        // Proof the ink committed is the lasso assertion below: it can only
+        // find a selection if there are strokes to select. An earlier version
+        // checked the Undo button instead, but its activation point is
+        // invalid on a real iPad, so `isHittable` threw before the test could
+        // reach anything it was actually about.
+        attachScreenshot(named: "after-drawing")
+
+        app.buttons["Lasso"].tap()
+        let canvas = app.scrollViews["page-canvas"]
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.22, dy: 0.20))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.74, dy: 0.56)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.2
+            )
+
+        let outline = app.descendants(matching: .any)["selection-outline"]
+        XCTAssertTrue(
+            outline.waitForExistence(timeout: 5),
+            "the lasso did not select hand-drawn strokes"
+        )
+        let boundsBeforeResize = outline.value as? String
+
+        // Drive the handle itself rather than a screen coordinate near it.
+        let handle = app.descendants(matching: .any)["selection-handle-br"].firstMatch
+        XCTAssertTrue(handle.waitForExistence(timeout: 4), "no bottom-right resize handle on the selection")
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(
+                forDuration: 0.3,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.72)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.3
+            )
+
+        XCTAssertTrue(
+            outline.waitForExistence(timeout: 3),
+            "dragging a resize handle cleared the selection instead of scaling it"
+        )
+        XCTAssertNotEqual(
+            outline.value as? String,
+            boundsBeforeResize,
+            "the selection survived but did not resize"
+        )
+    }
+
+    /// Inserted elements must land where the page is actually showing, and
+    /// two of them must not occupy the same point. Both were broken: every
+    /// image, recording, note and tape was created at a hardcoded (200, 300).
+    func testInsertedElementsLandOnThePageAndDoNotStack() {
+        openNotebook(named: uniqueTitle("Insertion Placement"))
+
+        insertFromMenu("Tape")
+        let first = app.descendants(matching: .any)["page-element"].firstMatch
+        XCTAssertTrue(first.waitForExistence(timeout: 5), "the first insert produced no element")
+        let firstFrame = first.frame
+
+        insertFromMenu("Tape")
+        let elements = app.descendants(matching: .any).matching(identifier: "page-element")
+        XCTAssertEqual(elements.count, 2, "the second insert produced no second element")
+
+        let frames = elements.allElementsBoundByIndex.map(\.frame)
+        XCTAssertFalse(
+            frames.contains(where: { $0 == firstFrame }) && frames.allSatisfy({ $0 == firstFrame }),
+            "both inserted elements landed on exactly the same spot"
+        )
+
+        let page = app.scrollViews["page-canvas"].frame
+        for frame in frames {
+            XCTAssertTrue(
+                page.intersects(frame),
+                "an inserted element landed outside the visible page at \(frame)"
+            )
+        }
+    }
+
+    /// Draw one stroke on the page with a finger.
+    ///
+    /// `allowsFingerDrawing` defaults on, and PaperCanvas observes `.direct`
+    /// touches when it is, so a synthesised drag reaches PencilKit exactly as
+    /// a fingertip would.
+    /// The PencilKit surface itself, not the zoomable scroll view around it.
+    private var inkCanvas: XCUIElement {
+        app.descendants(matching: .any)["ink-canvas"].firstMatch
+    }
+
+    private func drawStroke(from start: CGVector, to end: CGVector) {
+        let canvas = inkCanvas
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5), "the ink canvas is not in the accessibility tree")
+        // No initial press and no trailing hold: the canvas runs a
+        // press-and-hold shape recogniser, and dwelling at either end of the
+        // drag feeds that instead of laying down an ordinary stroke.
+        canvas.coordinate(withNormalizedOffset: start)
+            .press(
+                forDuration: 0.01,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: end),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.0
+            )
+    }
+
+    private func insertFromMenu(_ label: String) {
+        app.buttons["Insert"].tap()
+        let item = app.buttons[label]
+        XCTAssertTrue(item.waitForExistence(timeout: 3), "no \(label) item in the Insert menu")
+        item.tap()
+    }
+
     private func openNotebook(named title: String) -> String {
         createNotebook(named: title)
         let notebook = app.buttons[title].firstMatch
