@@ -157,8 +157,19 @@ struct PageEditorView: View {
                         .id(page.backgroundHex + page.lineStyle + page.orientation)
                         .contentShape(Rectangle())
                         .onTapGesture {
+                            // Tapping blank page must dismiss a lasso
+                            // selection too, not just an element one. The
+                            // selection context bar -- Copy, Delete, the rest
+                            // -- is gated on `selectionState`, so clearing
+                            // only `selectedElementID` left the bar on screen
+                            // over a selection the user had visibly tapped
+                            // away from, with no way to dismiss it but to
+                            // start drawing. Whether a tap landed here or on
+                            // the canvas below depended on the page's aspect
+                            // ratio, which is why it reproduced on an iPad Air
+                            // and not in a larger simulator.
                             DispatchQueue.main.async {
-                                selectedElementID = nil
+                                clearSelection()
                             }
                         }
 
@@ -1060,7 +1071,8 @@ struct PageEditorView: View {
     private func insertElement(_ type: ElementType, size: CGSize = CGSize(width: 200, height: 120)) {
         guard !isReadOnly else { return }
         recordBeforeMutation()
-        let elem = PageElement(type: type, x: 200, y: 300, width: size.width, height: size.height)
+        let centre = insertionCentre(for: size)
+        let elem = PageElement(type: type, x: centre.x, y: centre.y, width: size.width, height: size.height)
         if type == .stickyNote { elem.colorHex = "FFE066" }
         elem.page = page
         context.insert(elem)
@@ -1112,6 +1124,59 @@ struct PageEditorView: View {
         }
     }
 
+    /// Where a newly inserted element's centre belongs.
+    ///
+    /// Every image, recording, sticky note and text box used to be created at
+    /// a hardcoded (200, 300). Insert one while scrolled or zoomed anywhere
+    /// but the top of the page and it landed out of sight, which reads as the
+    /// button having done nothing; insert two and they stacked exactly on top
+    /// of each other. Shapes never had the problem because `insertShape` asks
+    /// `defaultInsertionPosition` -- this routes the other four the same way,
+    /// preferring the part of the page actually on screen.
+    ///
+    /// `SelectionPasteGeometry.origin` is the clamp paste already uses, so an
+    /// inserted element and a pasted one land in the same place and neither
+    /// can be pushed off the page.
+    private func insertionCentre(for size: CGSize) -> CGPoint {
+        let pageSize = page.pageOrientation.size
+        // `visiblePageCenter` is zero until the page reports its viewport.
+        // Treating that as a real centre would pin the element to the page's
+        // top-left corner, so fall back to the static placement.
+        guard visiblePageCenter != .zero else {
+            return cascaded(defaultInsertionPosition(for: size, pageSize: pageSize), size: size, pageSize: pageSize)
+        }
+        let origin = SelectionPasteGeometry.origin(
+            for: CGRect(origin: .zero, size: size),
+            visibleCenter: visiblePageCenter,
+            pageSize: pageSize
+        )
+        let centre = CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+        return cascaded(centre, size: size, pageSize: pageSize)
+    }
+
+    /// Nudge off any element already sitting at this exact spot.
+    ///
+    /// Without this, inserting twice without moving the first puts the second
+    /// perfectly on top of it, and the page looks like it only took one.
+    private func cascaded(_ centre: CGPoint, size: CGSize, pageSize: CGSize) -> CGPoint {
+        let step: CGFloat = 24
+        var candidate = centre
+        for _ in 0..<8 {
+            let occupied = page.elements.contains { element in
+                element.modelContext != nil
+                    && abs(CGFloat(element.posX) - candidate.x) < 1
+                    && abs(CGFloat(element.posY) - candidate.y) < 1
+            }
+            if !occupied { return candidate }
+            candidate = CGPoint(x: candidate.x + step, y: candidate.y + step)
+            // Once the cascade would run off the page, stop rather than
+            // place the element somewhere it cannot be seen.
+            guard candidate.x + size.width / 2 <= pageSize.width,
+                  candidate.y + size.height / 2 <= pageSize.height else { return centre }
+        }
+        return candidate
+    }
+
     private func defaultInsertionPosition(for size: CGSize, pageSize: CGSize) -> CGPoint {
         let margin: CGFloat = 24
         let x = min(max(pageSize.width / 2, size.width / 2 + margin), pageSize.width - size.width / 2 - margin)
@@ -1138,7 +1203,14 @@ struct PageEditorView: View {
             context.delete(page.elements[idx])
             page.elements.remove(at: idx)
         }
-        selectedElementID = nil
+        // Not `selectedElementID = nil`: a lasso selection can hold this
+        // element alongside others, and clearing only the id left its id in
+        // `selectionState.elementIDs` and its area in the selection bounds --
+        // an outline stretched around something no longer on the page.
+        // Refreshing drops the dead id, reflows the bounds, and still clears
+        // the selection outright when nothing is left, which is the single
+        // -element case this line used to handle.
+        refreshSelectionBounds()
         markPageModified()
         saveChanges()
     }
@@ -1989,6 +2061,18 @@ private struct SelectionHandles: View {
     @State private var dragStart: CGSize = .zero
     @State private var gestureActive = false
 
+    /// The touch target for one handle.
+    ///
+    /// Full 44pt wherever there is room. On a small selection eight handles
+    /// at that size would blanket the whole thing and leave nowhere to grab
+    /// for a move, so the target shrinks with the selection rather than
+    /// trading the resize bug for a move one.
+    private var handleTouchTarget: CGFloat {
+        let room = min(bounds.width, bounds.height) / 2
+        guard room.isFinite else { return selectionHandleTouchTarget }
+        return min(selectionHandleTouchTarget, max(24, room))
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             // Selection box outline.
@@ -2036,8 +2120,14 @@ private struct SelectionHandles: View {
 
             // Corner resize handles — scale proportionally from the opposite corner.
             ForEach(cornerAnchors, id: \.id) { anchor in
-                ResizeDot()
-                    .offset(x: anchor.point.x - 8, y: anchor.point.y - 8)
+                ResizeDot(touchTarget: handleTouchTarget)
+                    .offset(x: anchor.point.x - handleTouchTarget / 2,
+                            y: anchor.point.y - handleTouchTarget / 2)
+                    // Addressable so a test can drive the handle itself
+                    // rather than guess at a screen coordinate, and so
+                    // VoiceOver has something to announce.
+                    .accessibilityElement()
+                    .accessibilityIdentifier("selection-handle-\(anchor.id)")
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
@@ -2054,8 +2144,11 @@ private struct SelectionHandles: View {
 
             // Edge handles for single-axis stretch.
             ForEach(edgeAnchors, id: \.id) { anchor in
-                ResizeDot(size: 12)
-                    .offset(x: anchor.point.x - 6, y: anchor.point.y - 6)
+                ResizeDot(size: 12, touchTarget: handleTouchTarget)
+                    .offset(x: anchor.point.x - handleTouchTarget / 2,
+                            y: anchor.point.y - handleTouchTarget / 2)
+                    .accessibilityElement()
+                    .accessibilityIdentifier("selection-handle-\(anchor.id)")
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
@@ -2079,7 +2172,10 @@ private struct SelectionHandles: View {
                 .fill(Color.white)
                 .overlay(Circle().stroke(Color.accentColor, lineWidth: 1.5))
                 .frame(width: 18, height: 18)
-                .offset(x: bounds.midX - 9, y: bounds.minY - 32)
+                .frame(width: handleTouchTarget, height: handleTouchTarget)
+                .contentShape(Rectangle())
+                .offset(x: bounds.midX - handleTouchTarget / 2,
+                        y: bounds.minY - 23 - handleTouchTarget / 2)
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
@@ -2380,8 +2476,15 @@ private struct SelectionContextBar: View {
 }
 
 /// A circular resize handle dot.
+/// The minimum comfortable touch target, per Apple's human interface
+/// guidelines. The handles are drawn much smaller than this on purpose -- a
+/// 44pt dot would hide the very selection it sits on -- so the gap is made up
+/// in hit area instead of pixels.
+let selectionHandleTouchTarget: CGFloat = 44
+
 private struct ResizeDot: View {
     var size: CGFloat = 16
+    var touchTarget: CGFloat = selectionHandleTouchTarget
 
     var body: some View {
         Circle()
@@ -2389,6 +2492,18 @@ private struct ResizeDot: View {
             .overlay(Circle().stroke(Color.accentColor, lineWidth: 1.5))
             .frame(width: size, height: size)
             .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+            // A 12pt edge handle is a thirteenth of the recommended touch
+            // area, and a touch that misses it lands on the lasso overlay
+            // below -- which covers the whole page and reads the miss as the
+            // start of a new selection, discarding the selection the user was
+            // trying to resize.
+            //
+            // The frame has to grow, not just the content shape: SwiftUI
+            // clips hit-testing to a view's own frame, so a `contentShape`
+            // inset outwards is silently ignored. The dot keeps its drawn
+            // size inside a larger, invisible touch target.
+            .frame(width: touchTarget, height: touchTarget)
+            .contentShape(Rectangle())
     }
 }
 
