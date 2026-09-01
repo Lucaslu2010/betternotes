@@ -126,6 +126,47 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Beautify Existing Ink"].exists)
     }
 
+    func testSelectionOutlineReportsItsOwnFrameNotTheWholePage() {
+        // The outline's accessibility frame is not cosmetic. It is what
+        // VoiceOver and Switch Control offer as "Selection outline", and it is
+        // the hit area of the drag-to-move button underneath. When the
+        // accessibility modifiers sat after `.position`, they attached to the
+        // view `.position` returns -- which fills the page -- so a selection
+        // an inch across published (12, 86, 1000, 1333) on a 13-inch iPad Air,
+        // and the whole page became an invisible button that swallowed every
+        // tap while a selection was live. Tapping blank page to dismiss did
+        // nothing at all.
+        openNotebook(named: uniqueTitle("Outline Frame"))
+        app.buttons["Lasso"].tap()
+        app.buttons["Selection Shape"].tap()
+        app.buttons["Rect"].tap()
+        insertShape(named: "Rectangle")
+
+        let outline = app.descendants(matching: .any)["selection-outline"]
+        XCTAssertTrue(outline.waitForExistence(timeout: 5))
+        let pageCanvas = app.scrollViews["page-canvas"]
+        XCTAssertTrue(pageCanvas.exists)
+
+        // A selection of one inserted shape is a fraction of the page. Half is
+        // generous, and still fails by a mile on the whole-page frame.
+        XCTAssertLessThan(
+            outline.frame.width, pageCanvas.frame.width * 0.5,
+            "outline claims \(outline.frame) of a page \(pageCanvas.frame)")
+        XCTAssertLessThan(
+            outline.frame.height, pageCanvas.frame.height * 0.5,
+            "outline claims \(outline.frame) of a page \(pageCanvas.frame)")
+
+        // And it must agree with the bounds the outline reports for itself,
+        // so a test driving it by coordinate aims where the ink actually is.
+        let reported = (outline.value as? String ?? "").split(separator: ",").compactMap { Double($0) }
+        XCTAssertEqual(reported.count, 4, "expected x,y,w,h — got \(outline.value ?? "nil")")
+        if reported.count == 4 {
+            let ratio = outline.frame.width / CGFloat(reported[2])
+            XCTAssertEqual(ratio, outline.frame.height / CGFloat(reported[3]), accuracy: 0.05,
+                           "frame and reported bounds disagree on aspect")
+        }
+    }
+
     func testInsertedInkCanMoveAndPasteFromBlankCanvas() {
         openNotebook(named: uniqueTitle("Selection Paste"))
         app.buttons["Lasso"].tap()

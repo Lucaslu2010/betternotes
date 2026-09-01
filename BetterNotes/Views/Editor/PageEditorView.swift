@@ -2100,7 +2100,6 @@ private struct SelectionHandles: View {
                     .frame(width: bounds.width, height: bounds.height)
             }
                 .buttonStyle(.plain)
-                .position(x: bounds.midX, y: bounds.midY)
                 .contentShape(Rectangle())
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 4)
@@ -2114,9 +2113,26 @@ private struct SelectionHandles: View {
                         }
                         .onEnded { _ in endGesture() }
                 )
+                // Accessibility BEFORE `.position`, not after.
+                //
+                // Using `.position` instead of `.offset` fixed where the view
+                // is drawn, but the view `.position` returns fills all the
+                // space its parent offers -- that is how it can place a child
+                // anywhere in it. Attaching the accessibility modifiers to
+                // *that* view published the whole page as the outline's frame:
+                // a lasso selection an inch across reported (12, 86, 1000,
+                // 1333) on a 13-inch iPad Air.
+                //
+                // So VoiceOver and Switch Control offered the entire page as
+                // one "Selection outline" element, and XCUITest -- which
+                // derives touch points from the accessibility frame -- read
+                // "the middle of the outline" as the middle of the page. On
+                // these modifiers the element is the button itself, and its
+                // frame is the selection.
                 .accessibilityLabel("Selection outline")
                 .accessibilityValue(selectionBoundsAccessibilityValue)
                 .accessibilityIdentifier("selection-outline")
+                .position(x: bounds.midX, y: bounds.midY)
 
             // Corner resize handles — scale proportionally from the opposite corner.
             ForEach(cornerAnchors, id: \.id) { anchor in
