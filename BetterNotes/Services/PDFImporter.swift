@@ -42,14 +42,14 @@ enum PDFImporter {
             let page: ImportedPage? = autoreleasepool {
                 guard let pdfPage = document.page(at: pdfPageIndex) else { return nil }
 
-                let pdfBounds = pdfPage.bounds(for: .mediaBox)
-                let orientation: PageOrientation = pdfBounds.width > pdfBounds.height ? .landscape : .portrait
+                let displaySize = displaySize(of: pdfPage)
+                let orientation: PageOrientation = displaySize.width > displaySize.height ? .landscape : .portrait
                 let pageSize = orientation.size
-                let fitRect = aspectFitRect(contentSize: pdfBounds.size, in: pageSize)
+                let fitRect = aspectFitRect(contentSize: displaySize, in: pageSize)
                 let extractedText = pdfPage.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return ImportedPage(
                     orientation: orientation.rawValue,
-                    imageData: render(pdfPage, bounds: pdfBounds, size: fitRect.size),
+                    imageData: render(pdfPage, displaySize: displaySize, size: fitRect.size),
                     imageFrame: fitRect,
                     extractedText: extractedText
                 )
@@ -60,6 +60,19 @@ enum PDFImporter {
         }
 
         return importedPages
+    }
+
+    /// The size a page actually draws at. A PDF page carries a `/Rotate`
+    /// entry that its media box knows nothing about, and `PDFPage.draw`
+    /// honours it — so a portrait media box with `/Rotate 90` is a landscape
+    /// page, and laying it out from the media box alone squeezes landscape
+    /// artwork into a portrait frame.
+    private static func displaySize(of page: PDFPage) -> CGSize {
+        let bounds = page.bounds(for: .mediaBox)
+        let rotation = ((page.rotation % 360) + 360) % 360
+        return (rotation == 90 || rotation == 270)
+            ? CGSize(width: bounds.height, height: bounds.width)
+            : bounds.size
     }
 
     private static func aspectFitRect(contentSize: CGSize, in pageSize: CGSize) -> CGRect {
@@ -76,8 +89,8 @@ enum PDFImporter {
         )
     }
 
-    private static func render(_ page: PDFPage, bounds: CGRect, size: CGSize) -> Data? {
-        guard size.width > 0, size.height > 0, bounds.width > 0, bounds.height > 0 else { return nil }
+    private static func render(_ page: PDFPage, displaySize: CGSize, size: CGSize) -> Data? {
+        guard size.width > 0, size.height > 0, displaySize.width > 0, displaySize.height > 0 else { return nil }
 
         let format = UIGraphicsImageRendererFormat()
         format.scale = 2
@@ -87,9 +100,12 @@ enum PDFImporter {
             UIColor.white.setFill()
             context.fill(CGRect(origin: .zero, size: size))
 
-            let scale = min(size.width / bounds.width, size.height / bounds.height)
+            // `draw(with:to:)` applies the page's own transform, which already
+            // accounts for both the box origin and the rotation. All this has
+            // to do is flip into PDF's bottom-up space and scale to fit.
+            let scale = min(size.width / displaySize.width, size.height / displaySize.height)
             context.cgContext.saveGState()
-            context.cgContext.translateBy(x: -bounds.minX * scale, y: size.height + bounds.minY * scale)
+            context.cgContext.translateBy(x: 0, y: size.height)
             context.cgContext.scaleBy(x: scale, y: -scale)
             page.draw(with: .mediaBox, to: context.cgContext)
             context.cgContext.restoreGState()
