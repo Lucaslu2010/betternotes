@@ -11,12 +11,22 @@ Deadlines: **feature-complete 30 Sep 2026, App Store 31 Oct 2026.**
 `BetterNotes.xcodeproj` is **generated**, not hand-edited:
 
 ```
-python3 generate_project.py        # rewrites project.pbxproj from the source tree
+xcodegen generate                  # rewrites the project from project.yml
 ```
 
-`project.yml` is the XcodeGen-style spec of record for settings (deployment
-target, Info.plist keys, signing). Add a source file and regenerate; do not
-edit `project.pbxproj` by hand.
+`project.yml` is the spec of record — targets, deployment target, Info.plist
+keys, signing. Add a source file and regenerate; do not edit `project.pbxproj`
+by hand.
+
+Use **XcodeGen**, not the old `generate_project.py`, which was removed on
+2 Sep 2026. That script only ever emitted the app target: running it dropped
+the project from three native targets to one, deleted both test bundles, and
+wrote an empty `<Testables>` into the scheme. The build still succeeded
+afterwards, so nothing announced it — the next `xcodebuild test` simply
+answered "Scheme BetterNotes is not currently configured for the test action".
+XcodeGen reads `project.yml`, which has described all three targets the whole
+time, and also picks up loose bundle resources such as `PrivacyInfo.xcprivacy`
+that the script silently skipped.
 
 `DEVELOPMENT_TEAM` sits in **project-level** settings, not on the app target.
 A UI test runs from a second signed bundle and the unit tests from a third, so
