@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  App Store review rejects a submission that uses a required-reason API
+	  without declaring it here. BetterNotes uses two.
+
+	  UserDefaults (CA92.1): tool settings, AI provider settings and the
+	  handwriting beautifier's preferences, all read and written by the app
+	  for itself.
+
+	  File timestamps (DDA9.1): BetterNotesApp sorts its own recovery
+	  snapshots by contentModificationDate to find the newest. Those files
+	  live in the app's Application Support directory, inside its container.
+
+	  Nothing is collected by the developer. There is no analytics, no
+	  account, and no server of ours: AI is bring-your-own-key, so a request
+	  goes from the device to the provider the user chose and configured, and
+	  its contents are governed by that provider's own policy. Say so on the
+	  App Store Connect nutrition label too -- this file does not cover it.
+	-->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>DDA9.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

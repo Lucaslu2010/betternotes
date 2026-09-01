@@ -20,6 +20,7 @@
 		4257189E498123A969B5CF06 /* NoteCorpusIndexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0484CDDAB29CF8015C9AC80 /* NoteCorpusIndexer.swift */; };
 		43F8C45E23A93E84D2C98CF3 /* PDFExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50DF0F3E47FD225BB3020A4A /* PDFExport.swift */; };
 		4B18BA4C45DB46BDF4D35319 /* PageHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00DCEDDEC35A189F86598B13 /* PageHistory.swift */; };
+		6E2E3AA92F36CF11F45F3AD9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 5DD98C9407E250E3325D54ED /* PrivacyInfo.xcprivacy */; };
 		6F8FB01718CC7451DBB044D6 /* AIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6E06CF172354818AA9E115 /* AIModels.swift */; };
 		716CDF61611AE02AF738364A /* ToolSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4404CF85FDA1DE1CBFCD4EE3 /* ToolSettings.swift */; };
 		73F2738AAF71D2F095645044 /* NotebookCover.swift in Sources */ = {isa = PBXBuildFile; fileRef = A48C7A01F7D06D1931F26481 /* NotebookCover.swift */; };
@@ -80,6 +81,7 @@
 		56368ED9EA30DB68183F25B5 /* CoverCustomizationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverCustomizationSheet.swift; sourceTree = "<group>"; };
 		5A030ECA598B25CCEDA0D514 /* BetterNotesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BetterNotesTests.swift; sourceTree = "<group>"; };
 		5BFACD6D79CA398BF1B06FC7 /* PageBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageBackground.swift; sourceTree = "<group>"; };
+		5DD98C9407E250E3325D54ED /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		5E736AC66E70892E8815C40B /* DisableInteractivePop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisableInteractivePop.swift; sourceTree = "<group>"; };
 		60E66A386D1B3CC0ECB76AA9 /* HandwritingBeautifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandwritingBeautifier.swift; sourceTree = "<group>"; };
 		758AAE5428FCE999058FBFCB /* PageOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageOperations.swift; sourceTree = "<group>"; };
@@ -122,6 +124,7 @@
 			isa = PBXGroup;
 			children = (
 				BFF8A603D6FB89AB4A4F2CB3 /* Assets.xcassets */,
+				5DD98C9407E250E3325D54ED /* PrivacyInfo.xcprivacy */,
 				23C730BE34BB577E4E3F86D7 /* App */,
 				3377BC71B89CDB1003A06CBF /* Models */,
 				C4311FE5D5CBAFC25A0CD2F9 /* Services */,
@@ -346,6 +349,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E363BDACE5C3512839D6DCC5 /* Assets.xcassets in Resources */,
+				6E2E3AA92F36CF11F45F3AD9 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
