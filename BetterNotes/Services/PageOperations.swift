@@ -12,10 +12,9 @@ enum PageOperations {
         page.lineStyle = source.lineStyle
         page.orientation = source.orientation
         page.notebook = notebook
-        for sourceElement in source.elements {
+        for sourceElement in source.orderedElements {
             let element = PageElement.copy(of: sourceElement)
-            element.page = page
-            page.elements.append(element)
+            page.appendElement(element)
         }
         return page
     }

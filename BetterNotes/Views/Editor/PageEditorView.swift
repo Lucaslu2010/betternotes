@@ -441,6 +441,9 @@ struct PageEditorView: View {
         .onAppear {
             canUndo = history.canUndo
             canRedo = history.canRedo
+            // The array's order is the canvas stacking order, and SwiftData
+            // does not preserve it. Restore it before anything reads it.
+            page.restoreElementOrder()
             if canvas.drawing.strokes.isEmpty {
                 loadInk(from: page)
             }
@@ -637,6 +640,7 @@ struct PageEditorView: View {
 
     private func saveChanges() {
         do {
+            page.stampElementOrder()
             try context.save()
             NotificationCenter.default.post(name: .noteCorpusDidChange, object: nil)
             saveError = nil
@@ -674,6 +678,11 @@ struct PageEditorView: View {
     }
 
     private func switchLoadedPage() {
+        // `page` is already the incoming page by the time this runs, and the
+        // saveChanges() below stamps its array order into zIndex. Restore that
+        // order from the store first, or the save would overwrite the user's
+        // layering with whatever order SwiftData happened to hand back.
+        page.restoreElementOrder()
         canvasCoordinator.coordinator?.cancelShapeRecognition()
         heldShapePreview = nil
 
@@ -803,7 +812,7 @@ struct PageEditorView: View {
         element.fontSize = 15
         element.page = page
         context.insert(element)
-        page.elements.append(element)
+        page.appendElement(element)
         selectedElementID = element.id
         markPageModified()
         saveChanges()
@@ -1076,7 +1085,7 @@ struct PageEditorView: View {
         if type == .stickyNote { elem.colorHex = "FFE066" }
         elem.page = page
         context.insert(elem)
-        page.elements.append(elem)
+        page.appendElement(elem)
         selectedElementID = elem.id
         markPageModified()
         saveChanges()
@@ -1223,7 +1232,7 @@ struct PageEditorView: View {
         copy.posY += 30
         copy.page = page
         context.insert(copy)
-        page.elements.append(copy)
+        page.appendElement(copy)
         selectedElementID = copy.id
         markPageModified()
         saveChanges()
@@ -1451,7 +1460,7 @@ struct PageEditorView: View {
         for snapshot in payload.elements {
             let element = snapshot.makeElement(at: pasteOrigin, page: page)
             context.insert(element)
-            page.elements.append(element)
+            page.appendElement(element)
             newElementIDs.insert(element.id)
         }
         let newStrokeIndices = Set(firstNewStroke..<strokes.count)
@@ -1575,7 +1584,7 @@ struct PageEditorView: View {
         elem.text = "Recording..."
         elem.page = page
         context.insert(elem)
-        page.elements.append(elem)
+        page.appendElement(elem)
         selectedElementID = elem.id
         recordingElement = elem
         markPageModified()
@@ -1766,7 +1775,7 @@ struct PageEditorView: View {
         }
         imageElement.page = page
         context.insert(imageElement)
-        page.elements.append(imageElement)
+        page.appendElement(imageElement)
 
         selectedElementID = imageElement.id
     }

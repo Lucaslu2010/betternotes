@@ -623,7 +623,7 @@ struct NotebookView: View {
         element.text = text
         element.fontSize = 15
         element.page = page
-        page.elements.append(element)
+        page.appendElement(element)
         notebook.pages.append(page)
         context.insert(page)
         context.insert(element)
@@ -778,7 +778,7 @@ struct NotebookView: View {
             element.imageData = imageData
             element.isLocked = true
             element.page = page
-            page.elements.append(element)
+            page.appendElement(element)
         }
         return page
     }
@@ -1597,7 +1597,7 @@ struct PageThumbnail: View {
                         .offset(x: transform.origin.x, y: transform.origin.y)
                     }
 
-                    ForEach(page.elements) { element in
+                    ForEach(page.orderedElements) { element in
                         ThumbnailElement(element: element, scale: transform.scale)
                             .rotationEffect(.degrees(element.rotation))
                             .position(transform.point(CGPoint(x: element.posX, y: element.posY)))

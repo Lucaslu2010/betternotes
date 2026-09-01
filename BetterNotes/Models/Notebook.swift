@@ -166,6 +166,36 @@ final class Page {
         self.orientation = PageOrientation.portrait.rawValue
     }
 
+    /// Elements in their persisted stacking order, bottom to top. `createdAt`
+    /// breaks ties so a page written before zIndex existed still comes back in
+    /// the order it was drawn.
+    var orderedElements: [PageElement] {
+        elements.sorted { ($0.zIndex, $0.createdAt) < ($1.zIndex, $1.createdAt) }
+    }
+
+    /// Adds an element on top of the stack: SwiftUI draws `elements` in array
+    /// order, so a new element must also take a `zIndex` above every existing
+    /// one or it would sink to the bottom on the next load.
+    func appendElement(_ element: PageElement) {
+        element.zIndex = (elements.map(\.zIndex).max() ?? -1) + 1
+        element.page = self
+        elements.append(element)
+    }
+
+    /// Rewrites `elements` into its persisted order. Call when a page is
+    /// loaded, before anything reads the array positionally.
+    func restoreElementOrder() {
+        elements = orderedElements
+    }
+
+    /// Records the current array order into `zIndex`. Call before saving, so
+    /// the layering the user sees is the layering that persists.
+    func stampElementOrder() {
+        for (offset, element) in elements.enumerated() where element.zIndex != offset {
+            element.zIndex = offset
+        }
+    }
+
     var hasContent: Bool {
         if let ink = inkData, !ink.isEmpty { return true }
         return !elements.isEmpty || !ocrText.isEmpty
@@ -291,6 +321,13 @@ final class PageElement {
 
     // Prevent accidental move/resize/edit while still allowing selection.
     var isLocked: Bool = false
+
+    /// Persisted stacking order within the page, low to high. SwiftData does
+    /// not guarantee the order of a to-many relationship, so the position of
+    /// an element in `page.elements` cannot survive a relaunch on its own —
+    /// and Bring Forward / Send Backward work purely by reordering that array.
+    /// This is where that layering is actually kept.
+    var zIndex: Int = 0
 
     var page: Page?
 
@@ -431,6 +468,7 @@ extension PageElement {
         copy.transcript = source.transcript
         copy.isRevealed = source.isRevealed
         copy.isLocked = source.isLocked
+        copy.zIndex = source.zIndex
         return copy
     }
 }

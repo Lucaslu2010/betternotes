@@ -1319,10 +1319,9 @@ private var emptyState: some View {
             newPage.backgroundHex = srcPage.backgroundHex
             newPage.lineStyle = srcPage.lineStyle
             newPage.orientation = srcPage.orientation
-            for srcElem in srcPage.elements {
+            for srcElem in srcPage.orderedElements {
                 let e = PageElement.copy(of: srcElem)
-                e.page = newPage
-                newPage.elements.append(e)
+                newPage.appendElement(e)
             }
             newPage.notebook = copy
             copy.pages.append(newPage)
