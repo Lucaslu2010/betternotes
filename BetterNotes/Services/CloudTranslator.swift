@@ -176,7 +176,7 @@ struct CloudTranslator {
             if let ink = page.inkData, !ink.isEmpty {
                 pageDict["inkData"] = ink.base64EncodedString()
             }
-            pageDict["elements"] = page.elements.map { elem -> [String: Any] in
+            pageDict["elements"] = page.orderedElements.map { elem -> [String: Any] in
                 var e: [String: Any] = [
                     "elementType": elem.elementType,
                     "posX": elem.posX,
@@ -201,6 +201,8 @@ struct CloudTranslator {
                 if let transcript = elem.transcript { e["transcript"] = transcript }
                 e["isRevealed"] = elem.isRevealed
                 e["isLocked"] = elem.isLocked
+                e["zIndex"] = elem.zIndex
+                e["createdAt"] = elem.createdAt.timeIntervalSince1970
                 return e
             }
             return pageDict
@@ -266,7 +268,7 @@ struct CloudTranslator {
 
             // Restore elements.
             if let elems = pageDict["elements"] as? [[String: Any]] {
-                for elemDict in elems {
+                for (elemIndex, elemDict) in elems.enumerated() {
                     let typeStr = elemDict["elementType"] as? String ?? "textBox"
                     let type = ElementType(rawValue: typeStr) ?? .textBox
                     let element = PageElement(
@@ -302,12 +304,23 @@ struct CloudTranslator {
                     element.transcript = elemDict["transcript"] as? String
                     element.isRevealed = (elemDict["isRevealed"] as? Bool) ?? false
                     element.isLocked = (elemDict["isLocked"] as? Bool) ?? false
+                    // Stacking order and creation dates are content, not
+                    // metadata: the canvas is drawn in zIndex order, and the
+                    // corpus index cites elements by createdAt order. Archives
+                    // written before these were exported fall back to the
+                    // position in the array, which is the order they were
+                    // written out in.
+                    element.zIndex = (elemDict["zIndex"] as? Int) ?? elemIndex
+                    if let created = elemDict["createdAt"] as? Double {
+                        element.createdAt = Date(timeIntervalSince1970: created)
+                    }
 
                     element.page = page
                     page.elements.append(element)
                 }
             }
 
+            page.restoreElementOrder()
             notebook.pages.append(page)
         }
 
