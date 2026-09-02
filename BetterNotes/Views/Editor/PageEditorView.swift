@@ -859,13 +859,18 @@ struct PageEditorView: View {
         guard !isSwitchingPages else { return }
         guard !isApplyingProgrammaticChange else { return }
         let currentCount = canvas.drawing.strokes.count
-        let currentInkData = canvas.drawing.dataRepresentation()
+        // A live move/resize rebuilds the drawing on every drag frame, and
+        // PencilKit calls back here for each one. Archiving the whole page's
+        // ink at touch rate is pure waste: the snapshot is overwritten by the
+        // next frame and never read. finishInkSelectionMutation() writes
+        // page.inkData once when the drag ends, and switchLoadedPage() saves
+        // the ink if the page changes first, so nothing here is load-bearing.
+        // Take no snapshot; just keep the stroke count in step.
         if isTransformingInkSelection {
-            page.inkData = currentInkData
             lastRecordedStrokeCount = currentCount
-            markPageModified()
             return
         }
+        let currentInkData = canvas.drawing.dataRepresentation()
         if currentCount != lastRecordedStrokeCount || page.inkData != currentInkData {
             history.record(ink: page.inkData, elements: page.elements, coalesce: true)
             page.inkData = currentInkData
@@ -2058,6 +2063,8 @@ private struct SourceTextSheet: View {
 /// proportional scaling, edge handles for single-axis stretching, a body
 /// drag for moving, and a top handle for rotation.
 private struct SelectionHandles: View {
+    /// Fixed reference frame for all handle drags. See `.coordinateSpace` below.
+    fileprivate static let dragSpace = "selection-handles"
     let bounds: CGRect
     let pageSize: CGSize
     var onResize: (CGFloat, CGFloat, CGPoint) -> Void
@@ -2111,7 +2118,7 @@ private struct SelectionHandles: View {
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
                 .highPriorityGesture(
-                    DragGesture(minimumDistance: 4)
+                    DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.dragSpace))
                         .onChanged { value in
                             beginGestureIfNeeded()
                             let delta = incrementalDelta(for: value.translation)
@@ -2154,7 +2161,7 @@ private struct SelectionHandles: View {
                     .accessibilityElement()
                     .accessibilityIdentifier("selection-handle-\(anchor.id)")
                     .gesture(
-                        DragGesture(minimumDistance: 0)
+                        DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.dragSpace))
                             .onChanged { value in
                                 beginGestureIfNeeded()
                                 let delta = incrementalDelta(for: value.translation)
@@ -2175,7 +2182,7 @@ private struct SelectionHandles: View {
                     .accessibilityElement()
                     .accessibilityIdentifier("selection-handle-\(anchor.id)")
                     .gesture(
-                        DragGesture(minimumDistance: 0)
+                        DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.dragSpace))
                             .onChanged { value in
                                 beginGestureIfNeeded()
                                 let delta = incrementalDelta(for: value.translation)
@@ -2202,7 +2209,7 @@ private struct SelectionHandles: View {
                 .offset(x: bounds.midX - handleTouchTarget / 2,
                         y: bounds.minY - 23 - handleTouchTarget / 2)
                 .gesture(
-                    DragGesture(minimumDistance: 0)
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.dragSpace))
                         .onChanged { value in
                             beginGestureIfNeeded()
                             let delta = incrementalDelta(for: value.translation)
@@ -2215,6 +2222,12 @@ private struct SelectionHandles: View {
                 )
         }
         .frame(width: pageSize.width, height: pageSize.height, alignment: .topLeading)
+        // Every drag below is measured against THIS space, not each control's
+        // own. The controls are positioned from `bounds`, which the drags
+        // mutate -- so in the default `.local` space a gesture measures itself
+        // against a view its own output is moving, and oscillates. This root
+        // is page-sized and stationary, so it is a fixed reference.
+        .coordinateSpace(name: Self.dragSpace)
         .allowsHitTesting(true)
     }
 
