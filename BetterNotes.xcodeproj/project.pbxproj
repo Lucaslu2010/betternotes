@@ -11,6 +11,7 @@
 		0FDC6F9D16C0F789CF90836C /* AISettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C97B96E06B2A05D1D9BC5D4 /* AISettingsStore.swift */; };
 		12C4278C52430D845597B682 /* AudioRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69A1CF0A4F483F531B8F7EA5 /* AudioRecorderTests.swift */; };
 		17FCFD08A8441ABE52EA6CDC /* EditorToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C123572A38F6C31E4880C86C /* EditorToolbar.swift */; };
+		19BE556A99507BA4F3292A1A /* PDFExportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0EFDAC47218CC2198BD5C2 /* PDFExportTests.swift */; };
 		1A927009E157D561A4FEE0F0 /* AISettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB821B78D8A3425010FB5E95 /* AISettingsStoreTests.swift */; };
 		1B9B2A7F9AC0FAA41A6A96A1 /* PaperCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4DDA00C3E975F5E0D7E6F5 /* PaperCanvas.swift */; };
 		1CAFEDD32144C411E473E931 /* CloudTranslator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C360D63E1308ED129819F87 /* CloudTranslator.swift */; };
@@ -82,6 +83,7 @@
 		22C76EC076F87C80C6B8A287 /* BetterNotesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BetterNotesApp.swift; sourceTree = "<group>"; };
 		2EAD9CBD6DD15548A6BEF595 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		30773D9EBE464E834F2685AB /* StoreMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreMigrationTests.swift; sourceTree = "<group>"; };
+		3A0EFDAC47218CC2198BD5C2 /* PDFExportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFExportTests.swift; sourceTree = "<group>"; };
 		3C5BFE47307307284FF1B9AD /* ShapeSnapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShapeSnapper.swift; sourceTree = "<group>"; };
 		4404CF85FDA1DE1CBFCD4EE3 /* ToolSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolSettings.swift; sourceTree = "<group>"; };
 		440EB54F96D06708FE84410D /* BetterNotesTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BetterNotesTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -198,6 +200,7 @@
 				5A030ECA598B25CCEDA0D514 /* BetterNotesTests.swift */,
 				643FF339D6F3269076E50A47 /* ElementLayerOrderTests.swift */,
 				B36460D0868B4FA985BACC6C /* HandwritingBeautifierTests.swift */,
+				3A0EFDAC47218CC2198BD5C2 /* PDFExportTests.swift */,
 				7ADB14BEF98A361B80935F12 /* PDFImporterTests.swift */,
 				EDE6FBDD43FBE1B7A41689EF /* ShapeSnapperTests.swift */,
 				4F4CF82F055B083CE7D0EA8A /* SmartImageExtractorTests.swift */,
@@ -421,6 +424,7 @@
 				3CCA392BD4D28C372BB1A856 /* BetterNotesTests.swift in Sources */,
 				CCF3DD11BDEDBC5543514143 /* ElementLayerOrderTests.swift in Sources */,
 				F90D016E36A8D96021B52610 /* HandwritingBeautifierTests.swift in Sources */,
+				19BE556A99507BA4F3292A1A /* PDFExportTests.swift in Sources */,
 				FC7C3CFD85729B5D3B737A8E /* PDFImporterTests.swift in Sources */,
 				E2D9A18BFDC0C1607A94F3BA /* ShapeSnapperTests.swift in Sources */,
 				C70F787B921C3BC249135F1C /* SmartImageExtractorTests.swift in Sources */,

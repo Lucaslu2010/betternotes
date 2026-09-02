@@ -173,12 +173,28 @@ enum PDFExport {
     }
 
     private static func drawElements(_ page: Page, in pageSize: CGSize) {
-        for element in page.elements {
+        let context = UIGraphicsGetCurrentContext()
+        // orderedElements, not elements: the array's order is the canvas
+        // stacking order but SwiftData does not guarantee it, so an export
+        // reading the raw relationship can stack a page differently from the
+        // way it looks on screen — tape over an answer, say.
+        for element in page.orderedElements {
             // posX/posY are the center (matching SwiftUI .position()).
             let frame = CGRect(x: element.posX - element.width/2,
                                y: element.posY - element.height/2,
                                width: element.width,
                                height: element.height)
+            // Every on-screen renderer applies element.rotation via
+            // .rotationEffect, which pivots about the centre. Without the same
+            // transform here, exporting silently straightens the layout.
+            let isRotated = element.rotation != 0
+            if isRotated, let context {
+                context.saveGState()
+                context.translateBy(x: frame.midX, y: frame.midY)
+                context.rotate(by: CGFloat(element.rotation * .pi / 180))
+                context.translateBy(x: -frame.midX, y: -frame.midY)
+            }
+            defer { if isRotated, let context { context.restoreGState() } }
             switch element.type {
             case .textBox, .stickyNote:
                 drawText(element, in: frame)
