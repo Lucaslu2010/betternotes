@@ -428,13 +428,31 @@ final class BetterNotesTests: XCTestCase {
         model.show(for: "page-b")
         await waitForSleepers(2, on: clock)
 
+        // Resuming a sleeper hands control to the banner's own task, and how
+        // many yields that takes is a scheduling detail — one was enough in
+        // the simulator and not on the iPad. Wait for the state instead.
         await clock.advanceNext()
-        await Task.yield()
-        XCTAssertTrue(model.isPresented)
+        await settle()
+        XCTAssertTrue(model.isPresented, "the first page's timer expired the banner for the second")
 
         await clock.advanceNext()
-        await Task.yield()
+        await waitUntil { !model.isPresented }
         XCTAssertFalse(model.isPresented)
+    }
+
+    /// Waits for `condition`, yielding between checks, rather than assuming a
+    /// fixed number of yields is enough on every machine.
+    private func waitUntil(_ condition: () -> Bool, iterations: Int = 100) async {
+        for _ in 0..<iterations {
+            if condition() { return }
+            await Task.yield()
+        }
+    }
+
+    /// Gives pending continuations a chance to run before asserting that
+    /// something did *not* happen.
+    private func settle(iterations: Int = 20) async {
+        for _ in 0..<iterations { await Task.yield() }
     }
 
     private func waitForSleepers(_ count: Int, on clock: TestUndoBannerClock) async {
