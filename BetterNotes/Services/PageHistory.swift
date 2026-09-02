@@ -39,6 +39,11 @@ final class PageHistory: ObservableObject {
         let isRevealed: Bool
         let isLocked: Bool
         let transcript: String?
+        /// Layering is undoable too — Bring Forward is a recorded mutation.
+        /// The restore also rewrites `page.elements` in snapshot order, which
+        /// saveChanges() then stamps, but carrying zIndex keeps the element
+        /// and the array agreeing in the window before that save.
+        let zIndex: Int
 
         init(from e: PageElement) {
             self.id = e.id
@@ -64,6 +69,7 @@ final class PageHistory: ObservableObject {
             self.isRevealed = e.isRevealed
             self.isLocked = e.isLocked
             self.transcript = e.transcript
+            self.zIndex = e.zIndex
         }
 
         func apply(to e: PageElement) {
@@ -89,6 +95,7 @@ final class PageHistory: ObservableObject {
             e.isRevealed = isRevealed
             e.isLocked = isLocked
             e.transcript = transcript
+            e.zIndex = zIndex
         }
     }
 

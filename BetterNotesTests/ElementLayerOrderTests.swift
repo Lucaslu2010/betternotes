@@ -96,3 +96,60 @@ final class ElementLayerOrderTests: XCTestCase {
         XCTAssertEqual(page.orderedElements.compactMap(\.text), ["older", "newer"])
     }
 }
+
+/// Bring Forward is a recorded mutation, so undo has to put the layering back.
+@MainActor
+final class LayeringUndoTests: XCTestCase {
+
+    private func pageWithThreeElements() -> Page {
+        let page = Page(index: 0)
+        for name in ["bottom", "middle", "top"] {
+            let element = PageElement(type: .textBox, x: 0, y: 0)
+            element.text = name
+            page.appendElement(element)
+        }
+        return page
+    }
+
+    func testUndoRestoresTheLayeringThatWasThereBefore() {
+        let page = pageWithThreeElements()
+        let history = PageHistory()
+
+        history.record(ink: nil, elements: page.elements)
+        page.elements.swapAt(0, 2)
+        page.stampElementOrder()
+        XCTAssertEqual(page.orderedElements.compactMap(\.text), ["top", "middle", "bottom"])
+
+        let snapshot = history.undo(ink: nil, elements: page.elements)
+        let restored = try? XCTUnwrap(snapshot)
+        XCTAssertEqual(restored?.elements.compactMap(\.text), ["bottom", "middle", "top"])
+
+        // Applying it the way PageEditorView.apply does.
+        let byID = Dictionary(uniqueKeysWithValues: page.elements.map { ($0.id, $0) })
+        var rebuilt: [PageElement] = []
+        for snap in restored?.elements ?? [] {
+            guard let element = byID[snap.id] else { continue }
+            snap.apply(to: element)
+            rebuilt.append(element)
+        }
+        page.elements = rebuilt
+        XCTAssertEqual(page.orderedElements.compactMap(\.text), ["bottom", "middle", "top"],
+                       "undo did not put the layering back")
+    }
+
+    func testASnapshotCarriesTheLayerIndex() {
+        let page = pageWithThreeElements()
+        let history = PageHistory()
+        page.stampElementOrder()
+        history.record(ink: nil, elements: page.elements)
+
+        // Scramble both the array and the indices, then restore.
+        for element in page.elements { element.zIndex = 0 }
+        let snapshot = history.undo(ink: nil, elements: page.elements)
+        for snap in snapshot?.elements ?? [] {
+            if let element = page.elements.first(where: { $0.id == snap.id }) { snap.apply(to: element) }
+        }
+        XCTAssertEqual(page.elements.map(\.zIndex), [0, 1, 2],
+                       "the snapshot did not carry zIndex, so orderedElements would disagree with the array")
+    }
+}
