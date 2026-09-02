@@ -23,7 +23,14 @@ final class AISettingsStore: ObservableObject {
         self.defaults = defaults
         self.automaticWritingSuggestions = defaults.bool(forKey: AppPreferenceKey.automaticWritingSuggestions)
         apiKey = AIKeychainStore.load() ?? ""
-        baseURL = defaults.string(forKey: "ai.baseURL") ?? baseURL
+        // Re-check the stored URL rather than trusting it. update() validates
+        // on the way in, but UserDefaults is not a trust boundary the way the
+        // Keychain is — a plain-HTTP URL written by an older build or a synced
+        // plist would otherwise be used unchecked, and the user's API key
+        // would cross the wire in clear.
+        if let stored = defaults.string(forKey: "ai.baseURL"), Self.isAllowedProviderURL(stored) {
+            baseURL = stored
+        }
         model = defaults.string(forKey: "ai.model") ?? model
         isRemoteConfigured = !apiKey.isEmpty
     }

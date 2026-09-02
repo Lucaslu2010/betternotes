@@ -11,6 +11,7 @@
 		0FDC6F9D16C0F789CF90836C /* AISettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C97B96E06B2A05D1D9BC5D4 /* AISettingsStore.swift */; };
 		12C4278C52430D845597B682 /* AudioRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69A1CF0A4F483F531B8F7EA5 /* AudioRecorderTests.swift */; };
 		17FCFD08A8441ABE52EA6CDC /* EditorToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C123572A38F6C31E4880C86C /* EditorToolbar.swift */; };
+		1A927009E157D561A4FEE0F0 /* AISettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB821B78D8A3425010FB5E95 /* AISettingsStoreTests.swift */; };
 		1B9B2A7F9AC0FAA41A6A96A1 /* PaperCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4DDA00C3E975F5E0D7E6F5 /* PaperCanvas.swift */; };
 		1CAFEDD32144C411E473E931 /* CloudTranslator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C360D63E1308ED129819F87 /* CloudTranslator.swift */; };
 		23E2CC0B2CC09DB4F02FD7D5 /* StoreMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30773D9EBE464E834F2685AB /* StoreMigrationTests.swift */; };
@@ -112,6 +113,7 @@
 		B27AA21B9D0D53D1E34683AE /* Notebook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notebook.swift; sourceTree = "<group>"; };
 		B36460D0868B4FA985BACC6C /* HandwritingBeautifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandwritingBeautifierTests.swift; sourceTree = "<group>"; };
 		BA8F436377C7C7ECBE303EB2 /* BetterNotes.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BetterNotes.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB821B78D8A3425010FB5E95 /* AISettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISettingsStoreTests.swift; sourceTree = "<group>"; };
 		BF03EEC0715CC804E4BDE771 /* BetterNotesUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BetterNotesUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BFF8A603D6FB89AB4A4F2CB3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C123572A38F6C31E4880C86C /* EditorToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorToolbar.swift; sourceTree = "<group>"; };
@@ -190,6 +192,7 @@
 		6011C17F1DF8449217F14C4A /* BetterNotesTests */ = {
 			isa = PBXGroup;
 			children = (
+				BB821B78D8A3425010FB5E95 /* AISettingsStoreTests.swift */,
 				A66C627DFE0C644BB091693B /* ArchiveRoundTripTests.swift */,
 				69A1CF0A4F483F531B8F7EA5 /* AudioRecorderTests.swift */,
 				5A030ECA598B25CCEDA0D514 /* BetterNotesTests.swift */,
@@ -412,6 +415,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1A927009E157D561A4FEE0F0 /* AISettingsStoreTests.swift in Sources */,
 				E82659EA722496AEE242EAB7 /* ArchiveRoundTripTests.swift in Sources */,
 				12C4278C52430D845597B682 /* AudioRecorderTests.swift in Sources */,
 				3CCA392BD4D28C372BB1A856 /* BetterNotesTests.swift in Sources */,
