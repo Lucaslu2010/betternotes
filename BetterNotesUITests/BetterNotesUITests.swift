@@ -308,7 +308,7 @@ final class BetterNotesUITests: XCTestCase {
 
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 5))
-        search.tap()
+        XCTAssertTrue(focus(search), "the search field never took keyboard focus")
         search.typeText(title)
 
         let askNotes = app.buttons["Ask Notes"]
@@ -405,22 +405,43 @@ final class BetterNotesUITests: XCTestCase {
 
         let folderField = app.textFields["Folder"]
         XCTAssertTrue(folderField.waitForExistence(timeout: 5))
-        folderField.tap()
+        XCTAssertTrue(focus(folderField), "the folder field never took keyboard focus")
         folderField.typeText(folder)
 
         let tagsField = app.textFields["Tags, separated by commas"]
         XCTAssertTrue(tagsField.waitForExistence(timeout: 3))
-        tagsField.tap()
+        XCTAssertTrue(focus(tagsField), "the tags field never took keyboard focus")
         tagsField.typeText(tags)
 
         app.navigationBars["Rename"].buttons["Save"].tap()
+    }
+
+    /// Taps a text field and waits until it actually holds keyboard focus
+    /// before returning. A bare `tap()` followed by `typeText` is a race on a
+    /// real device: the tap lands while the sheet is still animating, focus
+    /// arrives a frame or two later, and typeText fails with "Neither element
+    /// nor any descendant has keyboard focus". Retries the tap once, which is
+    /// enough whenever the first one was swallowed by the presentation.
+    @discardableResult
+    private func focus(_ field: XCUIElement, timeout: TimeInterval = 5) -> Bool {
+        func hasFocus() -> Bool { (field.value(forKey: "hasKeyboardFocus") as? Bool) ?? false }
+
+        for attempt in 0..<2 {
+            field.tap()
+            let deadline = Date().addingTimeInterval(attempt == 0 ? timeout / 2 : timeout)
+            while Date() < deadline {
+                if hasFocus() { return true }
+                _ = field.waitForExistence(timeout: 0.1)
+            }
+        }
+        return hasFocus()
     }
 
     private func createNotebook(named title: String) {
         openNewNotebookSheet()
         let titleField = app.textFields.firstMatch
         XCTAssertTrue(titleField.waitForExistence(timeout: 8))
-        titleField.tap()
+        XCTAssertTrue(focus(titleField), "the new-notebook title field never took keyboard focus")
         titleField.typeText(title)
         app.navigationBars["New Notebook"].buttons["Create"].tap()
     }

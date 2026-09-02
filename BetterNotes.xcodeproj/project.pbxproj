@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0809B336543872AFD912699C /* ShapeSnapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C5BFE47307307284FF1B9AD /* ShapeSnapper.swift */; };
 		0FDC6F9D16C0F789CF90836C /* AISettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C97B96E06B2A05D1D9BC5D4 /* AISettingsStore.swift */; };
+		12C4278C52430D845597B682 /* AudioRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69A1CF0A4F483F531B8F7EA5 /* AudioRecorderTests.swift */; };
 		17FCFD08A8441ABE52EA6CDC /* EditorToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C123572A38F6C31E4880C86C /* EditorToolbar.swift */; };
 		1B9B2A7F9AC0FAA41A6A96A1 /* PaperCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4DDA00C3E975F5E0D7E6F5 /* PaperCanvas.swift */; };
 		1CAFEDD32144C411E473E931 /* CloudTranslator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C360D63E1308ED129819F87 /* CloudTranslator.swift */; };
@@ -92,6 +93,7 @@
 		5E736AC66E70892E8815C40B /* DisableInteractivePop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisableInteractivePop.swift; sourceTree = "<group>"; };
 		60E66A386D1B3CC0ECB76AA9 /* HandwritingBeautifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandwritingBeautifier.swift; sourceTree = "<group>"; };
 		643FF339D6F3269076E50A47 /* ElementLayerOrderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElementLayerOrderTests.swift; sourceTree = "<group>"; };
+		69A1CF0A4F483F531B8F7EA5 /* AudioRecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderTests.swift; sourceTree = "<group>"; };
 		758AAE5428FCE999058FBFCB /* PageOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageOperations.swift; sourceTree = "<group>"; };
 		7ADB14BEF98A361B80935F12 /* PDFImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFImporterTests.swift; sourceTree = "<group>"; };
 		7F12323FC225A0709A12B5A1 /* NotebookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookView.swift; sourceTree = "<group>"; };
@@ -177,6 +179,7 @@
 			isa = PBXGroup;
 			children = (
 				A66C627DFE0C644BB091693B /* ArchiveRoundTripTests.swift */,
+				69A1CF0A4F483F531B8F7EA5 /* AudioRecorderTests.swift */,
 				5A030ECA598B25CCEDA0D514 /* BetterNotesTests.swift */,
 				643FF339D6F3269076E50A47 /* ElementLayerOrderTests.swift */,
 				B36460D0868B4FA985BACC6C /* HandwritingBeautifierTests.swift */,
@@ -387,6 +390,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E82659EA722496AEE242EAB7 /* ArchiveRoundTripTests.swift in Sources */,
+				12C4278C52430D845597B682 /* AudioRecorderTests.swift in Sources */,
 				3CCA392BD4D28C372BB1A856 /* BetterNotesTests.swift in Sources */,
 				CCF3DD11BDEDBC5543514143 /* ElementLayerOrderTests.swift in Sources */,
 				F90D016E36A8D96021B52610 /* HandwritingBeautifierTests.swift in Sources */,
