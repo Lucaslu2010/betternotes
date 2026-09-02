@@ -33,7 +33,7 @@ targets:
       - path: BetterNotes
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.betternotes.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.kenny-lhs.betternotes
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
