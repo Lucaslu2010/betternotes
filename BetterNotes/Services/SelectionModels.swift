@@ -228,6 +228,49 @@ enum SelectionTransform {
     }
 }
 
+/// Turns a gesture's cumulative translation into per-frame deltas.
+///
+/// Extracted from `SelectionHandles`, where it lived as a `@State` pair and a
+/// private method and so could only be exercised by dragging a real iPad. The
+/// bug it guards against was found exactly that way: every handle drag reports
+/// translation measured from where the gesture began, but the selection is
+/// mutated by the drag's own output, so applying the cumulative value each
+/// frame moves the selection by an ever-growing amount. Subtracting the last
+/// reading is what makes a drag track the finger.
+///
+/// The related half of that fix is not here: the gestures must also measure
+/// against a named, stationary coordinate space, or the *reported* translation
+/// itself oscillates. This type cannot see that, and a caller that gets it
+/// wrong will still misbehave -- so `SelectionHandles.dragSpace` and this must
+/// stay together.
+struct IncrementalDrag: Equatable {
+    private var last: CGSize = .zero
+
+    init() {}
+
+    /// The movement since the previous frame of this gesture.
+    ///
+    /// Mutating, and deliberately so: reading a frame without recording it is
+    /// what produced the original defect, and separating the two invites it
+    /// back. Callers that skip a zero delta still get correct behaviour,
+    /// because recording a reading equal to the last one changes nothing.
+    mutating func consume(_ translation: CGSize) -> CGSize {
+        let delta = CGSize(
+            width: translation.width - last.width,
+            height: translation.height - last.height
+        )
+        last = translation
+        return delta
+    }
+
+    /// Forget the gesture. Must be called when one ends, or the next gesture's
+    /// first frame is measured against the previous gesture's last reading and
+    /// the selection jumps.
+    mutating func reset() {
+        last = .zero
+    }
+}
+
 enum SelectionPasteGeometry {
     static func origin(for payloadBounds: CGRect, visibleCenter: CGPoint, pageSize: CGSize) -> CGPoint {
         let proposedX = visibleCenter.x - payloadBounds.width / 2

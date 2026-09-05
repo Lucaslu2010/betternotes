@@ -46,6 +46,7 @@
 		CC7D3EFB0C6079E58782E36C /* AIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 475067FD8E90D5DE0BA1B3EB /* AIClient.swift */; };
 		CCF3DD11BDEDBC5543514143 /* ElementLayerOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 643FF339D6F3269076E50A47 /* ElementLayerOrderTests.swift */; };
 		CF695A9D56F0880E592647F8 /* CoverCustomizationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56368ED9EA30DB68183F25B5 /* CoverCustomizationSheet.swift */; };
+		61D5B7CFC1FA2C58C911E1A8 /* SelectionDragTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4C5319AE085D1AB9609DAD3 /* SelectionDragTests.swift */; };
 		DE83A34015F850E96BFA0E6B /* Notebook.swift in Sources */ = {isa = PBXBuildFile; fileRef = B27AA21B9D0D53D1E34683AE /* Notebook.swift */; };
 		E2D9A18BFDC0C1607A94F3BA /* ShapeSnapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDE6FBDD43FBE1B7A41689EF /* ShapeSnapperTests.swift */; };
 		E363BDACE5C3512839D6DCC5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BFF8A603D6FB89AB4A4F2CB3 /* Assets.xcassets */; };
@@ -87,6 +88,7 @@
 		30773D9EBE464E834F2685AB /* StoreMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreMigrationTests.swift; sourceTree = "<group>"; };
 		3A0EFDAC47218CC2198BD5C2 /* PDFExportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFExportTests.swift; sourceTree = "<group>"; };
 		3C5BFE47307307284FF1B9AD /* ShapeSnapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShapeSnapper.swift; sourceTree = "<group>"; };
+		A4C5319AE085D1AB9609DAD3 /* SelectionDragTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionDragTests.swift; sourceTree = "<group>"; };
 		4404CF85FDA1DE1CBFCD4EE3 /* ToolSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolSettings.swift; sourceTree = "<group>"; };
 		440EB54F96D06708FE84410D /* BetterNotesTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BetterNotesTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		475067FD8E90D5DE0BA1B3EB /* AIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIClient.swift; sourceTree = "<group>"; };
@@ -205,6 +207,7 @@
 				5A030ECA598B25CCEDA0D514 /* BetterNotesTests.swift */,
 				643FF339D6F3269076E50A47 /* ElementLayerOrderTests.swift */,
 				B36460D0868B4FA985BACC6C /* HandwritingBeautifierTests.swift */,
+				A4C5319AE085D1AB9609DAD3 /* SelectionDragTests.swift */,
 				3A0EFDAC47218CC2198BD5C2 /* PDFExportTests.swift */,
 				7ADB14BEF98A361B80935F12 /* PDFImporterTests.swift */,
 				EDE6FBDD43FBE1B7A41689EF /* ShapeSnapperTests.swift */,
@@ -439,6 +442,7 @@
 				3CCA392BD4D28C372BB1A856 /* BetterNotesTests.swift in Sources */,
 				CCF3DD11BDEDBC5543514143 /* ElementLayerOrderTests.swift in Sources */,
 				F90D016E36A8D96021B52610 /* HandwritingBeautifierTests.swift in Sources */,
+				61D5B7CFC1FA2C58C911E1A8 /* SelectionDragTests.swift in Sources */,
 				2288F3894347D7BB190C696A /* MockAIURLProtocol.swift in Sources */,
 				19BE556A99507BA4F3292A1A /* PDFExportTests.swift in Sources */,
 				FC7C3CFD85729B5D3B737A8E /* PDFImporterTests.swift in Sources */,

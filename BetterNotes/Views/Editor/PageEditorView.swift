@@ -2074,7 +2074,7 @@ private struct SelectionHandles: View {
     var onMutationEnded: () -> Void
     var onClear: () -> Void
 
-    @State private var dragStart: CGSize = .zero
+    @State private var drag = IncrementalDrag()
     @State private var gestureActive = false
 
     /// The touch target for one handle.
@@ -2121,10 +2121,9 @@ private struct SelectionHandles: View {
                     DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.dragSpace))
                         .onChanged { value in
                             beginGestureIfNeeded()
-                            let delta = incrementalDelta(for: value.translation)
+                            let delta = drag.consume(value.translation)
                             if delta != .zero {
                                 onMove(delta)
-                                dragStart = value.translation
                             }
                         }
                         .onEnded { _ in endGesture() }
@@ -2164,10 +2163,9 @@ private struct SelectionHandles: View {
                         DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.dragSpace))
                             .onChanged { value in
                                 beginGestureIfNeeded()
-                                let delta = incrementalDelta(for: value.translation)
+                                let delta = drag.consume(value.translation)
                                 if delta != .zero {
                                     handleCornerResize(anchor: anchor, translation: delta)
-                                    dragStart = value.translation
                                 }
                             }
                             .onEnded { _ in endGesture() }
@@ -2185,10 +2183,9 @@ private struct SelectionHandles: View {
                         DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.dragSpace))
                             .onChanged { value in
                                 beginGestureIfNeeded()
-                                let delta = incrementalDelta(for: value.translation)
+                                let delta = drag.consume(value.translation)
                                 if delta != .zero {
                                     handleEdgeResize(anchor: anchor, translation: delta)
-                                    dragStart = value.translation
                                 }
                             }
                             .onEnded { _ in endGesture() }
@@ -2212,10 +2209,9 @@ private struct SelectionHandles: View {
                     DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.dragSpace))
                         .onChanged { value in
                             beginGestureIfNeeded()
-                            let delta = incrementalDelta(for: value.translation)
+                            let delta = drag.consume(value.translation)
                             if delta.width != 0 {
                                 onRotate(delta.width * 0.01)
-                                dragStart = value.translation
                             }
                         }
                         .onEnded { _ in endGesture() }
@@ -2240,17 +2236,10 @@ private struct SelectionHandles: View {
     }
 
     private func endGesture() {
-        dragStart = .zero
+        drag.reset()
         guard gestureActive else { return }
         gestureActive = false
         onMutationEnded()
-    }
-
-    private func incrementalDelta(for translation: CGSize) -> CGSize {
-        CGSize(
-            width: translation.width - dragStart.width,
-            height: translation.height - dragStart.height
-        )
     }
 
     /// Computes a proportional scale from dragging a corner handle.
