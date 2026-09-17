@@ -215,6 +215,7 @@ struct PaperCanvas: UIViewRepresentable {
         private var activeTouchType: UITouch.TouchType?
         private var capturedPencilPoints: [CGPoint] = []
         private var settledDrawingAtToolBegin = PKDrawing()
+        private var awaitingResurrectionCheck = false
         private var shapeHoldAnchor: CGPoint?
         private var shapePreviewLocation: CGPoint?
         private var shapePreview: ShapePreview?
@@ -340,6 +341,47 @@ struct PaperCanvas: UIViewRepresentable {
                 return
             }
 
+            // PencilKit can spontaneously republish strokes it had already
+            // dropped -- from an undo, a redo, or an erase -- the instant a
+            // new stroke begins, before a single point of new ink has
+            // landed. reapplyCommittedShapeIfNeeded (below) already works
+            // around the same underlying framework behavior for one narrow
+            // case (a shape-recognition preview reappearing); this is the
+            // general form, confirmed live on-device with real Apple Pencil
+            // input: undoing down to N strokes, then starting a new stroke,
+            // reported N+3 strokes on the very first delegate callback for
+            // that gesture -- before any drawing motion could plausibly
+            // explain more than one new stroke.
+            //
+            // `settledDrawingAtToolBegin`, captured fresh at touch-down in
+            // beginPencilStroke, is the one snapshot proven trustworthy (the
+            // debug session that found this bug confirmed it still reads the
+            // correct post-undo count at that instant). A single stroke
+            // gesture can only ever grow that baseline by exactly one
+            // PKStroke -- the in-progress one -- until it ends, so any larger
+            // jump is resurrected content, not real ink. Trim it back to the
+            // baseline plus whatever was genuinely just appended.
+            //
+            // Gating this on `isCapturingPencilStroke` looked right but wasn't:
+            // live logging showed the resurrected jump consistently arriving
+            // AFTER touchesEnded had already cleared that flag -- the passive
+            // Pencil observer's touch-up races ahead of PencilKit's own
+            // internal publish of the finished stroke, so by the time this
+            // delegate callback fires for a quick stroke, `isCapturingPencilStroke`
+            // is already false and the guard below never ran. `awaitingResurrectionCheck`
+            // instead stays keyed to "have we seen the first drawing-change
+            // callback since this stroke began," independent of whether the
+            // touch itself has already lifted.
+            if awaitingResurrectionCheck {
+                awaitingResurrectionCheck = false
+                let baselineCount = settledDrawingAtToolBegin.strokes.count
+                if count > baselineCount + 1, let newest = canvasView.drawing.strokes.last {
+                    let corrected = PKDrawing(strokes: settledDrawingAtToolBegin.strokes + [newest])
+                    canvasView.drawing = corrected
+                    return
+                }
+            }
+
             // Depending on the PencilKit release, the first drawing callback
             // can arrive either before or after the begin-tool delegate. Keep
             // the handwriting range anchored to the actual first callback,
@@ -419,6 +461,7 @@ struct PaperCanvas: UIViewRepresentable {
             activeTouchType = touchType
             capturedPencilPoints = [point]
             settledDrawingAtToolBegin = canvas.drawing
+            awaitingResurrectionCheck = true
             shapeHoldAnchor = point
             beginToolUse(on: canvas)
             scheduleShapeHoldIfNeeded(on: canvas)
@@ -838,6 +881,37 @@ struct PaperCanvas: UIViewRepresentable {
 
 /// Displays settled ink plus a snapped-shape preview without participating in
 /// hit testing or mutating PencilKit's active stroke.
+/// Draws ink that has been lifted out of the main canvas for a live drag.
+///
+/// The drawing is assigned only when `generation` changes. The transform comes
+/// from a `.transformEffect` on the SwiftUI side, so a drag repaints nothing
+/// here -- it only re-composites an already-rendered layer, which is what lets
+/// the ink keep up with the selection outline.
+struct LiftedInkOverlay: UIViewRepresentable {
+    let drawing: PKDrawing
+    let generation: Int
+
+    final class Assigned { var generation = -1 }
+
+    func makeCoordinator() -> Assigned { Assigned() }
+
+    func makeUIView(context: Context) -> PKCanvasView {
+        let view = PKCanvasView()
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.isScrollEnabled = false
+        view.isUserInteractionEnabled = false
+        view.overrideUserInterfaceStyle = .light
+        return view
+    }
+
+    func updateUIView(_ uiView: PKCanvasView, context: Context) {
+        guard context.coordinator.generation != generation else { return }
+        context.coordinator.generation = generation
+        uiView.drawing = drawing
+    }
+}
+
 struct ShapePreviewOverlay: UIViewRepresentable {
     let drawing: PKDrawing
 

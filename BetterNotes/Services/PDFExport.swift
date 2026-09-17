@@ -167,8 +167,19 @@ enum PDFExport {
               let drawing = try? PKDrawing(data: data) else { return }
         let bounds = drawing.bounds
         guard bounds.width > 0, bounds.height > 0 else { return }
-        // Draw the ink at its natural position.
-        let img = drawing.image(from: bounds, scale: 2)
+        // PKDrawing.image(from:scale:) rasterizes "black" ink as a dynamic
+        // color that PencilKit inverts to white for dark-mode canvases, and it
+        // resolves that against whatever UITraitCollection.current happens to
+        // be when this runs -- which, off the live canvas (PaperCanvas already
+        // pins a fixed, non-dynamic UIColor for exactly this reason), is
+        // whatever the device's system appearance is at export time. In dark
+        // mode that rendered every black stroke white, invisible against the
+        // PDF's white page. Pin the trait collection to light here so ink
+        // exports the same regardless of the device's current appearance.
+        var img = UIImage()
+        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+            img = drawing.image(from: bounds, scale: 2)
+        }
         img.draw(in: bounds)
     }
 
@@ -206,6 +217,8 @@ enum PDFExport {
                 drawAudioBadge(element, in: frame)
             case .tape:
                 drawTape(element, in: frame)
+            case .assistantNote:
+                drawAssistantNote(element, in: frame)
             }
         }
     }
@@ -223,6 +236,37 @@ enum PDFExport {
         let insetFrame = frame.insetBy(dx: 8, dy: 6)
         attributed.draw(
             with: insetFrame,
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil
+        )
+    }
+
+    /// The assistant's on-page answer.
+    ///
+    /// Exported rather than skipped: an answer you asked for in ink is part of
+    /// the note, and a PDF that quietly drops it is a PDF that lies about the
+    /// page. Drawn in the same tint and face the editor uses.
+    private static func drawAssistantNote(_ element: PageElement, in frame: CGRect) {
+        let tint = UIColor(element.tint)
+        tint.withAlphaComponent(0.06).setFill()
+        UIBezierPath(roundedRect: frame, cornerRadius: 10).fill()
+        tint.withAlphaComponent(0.28).setStroke()
+        let border = UIBezierPath(roundedRect: frame, cornerRadius: 10)
+        border.lineWidth = 1
+        border.stroke()
+
+        guard let text = element.text, !text.isEmpty else { return }
+        let size = max(13, CGFloat(element.fontSize))
+        let font = UIFont(name: "Bradley Hand", size: size) ?? UIFont.systemFont(ofSize: size)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        let attributed = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .paragraphStyle: paragraph,
+            .foregroundColor: tint
+        ])
+        attributed.draw(
+            with: frame.insetBy(dx: 12, dy: 12),
             options: [.usesLineFragmentOrigin, .usesFontLeading],
             context: nil
         )

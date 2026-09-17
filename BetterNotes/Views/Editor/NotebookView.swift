@@ -60,7 +60,7 @@ struct NotebookView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var corpusStore: NoteCorpusStore
     @Query(sort: \Notebook.modifiedAt, order: .reverse) private var allNotebooks: [Notebook]
-    @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = true
+    @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = false
     @AppStorage(AppPreferenceKey.toolbarDock) private var toolbarDockRaw = ToolbarDock.top.rawValue
     @AppStorage(AppPreferenceKey.toolbarHintSeen) private var toolbarHintSeen = false
     @AppStorage(AppPreferenceKey.panHintSeen) private var panHintSeen = false
@@ -84,6 +84,10 @@ struct NotebookView: View {
     @State private var pageZoomScale: CGFloat = 1
     @State private var pageZoomRatio: CGFloat = 1
     @State private var pageZoomCommand: PageZoomCommand?
+    // Gesture-relative: MagnificationGesture reports a multiplier off its own
+    // start, not an absolute scale, so this pins down what pageZoomScale was
+    // when the current pinch began.
+    @State private var verticalZoomBaseScale: CGFloat = 1
     @State private var editorCanUndo = false
     @State private var editorCanRedo = false
     @State private var editorCanReplaceSelectedText = false
@@ -365,8 +369,8 @@ struct NotebookView: View {
                         pageCount: sortedPages.count,
                         isReadOnly: isReadOnly,
                         toolbarObstruction: .none,
-                        zoomScale: .constant(1),
-                        zoomRatio: .constant(1),
+                        zoomScale: $pageZoomScale,
+                        zoomRatio: $pageZoomRatio,
                         zoomCommand: .constant(nil),
                         canUndo: $editorCanUndo,
                         canRedo: $editorCanRedo,
@@ -375,12 +379,31 @@ struct NotebookView: View {
                         toolSettings: toolSettings,
                         command: $editorCommand,
                         pageTurnDirection: pageTurnDirection,
-                        onPageSwipe: { _ in }
+                        onPageSwipe: { _ in },
+                        // The whole vertical document zooms as one unit (see
+                        // PageEditorView.usesOwnZoomContainer) instead of each
+                        // page running its own independent pinch-to-zoom
+                        // UIScrollView -- that per-page zoom was the bug: it
+                        // turned every page into its own isolated zoomable
+                        // island rather than scaling the coherent document
+                        // when pinched. The shared pinch gesture below drives
+                        // pageZoomScale for every page at once.
+                        usesOwnZoomContainer: false
                     )
                     .id(page.persistentModelID)
                     .frame(width: page.pageOrientation.size.width, height: page.pageOrientation.size.height)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
+                    .scaleEffect(pageZoomScale, anchor: .top)
+                    // The frame must grow with the visual scale too, or
+                    // ScrollView keeps laying the stack out at the unscaled
+                    // size -- the same contentSize-vs-zoomScale mismatch that
+                    // once clamped single-page zoom short of the page bottom,
+                    // here it would clip/overlap neighboring pages instead.
+                    .frame(
+                        width: page.pageOrientation.size.width * pageZoomScale,
+                        height: page.pageOrientation.size.height * pageZoomScale
+                    )
                     .onAppear {
                         // Track the current page for the page counter.
                         editorState.currentPageIndex = index
@@ -406,6 +429,16 @@ struct NotebookView: View {
             .padding(.vertical, 24)
         }
         .background(Color(.systemGroupedBackground))
+        .simultaneousGesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    let target = verticalZoomBaseScale * value
+                    pageZoomScale = min(max(target, 0.5), 4.0)
+                }
+                .onEnded { _ in
+                    verticalZoomBaseScale = pageZoomScale
+                }
+        )
     }
 
     // MARK: - Navigation
@@ -423,6 +456,7 @@ struct NotebookView: View {
                         lassoMode: lassoMode,
                         toolSettings: toolSettings,
                         availableWidth: geometry.size.width,
+                        dock: .bottom,
                         isReadOnly: isReadOnly,
                         canUndo: editorCanUndo,
                         canRedo: editorCanRedo,
@@ -708,9 +742,16 @@ struct NotebookView: View {
 
     private func exportNotebook() {
         _ = saveChanges()
-        let data = PDFExport.renderNotebook(notebook)
-        notebookPDFURL = PDFExport.writePDF(data, name: notebook.title)
-        showingNotebookShare = true
+        // Same deferral as LibraryView.exportNotebook: this fires from the
+        // "..." Menu's action closure while it's still dismissing, and
+        // presenting the share sheet in that same run-loop turn races the
+        // menu's own transition — UIKit can leave the sheet showing with
+        // nothing drawn inside it. Waiting a turn lets the menu finish first.
+        DispatchQueue.main.async {
+            let data = PDFExport.renderNotebook(notebook)
+            notebookPDFURL = PDFExport.writePDF(data, name: notebook.title)
+            showingNotebookShare = true
+        }
     }
 
     private func importPDF(_ result: Result<[URL], Error>) {
@@ -871,6 +912,7 @@ struct NotebookView: View {
                 lassoMode: lassoMode,
                 toolSettings: toolSettings,
                 availableWidth: EditorToolbarLayout.contentWidth(for: size.width),
+                dock: ToolbarDock(rawValue: toolbarDockRaw) ?? .top,
                 isReadOnly: isReadOnly,
                 canUndo: editorCanUndo,
                 canRedo: editorCanRedo,
@@ -1661,6 +1703,11 @@ private struct ThumbnailElement: View {
                 Image(systemName: "waveform").foregroundStyle(.secondary)
             case .tape:
                 Image(systemName: "bandage.fill").foregroundStyle(.gray)
+            case .assistantNote:
+                Text(element.text ?? "")
+                    .font(.system(size: max(3, CGFloat(element.fontSize) * scale)))
+                    .lineLimit(3)
+                    .foregroundStyle(element.tint)
             }
         }
         .frame(width: element.width * scale, height: element.height * scale)

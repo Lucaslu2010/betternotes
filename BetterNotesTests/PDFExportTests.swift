@@ -1,5 +1,6 @@
 import XCTest
 import PDFKit
+import PencilKit
 import UIKit
 @testable import BetterNotes
 
@@ -97,6 +98,42 @@ final class PDFExportTests: XCTestCase {
         XCTAssertEqual(size.height, PageOrientation.portrait.size.height, accuracy: 1)
     }
 
+    private func blackPenStroke(from start: CGPoint, to end: CGPoint) -> PKStroke {
+        let controlPoints = [start, end].enumerated().map { index, point in
+            PKStrokePoint(
+                location: point,
+                timeOffset: TimeInterval(index) * 0.01,
+                size: CGSize(width: 4, height: 4),
+                opacity: 1,
+                force: 1,
+                azimuth: 0,
+                altitude: .pi / 2
+            )
+        }
+        return PKStroke(ink: PKInk(.pen, color: .black),
+                        path: PKStrokePath(controlPoints: controlPoints, creationDate: .now))
+    }
+
+    /// PKDrawing.image(from:scale:) renders "black" ink adaptively -- inverted
+    /// to white so it stays visible against a dark canvas -- resolved against
+    /// whatever UITraitCollection.current is when it runs. Exporting while the
+    /// device is in Dark Mode used to render every black stroke white,
+    /// invisible against the PDF's white page; PDFExport must pin the trait
+    /// collection to light regardless of the ambient appearance.
+    func testBlackInkStaysBlackWhenExportedInDarkMode() throws {
+        let page = Page(index: 0)
+        let drawing = PKDrawing(strokes: [blackPenStroke(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 400, y: 100))])
+        page.inkData = drawing.dataRepresentation()
+
+        var pdfData = Data()
+        UITraitCollection(userInterfaceStyle: .dark).performAsCurrent {
+            pdfData = PDFExport.renderPage(page)
+        }
+        let (image, _) = try raster(pdfData)
+        let box = try boundingBox(of: image) { r, g, b in r < 120 && g < 120 && b < 120 }
+        XCTAssertNotNil(box, "black ink exported while the device is in Dark Mode came out invisible (white on white)")
+    }
+
     func testAnElementIsExportedWhereItSitsOnThePage() throws {
         let center = CGPoint(x: 300, y: 400)
         let page = page(with: [imageElement(.black, at: center, size: CGSize(width: 100, height: 60))])
@@ -107,6 +144,21 @@ final class PDFExportTests: XCTestCase {
         XCTAssertEqual(box.midY, center.y, accuracy: 3)
         XCTAssertEqual(box.width, 100, accuracy: 3)
         XCTAssertEqual(box.height, 60, accuracy: 3)
+    }
+
+    func testAnAssistantAnswerIsExportedWithThePage() throws {
+        // An answer asked for in ink is part of the note. A PDF that silently
+        // drops it hands someone a page with a question and no reply.
+        let answer = PageElement(type: .assistantNote, x: 300, y: 400, width: 320, height: 150)
+        answer.text = "Because it kept the French stress on the second syllable."
+        answer.colorHex = "000000"
+        let (image, _) = try raster(PDFExport.renderPage(page(with: [answer])))
+        let box = try XCTUnwrap(
+            try boundingBox(of: image) { r, g, b in r < 200 && g < 200 && b < 200 },
+            "the assistant's answer was dropped from the export"
+        )
+        XCTAssertEqual(box.midX, 300, accuracy: 12)
+        XCTAssertEqual(box.midY, 400, accuracy: 40)
     }
 
     func testARotatedElementIsExportedRotated() throws {

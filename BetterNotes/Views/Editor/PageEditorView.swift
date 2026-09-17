@@ -31,9 +31,21 @@ struct PageEditorView: View {
     @Binding var command: EditorCommand?
     let pageTurnDirection: PageTurnDirection
     var onPageSwipe: (PageSwipeDirection) -> Void = { _ in }
+    // Vertical scroll mode zooms the whole multi-page document as one unit
+    // (see NotebookView.verticalScrollContent) instead of letting each page
+    // run its own independent pinch-to-zoom UIScrollView -- that per-page
+    // zoom was the bug: pinching one page turned it into its own isolated
+    // zoomable island rather than scaling the coherent document. When false,
+    // this view renders its content at a fixed size and leaves zooming
+    // (and the page-swipe/blank-canvas-paste gestures that live on
+    // ZoomablePageView) to the caller.
+    var usesOwnZoomContainer = true
 
     @Environment(\.modelContext) private var context
-    @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = true
+    @EnvironmentObject private var inkAnswers: InkAnswerCoordinator
+    @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = false
+    @AppStorage(AppPreferenceKey.assistantEnabled) private var assistantEnabled = true
+    @AppStorage(AppPreferenceKey.inkQuestionsEnabled) private var inkQuestionsEnabled = true
 
     @State private var canvas: PKCanvasView = PencilInputCanvasView()
 
@@ -43,6 +55,15 @@ struct PageEditorView: View {
     /// Shared selection for ink strokes and page elements.
     @State private var selectionState = SelectionState()
     @State private var lockedExcludedElementIDs: Set<PersistentIdentifier> = []
+
+    /// The element currently being written into by the assistant.
+    @State private var answeringElementID: PersistentIdentifier?
+    @State private var isPreparingInkQuestion = false
+    /// A handwritten question the OCR pass spotted, waiting to be accepted.
+    @State private var detectedInkQuestion: InkQuestion?
+    /// Questions already offered or answered, so the 1 s OCR debounce cannot
+    /// keep re-offering the same sentence every time a stroke lands near it.
+    @State private var handledQuestionFingerprints: Set<Int> = []
 
     @State private var showingImagePicker = false
     @State private var showingDocumentScanner = false
@@ -82,6 +103,34 @@ struct PageEditorView: View {
     @State private var isUsingInkTool = false
     @State private var heldShapePreview: PKDrawing?
     @State private var isTransformingInkSelection = false
+
+    /// Ink lifted out of the PencilKit canvas for the duration of a drag.
+    ///
+    /// Routing a live transform through PencilKit means the ink is repainted
+    /// asynchronously, a frame or two after the SwiftUI selection outline has
+    /// already moved -- measured at only 0.36ms of work per frame, so this is
+    /// presentation latency, not cost, and shaving the per-frame work cannot
+    /// close it. Instead the selected strokes leave the canvas once when the
+    /// drag starts and are drawn in an overlay, which the same SwiftUI
+    /// transaction that moves the outline also transforms. Ink and outline are
+    /// then updated together by construction. Real stroke geometry is written
+    /// back once, on release.
+    @State private var liftedInk: LiftedInk?
+
+    struct LiftedInk {
+        /// The lifted strokes, still in their pre-gesture geometry.
+        let drawing: PKDrawing
+        /// Where each lifted stroke sat in the canvas. Ascending, so committing
+        /// can reinsert them in place and preserve stacking order.
+        let indices: [Int]
+        /// Bumped only when the lifted set changes, so the overlay can skip
+        /// re-assigning (and so re-rendering) an unchanged drawing every frame.
+        let generation: Int
+        /// Accumulated transform for this gesture.
+        var transform: CGAffineTransform = .identity
+    }
+
+    @State private var liftedInkGeneration = 0
     @State private var visiblePageCenter: CGPoint = .zero
     @State private var cachedSelectionPayload: SelectionPayload?
 
@@ -130,6 +179,8 @@ struct PageEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
+                Group {
+                    if usesOwnZoomContainer {
                         ZoomablePageView(
                             pageSize: page.pageOrientation.size,
                             // When finger drawing is off, one finger can pan
@@ -137,189 +188,22 @@ struct PageEditorView: View {
                             // the rectangular lasso is active, two fingers are
                             // reserved for page panning.
                             panRequiresTwoFingers: pagePanRequiresTwoFingers,
-                    onPageSwipe: onPageSwipe,
-                    zoomCommand: $zoomCommand,
-                    zoomScale: $zoomScale,
-                    zoomRatio: $zoomRatio,
-                    visiblePageCenter: $visiblePageCenter,
-                    canShowBlankCanvasMenu: { point in canShowBlankCanvasPasteMenu(at: point) },
-                    onBlankCanvasMenuWillShow: {
-                        canvasCoordinator.coordinator?.cancelTentativeFingerMark()
-                    },
-                    onBlankCanvasPaste: pasteSelection
-                ) {
-                    ZStack {
-                        PageBackground(
-                            backgroundHex: page.backgroundHex,
-                            lineStyle: page.lines,
-                            orientation: page.pageOrientation
-                        )
-                        .id(page.backgroundHex + page.lineStyle + page.orientation)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            // Tapping blank page must dismiss a lasso
-                            // selection too, not just an element one. The
-                            // selection context bar -- Copy, Delete, the rest
-                            // -- is gated on `selectionState`, so clearing
-                            // only `selectedElementID` left the bar on screen
-                            // over a selection the user had visibly tapped
-                            // away from, with no way to dismiss it but to
-                            // start drawing. Whether a tap landed here or on
-                            // the canvas below depended on the page's aspect
-                            // ratio, which is why it reproduced on an iPad Air
-                            // and not in a larger simulator.
-                            DispatchQueue.main.async {
-                                clearSelection()
-                            }
+                            onPageSwipe: onPageSwipe,
+                            zoomCommand: $zoomCommand,
+                            zoomScale: $zoomScale,
+                            zoomRatio: $zoomRatio,
+                            visiblePageCenter: $visiblePageCenter,
+                            canShowBlankCanvasMenu: { point in canShowBlankCanvasPasteMenu(at: point) },
+                            onBlankCanvasMenuWillShow: {
+                                canvasCoordinator.coordinator?.cancelTentativeFingerMark()
+                            },
+                            onBlankCanvasPaste: pasteSelection
+                        ) {
+                            pageContent
                         }
-
-                        // ElementOverlay goes BELOW the canvas so ink strokes
-                        // are always drawn on top of elements (including PDF
-                        // page images). This lets users write on imported PDFs.
-                        // Finger touches over element regions pass through the
-                        // canvas for dragging/tapping; open areas still draw.
-                        ElementOverlay(
-                            elements: $page.elements,
-                            selectedID: $selectedElementID,
-                            isInteractive: !isReadOnly,
-                            allowsDirectImageManipulation: !isReadOnly,
-                            // Allow tap-to-deselect when tapping blank page
-                            // areas. The ElementOverlay's background
-                            // color.clear only activates when no element is
-                            // under the tap point, so element taps still work.
-                            backgroundClearsSelection: false,
-                            playingAudioElementID: audio.playingElementID,
-                            audioIsPlaying: audio.isPlaying,
-                            audioPlaybackProgress: audio.playbackProgress,
-                            onTextEdit: openTextEditor,
-                            onAudioToggle: toggleAudio,
-                            onAudioSeek: { element, progress in
-                                audio.seek(to: progress)
-                            },
-                            onAudioTranscribe: transcribeAudio,
-                            onDelete: { element in
-                                deleteElement(element)
-                            },
-                            onDuplicate: { element in
-                                duplicateElement(element)
-                            },
-                            onMutationBegan: beginElementMutation,
-                            onMutationEnded: finishElementMutation
-                        )
-
-                        PaperCanvas(
-                            canvasView: $canvas,
-                            tool: tool,
-                            // Use a fixed (non-dynamic) UIColor so ink colors
-                            // don't flip in dark mode. The page is always white,
-                            // so black ink must stay black regardless of system
-                            // appearance.
-                            color: toolSettings.fixedUIColor(for: tool),
-                            lineWidth: toolSettings.width(for: tool),
-                            generatedShapeStyle: toolSettings.generatedShapeStyle(for: tool),
-                            eraserWidth: toolSettings.eraserWidth,
-                            eraserStyle: toolSettings.eraserStyle,
-                            lassoMode: toolSettings.lassoMode,
-                            isReadOnly: isReadOnly,
-                            allowsFingerDrawing: allowsFingerDrawing,
-                            elementInteractionRects: elementInteractionRects,
-                            inkData: page.inkData,
-                            beautifiesHandwriting: toolSettings.beautifyHandwriting,
-                            canvasInkOpacity: heldShapePreview == nil ? 1 : 0.22,
-                            onDrawingChange: { _ in onDrawingChanged() },
-                            onToolUseChange: { isUsing in
-                                isUsingInkTool = isUsing
-                                // Starting to draw/erase clears element
-                                // selection so resize handles disappear.
-                                if isUsing {
-                                    clearSelection()
-                                } else {
-                                    persistInk()
-                                }
-                            },
-                            onShapePreviewChange: { preview in
-                                heldShapePreview = preview
-                            },
-                            coordinatorHolder: canvasCoordinator
-                        )
-                        .ignoresSafeArea(.keyboard)
-
-                        VectorInkOverlay(
-                            drawingData: page.inkData,
-                            pageSize: page.pageOrientation.size,
-                            zoomScale: zoomScale,
-                            isEnabled: highResolutionInkOverlayActive
-                        )
-                        .frame(width: page.pageOrientation.size.width, height: page.pageOrientation.size.height)
-                        .allowsHitTesting(false)
-
-                        if let heldShapePreview {
-                            ShapePreviewOverlay(drawing: heldShapePreview)
-                                .frame(
-                                    width: page.pageOrientation.size.width,
-                                    height: page.pageOrientation.size.height
-                                )
-                                .allowsHitTesting(false)
-                        }
-
-                        // Tape display layer: tape elements are re-rendered
-                        // ABOVE the ink canvas so they can cover/hide ink
-                        // strokes as intended. This is display-only; the
-                        // interactive tape elements remain in ElementOverlay
-                        // below for tap/drag handling.
-                        TapeDisplayLayer(elements: page.elements)
-                            .frame(
-                                width: page.pageOrientation.size.width,
-                                height: page.pageOrientation.size.height
-                            )
-                            .allowsHitTesting(false)
-
-                        if !isReadOnly && tool == .lasso {
-                            UnifiedLassoOverlay(
-                                mode: toolSettings.lassoMode,
-                                selectionBounds: selectionState.bounds,
-                                onRectangle: selectContent(in:),
-                                onFreeform: selectContent(in:),
-                                onClear: clearSelection
-                            )
-                        }
-
-                        if !isReadOnly, !selectionState.bounds.isNull, tool == .lasso {
-                            SelectionHandles(
-                                bounds: selectionState.bounds,
-                                pageSize: page.pageOrientation.size,
-                                onResize: { scaleX, scaleY, anchor in
-                                    transformSelection(
-                                        scaleX: scaleX,
-                                        scaleY: scaleY,
-                                        rotation: 0,
-                                        anchor: anchor
-                                    )
-                                },
-                                onRotate: { rotationDelta in
-                                    transformSelection(
-                                        rotation: rotationDelta,
-                                        anchor: CGPoint(x: selectionState.bounds.midX, y: selectionState.bounds.midY)
-                                    )
-                                },
-                                onMove: { translationDelta in
-                                    transformSelection(
-                                        translation: translationDelta
-                                    )
-                                },
-                                onMutationBegan: beginInkSelectionMutation,
-                                onMutationEnded: finishInkSelectionMutation,
-                                onClear: clearSelection
-                            )
-                        }
-                        LockedSelectionMarkers(elements: page.elements.filter { lockedExcludedElementIDs.contains($0.id) })
+                    } else {
+                        pageContent
                     }
-                    .frame(width: page.pageOrientation.size.width, height: page.pageOrientation.size.height)
-                    .clipShape(Rectangle())
-                    .overlay(
-                        Rectangle()
-                            .stroke(Color.black.opacity(0.16), lineWidth: 1)
-                    )
                 }
                 .offset(x: pageSlideOffset)
                 .background(
@@ -404,6 +288,8 @@ struct PageEditorView: View {
         .overlay(alignment: .bottom) {
             if !selectionState.isEmpty, !isReadOnly {
                 SelectionContextBar(
+                    canAsk: canAskAboutSelection,
+                    onAsk: askAboutSelection,
                     canPaste: clipboardPayload() != nil,
                     canLock: !selectionState.elementIDs.isEmpty,
                     canBringForward: canMoveSelectionElements(forward: true),
@@ -451,7 +337,7 @@ struct PageEditorView: View {
             visiblePageCenter = CGPoint(x: page.pageOrientation.size.width / 2, y: page.pageOrientation.size.height / 2)
             lastRecordedStrokeCount = canvas.drawing.strokes.count
             if !canvas.drawing.strokes.isEmpty && page.ocrText.isEmpty {
-                scheduleHandwritingOCR()
+                scheduleHandwritingOCR(offersQuestions: false)
             }
         }
         .task {
@@ -494,9 +380,12 @@ struct PageEditorView: View {
         }
         .onDisappear {
             canReplaceSelectedText = false
+            commitLiftedInk()
             canvasCoordinator.coordinator?.cancelShapeRecognition()
             heldShapePreview = nil
             handwritingOCRTask?.cancel()
+            stopStreamingAnswer()
+            detectedInkQuestion = nil
             transcriptionTask?.cancel()
             transcriptionRequestID = nil
             audio.cancelTranscription()
@@ -574,6 +463,210 @@ struct PageEditorView: View {
         } message: {
             Text(saveError ?? "")
         }
+    }
+
+    @ViewBuilder
+    private var pageContent: some View {
+        ZStack {
+            PageBackground(
+                backgroundHex: page.backgroundHex,
+                lineStyle: page.lines,
+                orientation: page.pageOrientation
+            )
+            .id(page.backgroundHex + page.lineStyle + page.orientation)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                // Tapping blank page must dismiss a lasso
+                // selection too, not just an element one. The
+                // selection context bar -- Copy, Delete, the rest
+                // -- is gated on `selectionState`, so clearing
+                // only `selectedElementID` left the bar on screen
+                // over a selection the user had visibly tapped
+                // away from, with no way to dismiss it but to
+                // start drawing. Whether a tap landed here or on
+                // the canvas below depended on the page's aspect
+                // ratio, which is why it reproduced on an iPad Air
+                // and not in a larger simulator.
+                DispatchQueue.main.async {
+                    clearSelection()
+                }
+            }
+
+            // ElementOverlay goes BELOW the canvas so ink strokes
+            // are always drawn on top of elements (including PDF
+            // page images). This lets users write on imported PDFs.
+            // Finger touches over element regions pass through the
+            // canvas for dragging/tapping; open areas still draw.
+            ElementOverlay(
+                elements: $page.elements,
+                selectedID: $selectedElementID,
+                isInteractive: !isReadOnly,
+                allowsDirectImageManipulation: !isReadOnly,
+                // Allow tap-to-deselect when tapping blank page
+                // areas. The ElementOverlay's background
+                // color.clear only activates when no element is
+                // under the tap point, so element taps still work.
+                backgroundClearsSelection: false,
+                playingAudioElementID: audio.playingElementID,
+                audioIsPlaying: audio.isPlaying,
+                audioPlaybackProgress: audio.playbackProgress,
+                onTextEdit: openTextEditor,
+                onAudioToggle: toggleAudio,
+                onAudioSeek: { element, progress in
+                    audio.seek(to: progress)
+                },
+                onAudioTranscribe: transcribeAudio,
+                onDelete: { element in
+                    deleteElement(element)
+                },
+                onDuplicate: { element in
+                    duplicateElement(element)
+                },
+                onMutationBegan: beginElementMutation,
+                onMutationEnded: finishElementMutation
+            )
+
+            PaperCanvas(
+                canvasView: $canvas,
+                tool: tool,
+                // Use a fixed (non-dynamic) UIColor so ink colors
+                // don't flip in dark mode. The page is always white,
+                // so black ink must stay black regardless of system
+                // appearance.
+                color: toolSettings.fixedUIColor(for: tool),
+                lineWidth: toolSettings.width(for: tool),
+                generatedShapeStyle: toolSettings.generatedShapeStyle(for: tool),
+                eraserWidth: toolSettings.eraserWidth,
+                eraserStyle: toolSettings.eraserStyle,
+                lassoMode: toolSettings.lassoMode,
+                isReadOnly: isReadOnly,
+                allowsFingerDrawing: allowsFingerDrawing,
+                elementInteractionRects: elementInteractionRects,
+                inkData: page.inkData,
+                beautifiesHandwriting: toolSettings.beautifyHandwriting,
+                canvasInkOpacity: heldShapePreview == nil ? 1 : 0.22,
+                onDrawingChange: { _ in onDrawingChanged() },
+                onToolUseChange: { isUsing in
+                    isUsingInkTool = isUsing
+                    // Starting to draw/erase clears element
+                    // selection so resize handles disappear.
+                    if isUsing {
+                        clearSelection()
+                    } else {
+                        persistInk()
+                    }
+                },
+                onShapePreviewChange: { preview in
+                    heldShapePreview = preview
+                },
+                coordinatorHolder: canvasCoordinator
+            )
+            .ignoresSafeArea(.keyboard)
+
+            VectorInkOverlay(
+                drawingData: page.inkData,
+                pageSize: page.pageOrientation.size,
+                zoomScale: zoomScale,
+                isEnabled: highResolutionInkOverlayActive
+            )
+            .frame(width: page.pageOrientation.size.width, height: page.pageOrientation.size.height)
+            .allowsHitTesting(false)
+
+            if let liftedInk {
+                // `.transformEffect` is a geometry effect, so this
+                // moves in the same SwiftUI transaction as the
+                // selection outline -- the two cannot desync.
+                LiftedInkOverlay(
+                    drawing: liftedInk.drawing,
+                    generation: liftedInk.generation
+                )
+                .frame(
+                    width: page.pageOrientation.size.width,
+                    height: page.pageOrientation.size.height
+                )
+                .transformEffect(liftedInk.transform)
+                .allowsHitTesting(false)
+            }
+
+            if let heldShapePreview {
+                ShapePreviewOverlay(drawing: heldShapePreview)
+                    .frame(
+                        width: page.pageOrientation.size.width,
+                        height: page.pageOrientation.size.height
+                    )
+                    .allowsHitTesting(false)
+            }
+
+            // Tape display layer: tape elements are re-rendered
+            // ABOVE the ink canvas so they can cover/hide ink
+            // strokes as intended. This is display-only; the
+            // interactive tape elements remain in ElementOverlay
+            // below for tap/drag handling.
+            TapeDisplayLayer(elements: page.elements)
+                .frame(
+                    width: page.pageOrientation.size.width,
+                    height: page.pageOrientation.size.height
+                )
+                .allowsHitTesting(false)
+
+            if !isReadOnly && tool == .lasso {
+                UnifiedLassoOverlay(
+                    mode: toolSettings.lassoMode,
+                    selectionBounds: selectionState.bounds,
+                    onRectangle: selectContent(in:),
+                    onFreeform: selectContent(in:),
+                    onClear: clearSelection
+                )
+            }
+
+            if !isReadOnly, !selectionState.bounds.isNull, tool == .lasso {
+                SelectionHandles(
+                    bounds: selectionState.bounds,
+                    pageSize: page.pageOrientation.size,
+                    onResize: { scaleX, scaleY, anchor in
+                        transformSelection(
+                            scaleX: scaleX,
+                            scaleY: scaleY,
+                            rotation: 0,
+                            anchor: anchor
+                        )
+                    },
+                    onRotate: { rotationDelta in
+                        transformSelection(
+                            rotation: rotationDelta,
+                            anchor: CGPoint(x: selectionState.bounds.midX, y: selectionState.bounds.midY)
+                        )
+                    },
+                    onMove: { translationDelta in
+                        transformSelection(
+                            translation: translationDelta
+                        )
+                    },
+                    onMutationBegan: beginInkSelectionMutation,
+                    onMutationEnded: finishInkSelectionMutation,
+                    onClear: clearSelection
+                )
+            }
+            LockedSelectionMarkers(elements: page.elements.filter { lockedExcludedElementIDs.contains($0.id) })
+
+            if let question = detectedInkQuestion, !isReadOnly {
+                InkQuestionPrompt(
+                    question: question,
+                    pageSize: page.pageOrientation.size,
+                    onAccept: { beginInkAnswer(to: question) },
+                    onDismiss: {
+                        handledQuestionFingerprints.insert(question.fingerprint)
+                        detectedInkQuestion = nil
+                    }
+                )
+            }
+        }
+        .frame(width: page.pageOrientation.size.width, height: page.pageOrientation.size.height)
+        .clipShape(Rectangle())
+        .overlay(
+            Rectangle()
+                .stroke(Color.black.opacity(0.16), lineWidth: 1)
+        )
     }
 
     private var displayedSaveStatus: EditorSaveStatus? { saveStatus }
@@ -697,6 +790,9 @@ struct PageEditorView: View {
         transcriptionTask?.cancel()
         transcribingAudioElementID = nil
         isUsingInkTool = false
+        // Before saveInk below: lifted strokes are not in the canvas, so
+        // saving without committing would write the page without them.
+        commitLiftedInk()
         isTransformingInkSelection = false
 
         // Save the OLD page's ink BEFORE doing anything else. This must happen
@@ -707,6 +803,12 @@ struct PageEditorView: View {
         saveChanges()
 
         handwritingOCRTask?.cancel()
+        // An answer still streaming belongs to the page being left. Let it
+        // finish writing into the outgoing page and it lands on the incoming
+        // one instead, which is the same failure `updateHandwritingOCR` guards.
+        stopStreamingAnswer()
+        detectedInkQuestion = nil
+        handledQuestionFingerprints.removeAll()
         selectedElementID = nil
         clearSelection()
         history.clearAll()
@@ -731,7 +833,7 @@ struct PageEditorView: View {
         isSwitchingPages = false
         lastRecordedStrokeCount = canvas.drawing.strokes.count
         if !canvas.drawing.strokes.isEmpty && page.ocrText.isEmpty {
-            scheduleHandwritingOCR()
+            scheduleHandwritingOCR(offersQuestions: false)
         }
         animatePageSurfaceIn()
     }
@@ -819,6 +921,225 @@ struct PageEditorView: View {
         showNotice("AI result added to the page")
     }
 
+    // MARK: Ask on the page
+
+    /// Anything with words in it can be asked about: ink, or the text of a
+    /// selected box, sticky note or smart-imported image.
+    private var canAskAboutSelection: Bool {
+        guard assistantEnabled, !isReadOnly, !isPreparingInkQuestion else { return false }
+        if !selectionState.strokeIndices.isEmpty { return true }
+        return page.elements.contains { element in
+            selectionState.elementIDs.contains(element.id)
+                && !(element.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// Read the lassoed content as a question and answer it on the page.
+    private func askAboutSelection() {
+        guard canAskAboutSelection else { return }
+        let bounds = selectionState.bounds
+        let strokes = selectionState.strokeIndices.sorted().compactMap { index -> PKStroke? in
+            guard canvas.drawing.strokes.indices.contains(index) else { return nil }
+            return canvas.drawing.strokes[index]
+        }
+        let selectedText = page.elements
+            .filter { selectionState.elementIDs.contains($0.id) && $0.type != .assistantNote }
+            .compactMap { $0.text?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let pageSize = page.pageOrientation.size
+        let targetPageID = page.persistentModelID
+
+        isPreparingInkQuestion = true
+        Task { @MainActor in
+            let recognized = strokes.isEmpty
+                ? ""
+                : await HandwritingOCR.recognizeText(from: PKDrawing(strokes: strokes), pageSize: pageSize)
+            // The user can swipe pages while Vision is working; writing the
+            // answer onto whatever page arrived next is the same class of bug
+            // `updateHandwritingOCR` guards against.
+            guard page.persistentModelID == targetPageID else {
+                isPreparingInkQuestion = false
+                return
+            }
+            isPreparingInkQuestion = false
+
+            let question = ([recognized] + selectedText)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            guard !question.isEmpty else {
+                showNotice("Nothing readable in that selection")
+                return
+            }
+            beginInkAnswer(to: InkQuestion(text: question, bounds: bounds))
+        }
+    }
+
+    /// Put an empty answer card on the page and start writing into it.
+    ///
+    /// The card appears before the first token arrives on purpose: the whole
+    /// appeal of asking in ink is watching the reply land next to what you
+    /// wrote, and a spinner somewhere else on screen is not that.
+    private func beginInkAnswer(to question: InkQuestion) {
+        guard !isReadOnly, assistantEnabled else { return }
+        handledQuestionFingerprints.insert(question.fingerprint)
+        detectedInkQuestion = nil
+        clearSelection()
+
+        let pageSize = page.pageOrientation.size
+        let size = CGSize(
+            width: min(max(pageSize.width * 0.42, 220), pageSize.width - AnswerPlacement.margin * 2),
+            height: 150
+        )
+        let frame = AnswerPlacement.frame(
+            for: size,
+            near: question.bounds,
+            avoiding: occupiedPageRects(),
+            pageSize: pageSize
+        )
+
+        recordBeforeMutation()
+        let element = PageElement(
+            type: .assistantNote,
+            x: frame.midX,
+            y: frame.midY,
+            width: frame.width,
+            height: frame.height
+        )
+        element.text = ""
+        element.fontSize = 16
+        element.colorHex = "3C4A6B"
+        element.assistantPayload = AssistantNotePayload(
+            question: question.text,
+            anchor: question.bounds.isNull ? frame.origin : CGPoint(x: question.bounds.midX, y: question.bounds.maxY),
+            isStreaming: true
+        )
+        element.page = page
+        context.insert(element)
+        page.appendElement(element)
+        selectedElementID = element.id
+        answeringElementID = element.id
+        // Elements were just added; without this the selection bounds can keep
+        // ids that no longer describe what is on the page.
+        refreshSelectionBounds()
+        markPageModified()
+        saveChanges()
+
+        let elementID = element.id
+        inkAnswers.answer(
+            question: question.text,
+            notebookID: page.notebook?.stableID,
+            pageID: page.stableID,
+            pageContext: pageContextText(excluding: elementID)
+        ) { update in
+            applyInkAnswer(update, to: elementID)
+        }
+    }
+
+    private func applyInkAnswer(_ update: InkAnswerCoordinator.Update, to elementID: PersistentIdentifier) {
+        guard let element = page.elements.first(where: { $0.id == elementID }),
+              element.modelContext != nil else { return }
+        element.text = update.text
+        // Saving per token would hammer SwiftData for every few characters,
+        // and re-encoding the payload per token would re-serialise JSON just
+        // as often. The draft lives in memory until the answer is finished.
+        guard !update.isStreaming else { return }
+
+        var payload = element.assistantPayload ?? AssistantNotePayload(question: "")
+        payload.isStreaming = false
+        payload.citations = update.citations
+        payload.notice = update.notice
+        element.assistantPayload = payload
+        answeringElementID = nil
+        growInkAnswer(element)
+        markPageModified()
+        saveChanges()
+        if let error = update.error, update.text.isEmpty {
+            showNotice(error)
+        }
+    }
+
+    /// Stop an answer mid-sentence and leave the card in a settled state.
+    ///
+    /// Without clearing the flag, a card abandoned by a page swipe keeps
+    /// saying "writing…" forever -- there is no longer anything running that
+    /// could ever turn it off.
+    private func stopStreamingAnswer() {
+        inkAnswers.cancel()
+        guard let elementID = answeringElementID else { return }
+        answeringElementID = nil
+        guard let element = page.elements.first(where: { $0.id == elementID }),
+              element.modelContext != nil else { return }
+        if (element.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Nothing was ever written into it; an empty card is just litter.
+            context.delete(element)
+            page.elements.removeAll { $0.id == elementID }
+            refreshSelectionBounds()
+        } else {
+            var payload = element.assistantPayload ?? AssistantNotePayload(question: "")
+            payload.isStreaming = false
+            payload.notice = "Stopped before the answer finished."
+            element.assistantPayload = payload
+            growInkAnswer(element)
+        }
+        markPageModified()
+        saveChanges()
+    }
+
+    /// Size the card to the answer it ended up holding.
+    private func growInkAnswer(_ element: PageElement) {
+        let text = element.text ?? ""
+        guard !text.isEmpty else { return }
+        let width = CGFloat(element.width)
+        let font = UIFont(name: "Bradley Hand", size: max(13, CGFloat(element.fontSize)))
+            ?? UIFont.systemFont(ofSize: max(13, CGFloat(element.fontSize)))
+        let bounding = (text as NSString).boundingRect(
+            with: CGSize(width: width - 24, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font],
+            context: nil
+        )
+        let pageSize = page.pageOrientation.size
+        let height = min(max(ceil(bounding.height) + 52, 100), pageSize.height - AnswerPlacement.margin * 2)
+        element.height = Double(height)
+        let centre = AnswerPlacement.clampedCentre(
+            CGPoint(x: element.posX, y: element.posY),
+            size: CGSize(width: width, height: height),
+            pageSize: pageSize
+        )
+        element.posX = Double(centre.x)
+        element.posY = Double(centre.y)
+    }
+
+    /// Everything already taking up room on the page, so an answer can be put
+    /// somewhere that is not on top of it.
+    private func occupiedPageRects() -> [CGRect] {
+        var rects = page.elements
+            .filter { $0.modelContext != nil }
+            .map { element in
+                CGRect(
+                    x: element.posX - element.width / 2,
+                    y: element.posY - element.height / 2,
+                    width: element.width,
+                    height: element.height
+                )
+            }
+        rects.append(contentsOf: canvas.drawing.strokes.map(\.renderBounds).filter { !$0.isNull && !$0.isEmpty })
+        return rects
+    }
+
+    /// The page as text, for context -- minus the card being written into, so
+    /// the assistant is never fed its own half-finished sentence.
+    private func pageContextText(excluding elementID: PersistentIdentifier?) -> String {
+        var parts = page.elements
+            .filter { $0.id != elementID && $0.type != .assistantNote }
+            .compactMap { $0.text?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let ocr = page.ocrText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !ocr.isEmpty { parts.append(ocr) }
+        return parts.joined(separator: "\n")
+    }
+
     private func replaceSelectedText(with text: String) {
         guard !isReadOnly, !text.isEmpty,
               let selectedElementID,
@@ -847,12 +1168,92 @@ struct PageEditorView: View {
 
     /// Programmatically sets canvas.drawing while suppressing the re-entry
     /// into onDrawingChanged that would otherwise cause double history/OCR/clear.
+    ///
+    /// PKCanvasView keeps an internal baseline it composites the *next* live
+    /// stroke against, and that baseline is only invalidated by a real
+    /// drawing/erasing gesture — not by assigning `.drawing` directly. Undo
+    /// used to do exactly that single assignment, so after removing strokes
+    /// the very next pencil stroke was composited on top of PencilKit's
+    /// stale pre-undo baseline, resurrecting everything just undone (erasing
+    /// never showed this because it always goes through the live gesture
+    /// path). Routing the reduced drawing through an intermediate empty
+    /// drawing forces PencilKit to actually observe the change and drop that
+    /// stale baseline before the target drawing is applied.
+    ///
+    /// The empty-drawing round-trip above was verified against synthesized
+    /// touch input, which is all UI-test automation can drive — XCTest has no
+    /// way to originate a real Apple Pencil event. PencilKit runs a separate,
+    /// lower-latency prediction/compositing path exclusively for genuine
+    /// Pencil strokes, so a stale baseline could still survive there even
+    /// though the touch path is proven clean. Cycling the canvas's own
+    /// drawingGestureRecognizer forces PencilKit to fully tear down and
+    /// rebuild whatever in-flight stroke state it's holding — for either
+    /// input type — as a second, belt-and-suspenders reset.
+    ///
+    /// One more gap: undoing all the way back to an empty page makes `drawing`
+    /// itself `PKDrawing()` — identical to the intermediate value above — so
+    /// that second assignment is a no-op PencilKit can (and does) optimize
+    /// away as "setting the same value again," and the stale baseline from
+    /// before the undo survives after all. `Self.transientResetDrawing` is an
+    /// off-page, invisible, throwaway stroke that can never equal a real
+    /// target, so the intermediate step is a genuine change every time.
+    ///
+    /// Still-reported gap: on a real device with actual Apple Pencil input
+    /// (which XCUITest cannot originate -- see above), the resurrection kept
+    /// happening even with both resets in place. The two assignments above
+    /// land in the same run-loop turn, and UIKit view property writes within
+    /// one turn are commonly coalesced into a single commit at the next
+    /// display pass -- so PencilKit may only ever have observed the *second*
+    /// value, never actually seeing the intermediate reset as a discrete
+    /// frame. Forcing a layout pass after the reset, then deferring the real
+    /// target to the *next* run loop turn, guarantees PencilKit processes them
+    /// as two separate frames. Reassigning `canvas.tool` afterwards is a
+    /// further reset: PencilKit ties some of its internal compositing state to
+    /// tool changes, so touching it is one more way to force that state to be
+    /// rebuilt against the drawing that's actually current.
+    ///
+    /// Tried and reverted: replacing `canvas` with a brand-new PKCanvasView
+    /// instance (plus an `.id()` bump to force PaperCanvas to rebuild around
+    /// it) on the theory that only a never-touched view is guaranteed free of
+    /// stale internal state. That regressed even the synthesized-touch tests
+    /// that had been reliably green: `canvas = fresh` and the `.id()` bump are
+    /// both @State writes SwiftUI coalesces into one render pass, but that
+    /// pass happens on the *next* run-loop turn, not synchronously here --
+    /// leaving a window where the old (still fully interactive) PKCanvasView
+    /// is what a touch immediately after undo actually lands on. Its internal
+    /// state was never touched, so this reintroduced the exact bug it was
+    /// meant to fix.
     private func setCanvasDrawing(_ drawing: PKDrawing) {
         isApplyingProgrammaticChange = true
-        canvas.drawing = drawing
-        isApplyingProgrammaticChange = false
-        lastRecordedStrokeCount = canvas.drawing.strokes.count
+        let gesture = canvas.drawingGestureRecognizer
+        gesture.isEnabled = false
+        canvas.drawing = Self.transientResetDrawing
+        canvas.setNeedsDisplay()
+        canvas.layoutIfNeeded()
+        DispatchQueue.main.async { [canvas] in
+            canvas.drawing = drawing
+            let tool = canvas.tool
+            canvas.tool = tool
+            gesture.isEnabled = true
+            self.isApplyingProgrammaticChange = false
+            self.lastRecordedStrokeCount = canvas.drawing.strokes.count
+        }
     }
+
+    private static let transientResetDrawing: PKDrawing = {
+        let point = PKStrokePoint(
+            location: CGPoint(x: -10_000, y: -10_000),
+            timeOffset: 0,
+            size: CGSize(width: 1, height: 1),
+            opacity: 0,
+            force: 1,
+            azimuth: 0,
+            altitude: .pi / 2
+        )
+        let path = PKStrokePath(controlPoints: [point], creationDate: .now)
+        let stroke = PKStroke(ink: PKInk(.pen, color: .clear), path: path)
+        return PKDrawing(strokes: [stroke])
+    }()
 
     private func onDrawingChanged() {
         guard !isReadOnly else { return }
@@ -934,7 +1335,11 @@ struct PageEditorView: View {
         }
     }
 
-    private func scheduleHandwritingOCR() {
+    /// `offersQuestions` is false for the passes that run just because a page
+    /// was opened. Recognition there is catching up on ink written earlier, and
+    /// prompting to answer a question from a previous session every time the
+    /// page is turned to is nagging, not help.
+    private func scheduleHandwritingOCR(offersQuestions: Bool = true) {
         let data = canvas.drawing.dataRepresentation()
         let pageSize = page.pageOrientation.size
         // Capture the page id so a late OCR result that completes AFTER a
@@ -950,7 +1355,8 @@ struct PageEditorView: View {
                 from: data,
                 pageSize: pageSize,
                 showProgress: false,
-                targetPageID: targetPageID
+                targetPageID: targetPageID,
+                offersQuestions: offersQuestions
             )
         }
     }
@@ -960,12 +1366,14 @@ struct PageEditorView: View {
         from data: Data?,
         pageSize: CGSize,
         showProgress: Bool,
-        targetPageID: PersistentIdentifier? = nil
+        targetPageID: PersistentIdentifier? = nil,
+        offersQuestions: Bool = true
     ) async {
         if showProgress {
             isRecognizingHandwriting = true
         }
-        let recognized = await HandwritingOCR.recognizeText(from: data, pageSize: pageSize)
+        let lines = await HandwritingOCR.recognizeLines(from: data, pageSize: pageSize)
+        let recognized = lines.map(\.text).joined(separator: "\n")
         guard !Task.isCancelled else {
             if showProgress { isRecognizingHandwriting = false }
             return
@@ -982,6 +1390,7 @@ struct PageEditorView: View {
         page.ocrText = recognized
         page.ocrUpdatedAt = .now
         saveChanges()
+        if offersQuestions { detectInkQuestion(in: lines) }
         if showProgress {
             isRecognizingHandwriting = false
             // Explicit user-triggered recognition previously gave no feedback
@@ -993,6 +1402,34 @@ struct PageEditorView: View {
                 let words = trimmed.split(whereSeparator: \.isWhitespace).count
                 showNotice("Recognized \(words) word\(words == 1 ? "" : "s")")
             }
+        }
+    }
+
+    /// Spot a handwritten question and offer to answer it.
+    ///
+    /// Offer, never answer: OCR runs a second after every stroke, and a Vision
+    /// misread that fired a request on its own would spend the user's own
+    /// provider key without them asking. The trigger is a doubled question
+    /// mark for the same reason -- a single `?` is ordinary punctuation.
+    private func detectInkQuestion(in lines: [HandwritingOCR.RecognizedLine]) {
+        guard inkQuestionsEnabled, assistantEnabled, !isReadOnly else {
+            detectedInkQuestion = nil
+            return
+        }
+        guard answeringElementID == nil else { return }
+
+        for line in lines.reversed() where InkQuestionDetector.isQuestion(line.text) {
+            let text = InkQuestionDetector.stripped(line.text)
+            guard !text.isEmpty else { continue }
+            let fingerprint = InkQuestion.fingerprint(of: text)
+            guard !handledQuestionFingerprints.contains(fingerprint) else { continue }
+            detectedInkQuestion = InkQuestion(text: text, bounds: line.bounds)
+            return
+        }
+        // The question was erased or rewritten; take the prompt away with it.
+        if let pending = detectedInkQuestion,
+           !lines.contains(where: { InkQuestion.fingerprint(of: InkQuestionDetector.stripped($0.text)) == pending.fingerprint }) {
+            detectedInkQuestion = nil
         }
     }
 
@@ -1339,6 +1776,20 @@ struct PageEditorView: View {
         return CGRect(x: CGFloat(element.posX) - rotatedWidth / 2, y: CGFloat(element.posY) - rotatedHeight / 2, width: rotatedWidth, height: rotatedHeight)
     }
 
+    /// Selection bounds that stay correct while ink is lifted out of the
+    /// canvas, where `combinedBounds` would find no strokes to measure.
+    private func liveSelectionBounds() -> CGRect {
+        guard let lifted = liftedInk else {
+            return combinedBounds(strokes: selectionState.strokeIndices, elements: selectionState.elementIDs)
+        }
+        var result = lifted.drawing.bounds.isNull ? .null : lifted.drawing.bounds.applying(lifted.transform)
+        for element in page.elements where selectionState.elementIDs.contains(element.id) {
+            result = result.union(elementSelectionBounds(element))
+        }
+        guard result.width.isFinite, result.height.isFinite else { return .null }
+        return result.isNull ? .null : result.insetBy(dx: -2, dy: -2)
+    }
+
     private func combinedBounds(strokes: Set<Int>, elements: Set<PersistentIdentifier>) -> CGRect {
         var result = CGRect.null
         for index in strokes where canvas.drawing.strokes.indices.contains(index) { result = result.union(canvas.drawing.strokes[index].renderBounds) }
@@ -1356,13 +1807,19 @@ struct PageEditorView: View {
                                     anchor: CGPoint = .zero) {
         guard !selectionState.isEmpty else { return }
         let transform = SelectionTransform.affine(scaleX: scaleX, scaleY: scaleY, rotation: rotation, translation: translation, anchor: anchor)
-        var strokes = canvas.drawing.strokes
-        for index in selectionState.strokeIndices where strokes.indices.contains(index) {
-            let stroke = strokes[index]
-            let combined = stroke.transform.concatenating(transform)
-            strokes[index] = PKStroke(ink: stroke.ink, path: stroke.path, transform: combined, mask: stroke.mask, randomSeed: stroke.randomSeed)
+        if liftedInk != nil {
+            // Ink is out of the canvas for the duration of the drag: just
+            // accumulate. commitLiftedInk() applies this to the real strokes.
+            liftedInk?.transform = liftedInk!.transform.concatenating(transform)
+        } else {
+            var strokes = canvas.drawing.strokes
+            for index in selectionState.strokeIndices where strokes.indices.contains(index) {
+                let stroke = strokes[index]
+                let combined = stroke.transform.concatenating(transform)
+                strokes[index] = PKStroke(ink: stroke.ink, path: stroke.path, transform: combined, mask: stroke.mask, randomSeed: stroke.randomSeed)
+            }
+            setCanvasDrawing(PKDrawing(strokes: strokes))
         }
-        setCanvasDrawing(PKDrawing(strokes: strokes))
         for element in page.elements where selectionState.elementIDs.contains(element.id) && !element.isLocked {
             let center = CGPoint(x: element.posX, y: element.posY).applying(transform)
             element.posX = Double(center.x)
@@ -1371,21 +1828,25 @@ struct PageEditorView: View {
             element.height = Double(max(SelectionTransform.minimumDimension, abs(scaleY) * CGFloat(element.height)))
             element.rotation += Double(rotation * 180 / .pi)
         }
-        var newBounds = combinedBounds(strokes: selectionState.strokeIndices, elements: selectionState.elementIDs)
+        var newBounds = liveSelectionBounds()
         let recovery = SelectionTransform.recoveryTranslation(for: newBounds, pageSize: page.pageOrientation.size)
         if recovery != .zero {
             let correction = CGAffineTransform(translationX: recovery.width, y: recovery.height)
-            strokes = canvas.drawing.strokes
-            for index in selectionState.strokeIndices where strokes.indices.contains(index) {
-                let stroke = strokes[index]
-                strokes[index] = PKStroke(ink: stroke.ink, path: stroke.path, transform: stroke.transform.concatenating(correction), mask: stroke.mask, randomSeed: stroke.randomSeed)
+            if liftedInk != nil {
+                liftedInk?.transform = liftedInk!.transform.concatenating(correction)
+            } else {
+                var strokes = canvas.drawing.strokes
+                for index in selectionState.strokeIndices where strokes.indices.contains(index) {
+                    let stroke = strokes[index]
+                    strokes[index] = PKStroke(ink: stroke.ink, path: stroke.path, transform: stroke.transform.concatenating(correction), mask: stroke.mask, randomSeed: stroke.randomSeed)
+                }
+                setCanvasDrawing(PKDrawing(strokes: strokes))
             }
-            setCanvasDrawing(PKDrawing(strokes: strokes))
             for element in page.elements where selectionState.elementIDs.contains(element.id) && !element.isLocked {
                 element.posX += recovery.width
                 element.posY += recovery.height
             }
-            newBounds = combinedBounds(strokes: selectionState.strokeIndices, elements: selectionState.elementIDs)
+            newBounds = liveSelectionBounds()
         }
         selectionState.bounds = newBounds
         markPageModified()
@@ -1493,6 +1954,9 @@ struct PageEditorView: View {
     }
 
     private func canShowBlankCanvasPasteMenu(at point: CGPoint) -> Bool {
+        // A resting hand while actively drawing/erasing is exactly the kind
+        // of touch that shouldn't pop the paste menu.
+        guard !isUsingInkTool else { return false }
         guard !isReadOnly, clipboardPayload()?.isEmpty == false else { return false }
         if canvas.drawing.strokes.contains(where: { $0.renderBounds.insetBy(dx: -12, dy: -12).contains(point) }) {
             return false
@@ -1564,10 +2028,56 @@ struct PageEditorView: View {
         guard !isTransformingInkSelection else { return }
         recordBeforeMutation()
         isTransformingInkSelection = true
+        liftSelectedInk()
+    }
+
+    /// Moves the selected strokes out of the canvas and into `liftedInk`.
+    private func liftSelectedInk() {
+        let indices = selectionState.strokeIndices.sorted()
+        let all = canvas.drawing.strokes
+        guard !indices.isEmpty, indices.allSatisfy({ all.indices.contains($0) }) else { return }
+        liftedInkGeneration += 1
+        liftedInk = LiftedInk(
+            drawing: PKDrawing(strokes: indices.map { all[$0] }),
+            indices: indices,
+            generation: liftedInkGeneration
+        )
+        setCanvasDrawing(PKDrawing(strokes: all.enumerated()
+            .filter { !selectionState.strokeIndices.contains($0.offset) }
+            .map(\.element)))
+    }
+
+    /// Writes the gesture's accumulated transform into the real strokes and
+    /// returns them to the canvas.
+    ///
+    /// Every path that can end a drag must call this -- releasing the finger,
+    /// switching pages, leaving the editor. While ink is lifted it exists only
+    /// in `liftedInk`, so a path that skips this drops the strokes entirely.
+    private func commitLiftedInk() {
+        guard let lifted = liftedInk else { return }
+        liftedInk = nil
+        var strokes = canvas.drawing.strokes
+        let transformed = lifted.drawing.strokes.map {
+            PKStroke(ink: $0.ink, path: $0.path,
+                     transform: $0.transform.concatenating(lifted.transform),
+                     mask: $0.mask, randomSeed: $0.randomSeed)
+        }
+        // `indices` ascends and the strokes were removed from the same array,
+        // so reinserting in order puts each one back where it came from.
+        for (offset, index) in lifted.indices.enumerated() {
+            strokes.insert(transformed[offset], at: min(index, strokes.count))
+        }
+        setCanvasDrawing(PKDrawing(strokes: strokes))
+        selectionState.strokeIndices = Set(lifted.indices)
+        selectionState.bounds = combinedBounds(
+            strokes: selectionState.strokeIndices,
+            elements: selectionState.elementIDs
+        )
     }
 
     private func finishInkSelectionMutation() {
         guard isTransformingInkSelection else { return }
+        commitLiftedInk()
         isTransformingInkSelection = false
         page.inkData = canvas.drawing.dataRepresentation()
         lastRecordedStrokeCount = canvas.drawing.strokes.count
@@ -2447,7 +2957,71 @@ private struct LockedSelectionMarkers: View {
     }
 }
 
+/// "Answer this?" beside a handwritten question.
+///
+/// It lives in the topmost page-space layer on purpose. `UnifiedLassoOverlay`
+/// covers the whole page and reads any touch that misses a control above it as
+/// the start of a new selection, so a prompt placed lower would be unreachable
+/// with the lasso in hand. Positioned with `.position`, never `.offset`: the
+/// accessibility system publishes the layout frame, and `.offset` leaves that
+/// behind where nothing can find it.
+private struct InkQuestionPrompt: View {
+    let question: InkQuestion
+    let pageSize: CGSize
+    var onAccept: () -> Void
+    var onDismiss: () -> Void
+
+    private static let size = CGSize(width: 168, height: 44)
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: onAccept) {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles")
+                    Text("Answer this?")
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Answer this question")
+
+            Divider().frame(height: 22)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss question prompt")
+        }
+        .frame(width: Self.size.width, height: Self.size.height)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.14), radius: 8, y: 3)
+        .position(centre)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("ink-question-prompt")
+        .transition(.opacity)
+    }
+
+    /// Just past the end of the question, clamped onto the page.
+    private var centre: CGPoint {
+        let anchor = question.bounds.isNull || question.bounds.isEmpty
+            ? CGRect(x: pageSize.width / 2, y: pageSize.height / 3, width: 0, height: 0)
+            : question.bounds
+        return AnswerPlacement.clampedCentre(
+            CGPoint(x: anchor.maxX + 12 + Self.size.width / 2, y: anchor.midY),
+            size: Self.size,
+            pageSize: pageSize
+        )
+    }
+}
+
 private struct SelectionContextBar: View {
+    let canAsk: Bool
+    var onAsk: () -> Void
     let canPaste: Bool
     let canLock: Bool
     let canBringForward: Bool
@@ -2463,10 +3037,15 @@ private struct SelectionContextBar: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 0) { clipboardActions; selectionActions }
+            HStack(spacing: 0) { clipboardActions; selectionActions; assistantActions }
+            VStack(spacing: 0) {
+                HStack(spacing: 0) { clipboardActions; assistantActions }
+                selectionActions
+            }
             VStack(spacing: 0) {
                 clipboardActions
                 selectionActions
+                assistantActions
             }
         }
         .padding(.horizontal, 7)
@@ -2484,6 +3063,15 @@ private struct SelectionContextBar: View {
             action("doc.on.doc", "Copy", onCopy)
             action("doc.on.clipboard", "Paste", onPaste).disabled(!canPaste)
             action("plus.square.on.square", "Duplicate", onDuplicate)
+        }
+    }
+
+    /// The ink-first route into the assistant: circle what you wrote, tap this,
+    /// and the answer is written onto the page beside it -- no chat box, no
+    /// leaving the page.
+    private var assistantActions: some View {
+        HStack(spacing: 0) {
+            action("sparkles", "Ask", onAsk).disabled(!canAsk)
         }
     }
 
@@ -3510,3 +4098,4 @@ struct AIProviderSettingsSheet: View {
         }
     }
 }
+

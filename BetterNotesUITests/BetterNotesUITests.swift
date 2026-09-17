@@ -126,6 +126,30 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Beautify Existing Ink"].exists)
     }
 
+    func testExportNotebookPDFInVerticalScrollModeShowsShareSheet() {
+        openNotebook(named: uniqueTitle("Vertical Export"))
+
+        openToolbarMenu(named: "More")
+        let verticalOption = app.buttons["Vertical Scroll"]
+        XCTAssertTrue(verticalOption.waitForExistence(timeout: 3))
+        verticalOption.tap()
+
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.3), to: CGVector(dx: 0.5, dy: 0.3))
+
+        openToolbarMenu(named: "More")
+        let export = app.buttons["Export Notebook as PDF"]
+        XCTAssertTrue(export.waitForExistence(timeout: 3))
+        export.tap()
+
+        // A blank/stuck share sheet still presents (it's a real UIKit sheet),
+        // it just never draws anything inside -- so check for actual content,
+        // not merely that something was presented.
+        let activityContent = app.otherElements["ActivityListView"].firstMatch
+        let anyActivityButton = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Copy' OR label CONTAINS 'Save'")).firstMatch
+        let appeared = activityContent.waitForExistence(timeout: 6) || anyActivityButton.waitForExistence(timeout: 6)
+        XCTAssertTrue(appeared, "exporting the notebook in vertical scroll mode produced no visible share sheet content")
+    }
+
     func testSelectionOutlineReportsItsOwnFrameNotTheWholePage() {
         // The outline's accessibility frame is not cosmetic. It is what
         // VoiceOver and Switch Control offer as "Selection outline", and it is
@@ -470,6 +494,185 @@ final class BetterNotesUITests: XCTestCase {
     /// at one usually missed, fell through to the lasso overlay that covers
     /// the whole page, and was read as the start of a new selection. The
     /// selection you were trying to stretch was discarded instead.
+    /// Draw, lasso, and reach the Ask action.
+    ///
+    /// Covers the half of asking-in-ink that only a device can vouch for: that
+    /// a synthesised drag really lays down PencilKit strokes, that the lasso
+    /// finds them, and that the Ask control is reachable and its tap is not
+    /// swallowed by `UnifiedLassoOverlay` -- which covers the whole page and
+    /// reads any miss as the start of a new selection. That last risk is real
+    /// here because the selection bar now carries nine controls, not eight.
+    ///
+    /// It deliberately stops at "the tap was acted on". Vision cannot read the
+    /// two straight lines a synthesised drag produces as text, so the question
+    /// is empty and the editor says so; asserting an answer card instead would
+    /// mean typing real words through the keyboard, and driving the rich-text
+    /// sheet on device hung the run for four minutes without finishing. What
+    /// the assistant then does with a question -- streaming, citations,
+    /// fallbacks, where the card lands -- is covered by `InkQuestionTests` and
+    /// `AssistantCoordinatorTests`, which need no device at all.
+    func testAskAboutLassoedInkIsReachableFromTheSelectionBar() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-ai-stub")
+        app.launch()
+
+        openNotebook(named: uniqueTitle("Ask In Ink"))
+
+        app.buttons["Pen"].tap()
+        drawStroke(from: CGVector(dx: 0.30, dy: 0.26), to: CGVector(dx: 0.64, dy: 0.30))
+        drawStroke(from: CGVector(dx: 0.30, dy: 0.36), to: CGVector(dx: 0.64, dy: 0.40))
+
+        app.buttons["Lasso"].tap()
+        let canvas = app.scrollViews["page-canvas"]
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.20, dy: 0.18))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.76, dy: 0.50)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.2
+            )
+
+        // The selection bar existing at all is the proof that ink committed:
+        // there is nothing else on this page for the lasso to have found.
+        let bar = app.descendants(matching: .any)["selection-context-bar"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 5), "the lasso did not select the hand-drawn strokes")
+
+        let ask = bar.descendants(matching: .button)["Ask"].firstMatch
+        XCTAssertTrue(ask.waitForExistence(timeout: 3), "the selection bar has no Ask action")
+        // The bar gained a ninth control, and the risk is that it lands past
+        // the end of the layout: such a button still exists in the
+        // accessibility tree and reports a frame, but cannot be tapped.
+        //
+        // Not a size assertion. These buttons publish the frame of their
+        // glyph, not the 44pt target around it, and SF Symbols differ in
+        // width -- "sparkles" measures 14.5 next to "doc.on.doc" at 16, so
+        // any threshold here would be measuring the icon, not the reach.
+        XCTAssertTrue(ask.isHittable, "the Ask button is present but unreachable")
+        XCTAssertTrue(bar.frame.contains(ask.frame), "the ninth action fell outside the selection bar")
+        attachScreenshot(named: "selection-bar-with-ask")
+        ask.tap()
+
+        // Either outcome proves the tap reached the editor rather than being
+        // read as the start of a new lasso: an answer card for readable ink,
+        // or the editor saying it found nothing to ask about.
+        let answer = app.descendants(matching: .any)["assistant-note"]
+        let nothingReadable = app.staticTexts["Nothing readable in that selection"]
+        let deadline = Date().addingTimeInterval(20)
+        var acted = false
+        while Date() < deadline {
+            if answer.exists || nothingReadable.exists {
+                acted = true
+                break
+            }
+            _ = answer.waitForExistence(timeout: 0.2)
+        }
+        XCTAssertTrue(acted, "tapping Ask did nothing at all -- the tap was swallowed")
+        attachScreenshot(named: "after-ask")
+    }
+
+    /// Undo must actually remove a stroke for good. A prior bug (PencilKit
+    /// resurrecting the undone stroke the moment a new one committed) would
+    /// only show up once a new stroke is drawn *after* the undo, not at the
+    /// moment of the undo itself -- so this draws, undoes, draws again, then
+    /// lassoes exactly the row the undone stroke occupied and nothing else.
+    func testUndoneStrokeDoesNotReappearAfterDrawingAgain() {
+        openNotebook(named: uniqueTitle("Undo Resurrection"))
+
+        app.buttons["Pen"].tap()
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.25), to: CGVector(dx: 0.5, dy: 0.25))
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.45), to: CGVector(dx: 0.5, dy: 0.45))
+
+        app.buttons["Undo"].firstMatch.tap()
+
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.65), to: CGVector(dx: 0.5, dy: 0.65))
+
+        app.buttons["Lasso"].tap()
+        let canvas = app.scrollViews["page-canvas"]
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.40))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.50)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.2
+            )
+
+        let outline = app.descendants(matching: .any)["selection-outline"]
+        _ = outline.waitForExistence(timeout: 2)
+        XCTAssertFalse(
+            outline.exists,
+            "the undone stroke reappeared: lassoing only its row still found a selection"
+        )
+    }
+
+    /// Same bug, but the way it was actually reported: undo pressed *twice*
+    /// in a row (removing two separate strokes) before drawing again, not
+    /// just once.
+    func testTwoUndoneStrokesDoNotReappearAfterDrawingAgain() {
+        openNotebook(named: uniqueTitle("Double Undo Resurrection"))
+
+        app.buttons["Pen"].tap()
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.20), to: CGVector(dx: 0.5, dy: 0.20))
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.40), to: CGVector(dx: 0.5, dy: 0.40))
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.60), to: CGVector(dx: 0.5, dy: 0.60))
+
+        let undo = app.buttons["Undo"].firstMatch
+        undo.tap()
+        undo.tap()
+
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.80), to: CGVector(dx: 0.5, dy: 0.80))
+
+        app.buttons["Lasso"].tap()
+        let canvas = app.scrollViews["page-canvas"]
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.35))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.65)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.2
+            )
+
+        let outline = app.descendants(matching: .any)["selection-outline"]
+        _ = outline.waitForExistence(timeout: 2)
+        XCTAssertFalse(
+            outline.exists,
+            "the two undone strokes reappeared after drawing again following a double undo"
+        )
+    }
+
+    /// The specific gap the first two undo-resurrection tests didn't cover:
+    /// undoing all the way back to an *empty* page. There the target drawing
+    /// is `PKDrawing()`, identical to the empty intermediate `setCanvasDrawing`
+    /// used to flush PencilKit's stale baseline -- making that second
+    /// assignment a no-op and leaving the stale (pre-undo, non-empty)
+    /// baseline in place for the next stroke to resurrect everything onto.
+    func testStrokeDoesNotReappearAfterUndoingBackToAnEmptyPage() {
+        openNotebook(named: uniqueTitle("Empty Page Undo Resurrection"))
+
+        app.buttons["Pen"].tap()
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.30), to: CGVector(dx: 0.5, dy: 0.30))
+
+        app.buttons["Undo"].firstMatch.tap()
+
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.60), to: CGVector(dx: 0.5, dy: 0.60))
+
+        app.buttons["Lasso"].tap()
+        let canvas = app.scrollViews["page-canvas"]
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.20))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.40)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.2
+            )
+
+        let outline = app.descendants(matching: .any)["selection-outline"]
+        _ = outline.waitForExistence(timeout: 2)
+        XCTAssertFalse(
+            outline.exists,
+            "the stroke undone back to an empty page reappeared once a new stroke was drawn"
+        )
+    }
+
     func testDrawnStrokesCanBeResizedByTheirHandlesWithoutLosingSelection() {
         openNotebook(named: uniqueTitle("Stroke Resize"))
 
@@ -520,6 +723,55 @@ final class BetterNotesUITests: XCTestCase {
             outline.value as? String,
             boundsBeforeResize,
             "the selection survived but did not resize"
+        )
+    }
+
+    /// The whole-element drag used `.highPriorityGesture`, which wins over
+    /// any gesture nested inside it -- including the corner ResizeHandle's
+    /// own drag, overlaid inside the same view. That made resize (and, for
+    /// rotatable types, rotation) completely unusable: touching the handle
+    /// just fed the element-level drag, which no-ops there by design
+    /// (`canStartDrag` excludes the handle regions) and nothing happened.
+    func testInsertedElementCanBeResizedByItsHandle() {
+        openNotebook(named: uniqueTitle("Element Resize"))
+
+        insertFromMenu("Tape")
+        let element = app.descendants(matching: .any)["page-element"].firstMatch
+        XCTAssertTrue(element.waitForExistence(timeout: 5), "insert produced no element")
+
+        // Select it with a short drag rather than a tap: Tape's own content
+        // view has a `.onTapGesture` (reveal/cover) nested inside it, which
+        // wins over the outer selection tap and would leave nothing selected
+        // for a reason that has nothing to do with resizing. The drag
+        // gesture's onChanged sets selection too, and a few points of travel
+        // land well clear of the corner handle regions `canStartDrag` excludes.
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(
+                forDuration: 0.1,
+                thenDragTo: element.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5))
+            )
+        let before = element.frame
+
+        let handle = app.descendants(matching: .any)["element-resize-handle-br"].firstMatch
+        XCTAssertTrue(handle.waitForExistence(timeout: 4), "no bottom-right resize handle appeared after selecting the element")
+
+        // Drag relative to the stable page canvas, not the small element
+        // itself -- extrapolating a target from the element's own (moving)
+        // frame is exactly the kind of imprecision that made an earlier
+        // version of this test inconclusive.
+        let canvas = app.scrollViews["page-canvas"]
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.2
+            )
+
+        let after = element.frame
+        XCTAssertNotEqual(
+            before.size, after.size,
+            "dragging the resize handle did not resize the element -- the whole-element drag gesture is stealing the touch"
         )
     }
 
