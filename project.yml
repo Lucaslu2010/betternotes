@@ -8,7 +8,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
-    TARGETED_DEVICE_FAMILY: "1,2"
+    TARGETED_DEVICE_FAMILY: "2"
     GENERATE_INFOPLIST_FILE: "YES"
     CURRENT_PROJECT_VERSION: "1"
     MARKETING_VERSION: "0.1"
@@ -25,15 +25,34 @@ settings:
     # BetterNotesUITests requires a development team" while the app itself
     # built and installed perfectly well.
     DEVELOPMENT_TEAM: RQLD7J8CV7
+configFiles:
+  Debug: BetterNotes/Config/Dev.xcconfig
+  Release: BetterNotes/Config/Dev.xcconfig
 targets:
   BetterNotes:
     type: application
     platform: iOS
     sources:
       - path: BetterNotes
+    info:
+      path: BetterNotes/Info.plist
+      properties:
+        NSLocalNetworkUsageDescription: "BetterNotes finds your paired Mac on the same network to sync editable notebooks."
+        NSBonjourServices:
+          - _better-notes._tcp
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.betternotes.archive
+            UTTypeConformsTo:
+              - public.json
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - betternotes
+              public.mime-type:
+                - application/x-betternotes
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kenny-lhs.betternotes
+        TARGETED_DEVICE_FAMILY: "2"
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
@@ -42,6 +61,56 @@ targets:
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "BetterNotes needs access to your photo library to insert images into notes."
         INFOPLIST_KEY_NSCameraUsageDescription: "BetterNotes uses the camera when you choose to scan a document into a note."
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "BetterNotes uses speech recognition when you choose to transcribe an audio note."
+        # Dev-only prefill values for AI Provider Settings, sourced from
+        # BN_DEV_* (see Config/Dev.xcconfig / gitignored Local.xcconfig).
+        # Read via Bundle.main.object(forInfoDictionaryKey:) in #if DEBUG.
+        INFOPLIST_KEY_BNDevBaseURL: "$(BN_DEV_BASE_URL)"
+        INFOPLIST_KEY_BNDevModel: "$(BN_DEV_MODEL)"
+        INFOPLIST_KEY_BNDevAPIKey: "$(BN_DEV_API_KEY)"
+        ENABLE_PREVIEWS: "YES"
+        SWIFT_EMIT_LOC_STRINGS: "YES"
+        CODE_SIGN_ENTITLEMENTS: BetterNotes/BetterNotes.entitlements
+  BetterNotesMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: BetterNotesMac
+      - path: BetterNotes/Models/Notebook.swift
+      - path: BetterNotes/Models/TextAlign.swift
+      - path: BetterNotes/Models/RichTextCodec.swift
+      - path: BetterNotes/Models/AssistantModels.swift
+      - path: BetterNotes/Services/InkQuestion.swift
+      - path: BetterNotes/Services/AIModels.swift
+      - path: BetterNotes/Services/AIClient.swift
+      - path: BetterNotes/Services/AISettingsStore.swift
+      - path: BetterNotes/Services/AppLocalization.swift
+      - path: BetterNotes/Services/NoteCorpusIndexer.swift
+      - path: BetterNotes/Services/OnDeviceModelService.swift
+      - path: BetterNotes/Services/AssistantCoordinator.swift
+      - path: BetterNotes/Services/CloudTranslator.swift
+      - path: BetterNotes/Services/NearbySync.swift
+    info:
+      path: BetterNotesMac/Info.plist
+      properties:
+        NSLocalNetworkUsageDescription: "BetterNotes finds your paired iPad on the same network to sync editable notebooks."
+        NSBonjourServices:
+          - _better-notes._tcp
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.betternotes.archive
+            UTTypeConformsTo:
+              - public.json
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - betternotes
+              public.mime-type:
+                - application/x-betternotes
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kenny-lhs.betternotes.mac
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        GENERATE_INFOPLIST_FILE: "YES"
+        CODE_SIGN_ENTITLEMENTS: BetterNotesMac/BetterNotesMac.entitlements
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
         ENABLE_PREVIEWS: "YES"
         SWIFT_EMIT_LOC_STRINGS: "YES"
   BetterNotesTests:
@@ -54,6 +123,17 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.betternotes.app.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+  BetterNotesMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: BetterNotesMacTests
+    dependencies:
+      - target: BetterNotesMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.betternotes.mac.tests
         GENERATE_INFOPLIST_FILE: "YES"
   BetterNotesUITests:
     type: bundle.ui-testing
@@ -77,3 +157,11 @@ schemes:
       targets:
         - BetterNotesTests
         - BetterNotesUITests
+  BetterNotesMac:
+    build:
+      targets:
+        BetterNotesMac: all
+        BetterNotesMacTests: [test]
+    test:
+      targets:
+        - BetterNotesMacTests

@@ -1,8 +1,14 @@
 # BetterNotes
 
 An iPadOS/iOS notes app built on PencilKit — handwriting, lasso selection,
-imported PDFs, and BYOK AI assistance. SwiftUI + SwiftData, ~16k lines.
-There is no cloud sync; it was removed deliberately (commit `002477c`).
+imported PDFs, and BYOK AI assistance — with a native Mac companion for text,
+screenshots, page layout, and AI. SwiftUI + SwiftData. The old custom-server
+sync was removed in `002477c`; the apps now use foreground nearby sync between
+one paired iPad and Mac. SwiftData stores remain local in Debug and Release.
+The first nearby connection requires approval on both devices; subsequent
+connections start automatically while both apps are open. An editable archive
+is still available for recovery. Nearby sync uses Multipeer Connectivity,
+Bonjour service `_better-notes._tcp`, and required session encryption.
 
 Deadlines: **feature-complete 30 Sep 2026, App Store 31 Oct 2026.**
 
@@ -17,6 +23,12 @@ xcodegen generate                  # rewrites the project from project.yml
 `project.yml` is the spec of record — targets, deployment target, Info.plist
 keys, signing. Add a source file and regenerate; do not edit `project.pbxproj`
 by hand.
+
+The Mac target shares model, archive, corpus, and AI source files with iOS;
+keep these platform-neutral. The three to-many SwiftData relationships have
+optional persisted backing properties with computed array facades because
+The previous CloudKit model required optional relationships. Keep their `originalName` mappings
+when changing the model: the legacy-store migration tests exercise old notes.
 
 Use **XcodeGen**, not the old `generate_project.py`, which was removed on
 2 Sep 2026. That script only ever emitted the app target: running it dropped
@@ -45,6 +57,9 @@ xcodebuild test -scheme BetterNotes \
   -destination 'platform=iOS,id=00008103-000C290C1E28A01E' \
   -allowProvisioningUpdates \
   -only-testing:BetterNotesUITests/BetterNotesUITests/<name>
+
+# Mac models, rich text, and local persistence
+xcodebuild test -scheme BetterNotesMac -destination 'platform=macOS'
 ```
 
 The iPad must be plugged in **and unlocked** — pairing drops while locked.
