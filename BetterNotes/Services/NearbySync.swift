@@ -132,6 +132,9 @@ enum NearbyMergeDecision: Equatable {
     case unchanged, importNew, replaceLocal, keepLocal
     case preserveLocalAndReplace, saveConflictCopy, alreadySavedConflict
 
+    /// Whether applying this decision deletes and re-creates the local notebook.
+    var replacesLocal: Bool { self == .replaceLocal || self == .preserveLocalAndReplace }
+
     static func decide(localHash: String?, incomingHash: String, lastSharedHash: String?,
                        lastConflictHash: String?, remoteSharedHash: String? = nil,
                        receivingFirst: Bool = false) -> Self {
@@ -162,7 +165,17 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
     @Published private(set) var peers: [MCPeerID] = []
     @Published private(set) var status = UserDefaults.standard.string(forKey: "nearbySync.lastStatus") ?? "Not paired"
     @Published private(set) var invitationName: String?
-    @Published private(set) var isBusy = false
+    @Published private(set) var isBusy = false {
+        didSet {
+            if isBusy { armWatchdog() } else { busyWatchdog?.cancel(); busyWatchdog = nil }
+        }
+    }
+    /// Open notebooks whose replacement was postponed by the last exchange.
+    @Published private(set) var deferredCount = 0
+    /// Stable IDs of notebooks an editor currently has open. Replacing one
+    /// deletes its model under the editor and discards edits made since the
+    /// exchange began, so those notebooks wait until they are closed.
+    var openNotebookIDs: Set<UUID> = []
 
     private static let serviceType = "better-notes"
     private let deviceID: UUID
@@ -182,6 +195,10 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
     private var lastReceiveSummary = ""
     private var lastSentHashes: [UUID: String] = [:]
     private var acceptedIncoming: [NearbySyncAcknowledgement] = []
+    private var deferredNotebookIDs: Set<UUID> = []
+    private var busyWatchdog: Task<Void, Never>?
+    /// Seconds without any sync event before a busy exchange is abandoned.
+    private static let busyTimeout = 300
 
     var isPaired: Bool { pairedPeer != nil }
     private var pairedPeer: MCPeerID? {
@@ -246,7 +263,12 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
         isBusy = false
         activePeer = nil
         activePeerDeviceID = nil
+        // A stale list makes the next foundPeer look like a repeat and skips
+        // the automatic reconnect after the app returns to the foreground.
+        peers.removeAll()
         discoveredPeerDeviceIDs.removeAll()
+        deferredNotebookIDs.removeAll()
+        deferredCount = 0
         browser.stopBrowsingForPeers()
         advertiser.stopAdvertisingPeer()
         session.disconnect()
@@ -378,17 +400,25 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
             var conflicts = 0
             let peerKey = package.deviceID.uuidString
             var accepted: [NearbySyncAcknowledgement] = []
+            var deferred: Set<UUID> = []
             for entry in package.entries {
                 let existing = try context.fetch(FetchDescriptor<Notebook>()).first { $0.stableID == entry.id }
                 let baselineKey = "nearbySync.shared.\(peerKey).\(entry.id.uuidString)"
                 let seenConflictKey = "nearbySync.conflict.\(peerKey).\(entry.id.uuidString)"
                 let localHash = try existing.map { Self.hash(try CloudTranslator.syncArchiveData(for: $0)) }
                 let baseline = UserDefaults.standard.string(forKey: baselineKey)
-                switch NearbyMergeDecision.decide(
+                let decision = NearbyMergeDecision.decide(
                     localHash: localHash, incomingHash: entry.hash, lastSharedHash: baseline,
                     lastConflictHash: UserDefaults.standard.string(forKey: seenConflictKey),
                     remoteSharedHash: entry.sharedHash, receivingFirst: initiated
-                ) {
+                )
+                // Not acknowledged and no baseline written, so the next
+                // exchange reaches the same decision once the editor closes.
+                if decision.replacesLocal, openNotebookIDs.contains(entry.id) {
+                    deferred.insert(entry.id)
+                    continue
+                }
+                switch decision {
                 case .unchanged:
                         UserDefaults.standard.set(entry.hash, forKey: baselineKey)
                         accepted.append(NearbySyncAcknowledgement(id: entry.id, hash: entry.hash))
@@ -433,6 +463,8 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
                     break
                 }
             }
+            deferredNotebookIDs = deferred
+            deferredCount = deferred.count
             lastReceiveSummary = "\(imported) new, \(updated) updated, \(conflicts) conflict copies"
             status = "Received \(lastReceiveSummary) from \(remoteName)."
             if initiated {
@@ -452,13 +484,29 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
         }
     }
 
-    private func fail(_ message: String) {
+    private func fail(_ message: String, notifyPeer: Bool = true) {
+        // Without this the other device stays "busy" until its connection
+        // drops, and never retries.
+        if notifyPeer, isBusy, let peer = activePeer, session.connectedPeers.contains(peer),
+           let data = try? JSONEncoder().encode(NearbySyncMessage(kind: "failed", accepted: nil)) {
+            try? session.send(data, toPeers: [peer], with: .reliable)
+        }
         status = message
         UserDefaults.standard.set(message, forKey: "nearbySync.lastStatus")
         isBusy = false
         lastReceiveSummary = ""
         lastSentHashes.removeAll()
         acceptedIncoming.removeAll()
+    }
+
+    private func armWatchdog() {
+        busyWatchdog?.cancel()
+        busyWatchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.busyTimeout))
+            guard !Task.isCancelled, let self, self.isBusy else { return }
+            self.fail("Sync timed out. Reopen Nearby Sync on both devices to retry.")
+            self.session.disconnect()
+        }
     }
 
     private func rememberAccepted(_ accepted: [NearbySyncAcknowledgement], from deviceID: UUID) {
@@ -499,9 +547,12 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
 
     private func refreshConnectedPeer() {
         guard let peer = activePeer, session.connectedPeers.contains(peer), !isBusy else { return }
+        // A postponed replacement is retried once its notebook is closed,
+        // even though nothing changed locally.
+        let retryDeferred = !deferredNotebookIDs.isEmpty && deferredNotebookIDs.isDisjoint(with: openNotebookIDs)
         do {
             let digest = try localDigest()
-            guard digest != lastLocalDigest else { return }
+            guard digest != lastLocalDigest || retryDeferred else { return }
         } catch {
             fail("Could not check local changes: \(error.localizedDescription)")
             return
@@ -534,12 +585,11 @@ extension NearbySyncCoordinator: MCNearbyServiceBrowserDelegate {
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID,
                              withDiscoveryInfo info: [String: String]?) {
         Task { @MainActor [weak self] in
-            guard let self, info?["platform"] != Self.platform,
-                  !self.peers.contains(peerID) else { return }
+            guard let self, info?["platform"] != Self.platform else { return }
             if let id = info?["id"].flatMap(UUID.init(uuidString:)) {
                 self.discoveredPeerDeviceIDs[peerID] = id
             }
-            self.peers.append(peerID)
+            if !self.peers.contains(peerID) { self.peers.append(peerID) }
 #if !os(macOS)
             if self.pairedPeer == peerID, !self.isBusy, !self.session.connectedPeers.contains(peerID) {
                 self.invite(peerID)
@@ -569,7 +619,7 @@ extension NearbySyncCoordinator: MCNearbyServiceAdvertiserDelegate {
             guard let invitation = context.flatMap({ String(data: $0, encoding: .utf8) }),
                   let platform = invitation.split(separator: ":", maxSplits: 1).first,
                   platform != Self.platform else { invitationHandler(false, nil); return }
-            guard let self, !self.isBusy else { invitationHandler(false, nil); return }
+            guard let self, !self.isBusy, self.invitationHandler == nil else { invitationHandler(false, nil); return }
             self.activePeerDeviceID = invitation.split(separator: ":", maxSplits: 1).last
                 .flatMap { UUID(uuidString: String($0)) }
                 ?? self.discoveredPeerDeviceIDs[peerID]
@@ -624,7 +674,10 @@ extension NearbySyncCoordinator: MCSessionDelegate {
         Task { @MainActor [weak self] in
             guard let self, peerID == self.activePeer,
                   let message = try? JSONDecoder().decode(NearbySyncMessage.self, from: data) else { return }
+            if self.isBusy { self.armWatchdog() }
             switch message.kind {
+            case "failed":
+                if self.isBusy { self.fail("The other device could not finish syncing.", notifyPeer: false) }
             case "request": self.initiated = false; self.isBusy = true; self.sendLibrary(to: peerID)
             case "changed":
 #if !os(macOS)
@@ -648,7 +701,11 @@ extension NearbySyncCoordinator: MCSessionDelegate {
 
     nonisolated func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String,
                              fromPeer peerID: MCPeerID, with progress: Progress) {
-        Task { @MainActor [weak self] in self?.status = "Receiving notes from \(peerID.displayName)…" }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if self.isBusy { self.armWatchdog() }
+            self.status = "Receiving notes from \(peerID.displayName)…"
+        }
     }
 
     nonisolated func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String,
@@ -710,6 +767,11 @@ struct NearbySyncSheet: View {
                 }
                 Section("Activity") {
                     Text(AppLocalization.nearbyStatus(sync.status))
+                    if sync.deferredCount > 0 {
+                        Text("Open notebooks waiting to update: \(sync.deferredCount). Close them to finish syncing.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     Text("Keep BetterNotes open on both devices until the transfer finishes. Conflicting edits are saved as separate notebooks.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)

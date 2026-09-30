@@ -110,6 +110,12 @@ struct CloudTranslator {
         guard let notebook = apply(doc: document, into: context) else {
             throw ArchiveError.invalidArchive
         }
+        // `apply` has already inserted the new notebook, and replacing marks
+        // the old one deleted. If anything below throws, leaving that pending
+        // state in the context lets a later save persist a duplicate or erase
+        // the original, so roll the whole import back.
+        var committed = false
+        defer { if !committed { context.rollback() } }
         notebook.cloudID = nil
         let sourceNotebookID = (archive["stableID"] as? String).flatMap(UUID.init(uuidString:))
         if let stableID = sourceNotebookID {
@@ -179,6 +185,7 @@ struct CloudTranslator {
             context.delete(existing)
         }
         try context.save()
+        committed = true
         return notebook
     }
 

@@ -8040,6 +8040,54 @@
           }
         }
       }
+    },
+    "Open notebooks waiting to update: %lld. Close them to finish syncing.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待更新的已打开笔记本：%lld 本。关闭它们即可完成同步。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待更新的已開啟筆記本：%lld 本。關閉它們即可完成同步。"
+          }
+        }
+      }
+    },
+    "Sync timed out. Reopen Nearby Sync on both devices to retry.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同步超时。请在两台设备上重新打开“附近同步”后重试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同步逾時。請在兩部裝置上重新開啟「附近同步」後重試。"
+          }
+        }
+      }
+    },
+    "The other device could not finish syncing.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一台设备未能完成同步。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一部裝置未能完成同步。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

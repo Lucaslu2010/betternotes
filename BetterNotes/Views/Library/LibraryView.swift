@@ -1326,6 +1326,7 @@ private struct NotebookWorkspaceView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query(sort: \Notebook.modifiedAt, order: .reverse) private var notebooks: [Notebook]
+    @EnvironmentObject private var nearbySync: NearbySyncCoordinator
     @State private var openTabIDs: [PersistentIdentifier]
     @State private var selectedTabID: PersistentIdentifier?
     @State private var pageIndexByNotebook: [PersistentIdentifier: Int] = [:]
@@ -1364,6 +1365,8 @@ private struct NotebookWorkspaceView: View {
                 NewNotebookSheet { notebook in openNotebook(notebook) }
             }
             .onAppear(perform: reconcileTabs)
+            .onAppear(perform: publishOpenNotebooks)
+            .onChange(of: openTabIDs) { _, _ in publishOpenNotebooks() }
             .onChange(of: notebooks.count) { _, _ in reconcileTabs() }
             .onChange(of: editorState.currentPageIndex) { _, newIndex in
                 if let selectedTabID { pageIndexByNotebook[selectedTabID] = newIndex }
@@ -1377,6 +1380,7 @@ private struct NotebookWorkspaceView: View {
             }
             .onDisappear {
                 isNotebookOpen = false
+                nearbySync.openNotebookIDs = []
                 // Restore the sidebar when returning to the library.
                 if horizontalSizeClass == .regular {
                     sidebarVisibility = .all
@@ -1573,6 +1577,12 @@ private struct NotebookWorkspaceView: View {
             editorState.currentPageIndex = selectedTabID.flatMap { pageIndexByNotebook[$0] } ?? 0
         }
         reconcileTabs()
+    }
+
+    /// Tells nearby sync which notebooks an editor is showing, so it does not
+    /// replace one of them mid-edit.
+    private func publishOpenNotebooks() {
+        nearbySync.openNotebookIDs = Set(notebooks.filter { openTabIDs.contains($0.id) }.map(\.stableID))
     }
 
     private func reconcileTabs() {

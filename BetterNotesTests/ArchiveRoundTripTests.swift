@@ -332,6 +332,16 @@ final class ArchiveRoundTripTests: XCTestCase {
         XCTAssertEqual(try context.fetch(FetchDescriptor<Notebook>()).count, 1)
     }
 
+    /// Only these two decisions delete the local notebook, so only they may be
+    /// postponed while an editor has it open. Everything else leaves it alone.
+    func testOnlyDecisionsThatDeleteTheLocalNotebookCanBeDeferred() {
+        let all: [NearbyMergeDecision] = [
+            .unchanged, .importNew, .replaceLocal, .keepLocal,
+            .preserveLocalAndReplace, .saveConflictCopy, .alreadySavedConflict,
+        ]
+        XCTAssertEqual(all.filter(\.replacesLocal), [.replaceLocal, .preserveLocalAndReplace])
+    }
+
     func testNearbyMergePreservesConcurrentEdits() {
         XCTAssertEqual(NearbyMergeDecision.decide(localHash: "base", incomingHash: "remote",
                                                   lastSharedHash: "base", lastConflictHash: nil), .replaceLocal)
