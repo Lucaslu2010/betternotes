@@ -4,12 +4,17 @@ import SwiftData
 @Model
 final class AssistantThread {
     var stableID: UUID = UUID()
-    var title: String
-    var createdAt: Date
-    var updatedAt: Date
-    var scopeRawValue: String
-    @Relationship(deleteRule: .cascade, inverse: \AssistantMessage.thread)
-    var messages: [AssistantMessage]
+    var title: String = "New conversation"
+    var createdAt: Date = Date.now
+    var updatedAt: Date = Date.now
+    var scopeRawValue: String = "allNotes"
+    @Relationship(deleteRule: .cascade, originalName: "messages", inverse: \AssistantMessage.thread)
+    private var storedMessages: [AssistantMessage]?
+
+    var messages: [AssistantMessage] {
+        get { storedMessages ?? [] }
+        set { storedMessages = newValue }
+    }
 
     init(title: String = "New conversation", scope: AssistantScope = .allNotes) {
         self.stableID = UUID()
@@ -17,7 +22,7 @@ final class AssistantThread {
         self.createdAt = .now
         self.updatedAt = .now
         self.scopeRawValue = scope.rawValue
-        self.messages = []
+        self.storedMessages = []
     }
 
     var scope: AssistantScope {
@@ -33,12 +38,12 @@ final class AssistantThread {
 @Model
 final class AssistantMessage {
     var stableID: UUID = UUID()
-    var roleRawValue: String
-    var content: String
-    var createdAt: Date
+    var roleRawValue: String = "user"
+    var content: String = ""
+    var createdAt: Date = Date.now
     var citationsData: Data?
     var providerNotice: String?
-    var isFailure: Bool
+    var isFailure: Bool = false
     var thread: AssistantThread?
 
     init(
