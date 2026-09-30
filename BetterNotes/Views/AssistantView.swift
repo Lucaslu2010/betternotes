@@ -230,11 +230,11 @@ struct AssistantView: View {
 
     private var starterPrompts: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(AppLocalization.text(aiService.isRemoteConfigured ? "Ask across your notes" : "On-device assistant"))
+            Text(AppLocalization.text(aiService.isRemoteConfigured ? "Ask across your notes" : "Set up AI provider"))
                 .font(.headline)
             Text(AppLocalization.text(aiService.isRemoteConfigured
                  ? "Choose a starting point or write your own question."
-                 : "Search and extract answers locally, or configure a provider for synthesized responses."))
+                 : "Add your AI provider in Settings to ask questions about your notes."))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             ForEach(starters, id: \.0) { starter in

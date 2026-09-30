@@ -85,7 +85,6 @@ targets:
       - path: BetterNotes/Services/AISettingsStore.swift
       - path: BetterNotes/Services/AppLocalization.swift
       - path: BetterNotes/Services/NoteCorpusIndexer.swift
-      - path: BetterNotes/Services/OnDeviceModelService.swift
       - path: BetterNotes/Services/AssistantCoordinator.swift
       - path: BetterNotes/Services/CloudTranslator.swift
       - path: BetterNotes/Services/NearbySync.swift

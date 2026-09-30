@@ -503,23 +503,6 @@
         }
       }
     },
-    "Answered by Apple's on-device model.": {
-      "extractionState": "stale",
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "由 Apple 的设备端模型回答。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "由 Apple 的裝置端模型回答。"
-          }
-        }
-      }
-    },
     "Any Date": {
       "extractionState": "stale",
       "localizations": {
@@ -565,40 +548,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "應用語言"
-          }
-        }
-      }
-    },
-    "Apple on-device model": {
-      "extractionState": "stale",
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apple 设备端模型"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apple 裝置端模型"
-          }
-        }
-      }
-    },
-    "Apple's on-device model isn't available on this device.": {
-      "extractionState": "stale",
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "这台设备无法使用 Apple 的设备端模型。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "這臺裝置無法使用 Apple 的裝置端模型。"
           }
         }
       }
@@ -4062,23 +4011,6 @@
         }
       }
     },
-    "No AI provider is configured, and this device doesn't support Apple's on-device model.": {
-      "extractionState": "stale",
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "尚未配置 AI 服务商，而且这台设备不支持 Apple 的设备端模型。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "尚未配置 AI 服務商，而且這臺裝置不支援 Apple 的裝置端模型。"
-          }
-        }
-      }
-    },
     "No Bookmarked Pages": {
       "extractionState": "stale",
       "localizations": {
@@ -4549,56 +4481,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "為手寫“??”問題提供回答"
-          }
-        }
-      }
-    },
-    "On-device (Apple Intelligence)": {
-      "extractionState": "stale",
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "设备端（Apple 智能）"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "裝置端（Apple 智慧）"
-          }
-        }
-      }
-    },
-    "On-device assistance enabled": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已启用设备端 AI"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "已啟用裝置端 AI"
-          }
-        }
-      }
-    },
-    "On-device assistant": {
-      "extractionState": "stale",
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "设备端助手"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "裝置端助手"
           }
         }
       }
@@ -5899,23 +5781,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "滾動模式"
-          }
-        }
-      }
-    },
-    "Search and extract answers locally, or configure a provider for synthesized responses.": {
-      "extractionState": "stale",
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "可在设备上搜索并提取答案，或配置 AI 服务商来生成回答。"
-          }
-        },
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "可在裝置上搜尋並提取答案，或配置 AI 服務商來生成回答。"
           }
         }
       }
@@ -8076,6 +7941,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "·"
+          }
+        }
+      }
+    },
+    "Add your AI provider in Settings to ask questions about your notes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请在“设置”中添加 AI 服务商，即可就你的笔记提问。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "請在「設定」中新增 AI 服務商，即可就你的筆記提問。"
           }
         }
       }

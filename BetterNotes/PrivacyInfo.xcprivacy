@@ -6,9 +6,8 @@
 	  App Store review rejects a submission that uses a required-reason API
 	  without declaring it here. BetterNotes uses two.
 
-	  UserDefaults (CA92.1): tool settings, AI provider settings and the
-	  handwriting beautifier's preferences, all read and written by the app
-	  for itself.
+	  UserDefaults (CA92.1): tool settings and AI provider settings, all read
+	  and written by the app for itself.
 
 	  File timestamps (DDA9.1): BetterNotesApp sorts its own recovery
 	  snapshots by contentModificationDate to find the newest. Those files

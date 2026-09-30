@@ -62,20 +62,13 @@ final class AssistantCoordinator: ObservableObject {
             let suppliedCitations = Self.citations(for: sources)
 
             guard let configuration = settings.configuration else {
-                await Self.answerWithOnDeviceModelOrSetupPrompt(
-                    question: question,
-                    context: Self.context(for: results),
-                    suppliedCitations: suppliedCitations,
-                    history: conversationHistory
-                ) { text, citations, notice, error in
-                    guard !Task.isCancelled else { return }
-                    self.responseDraft = text
-                    self.currentCitations = citations
-                    self.notice = notice
-                    self.errorMessage = error
-                    self.isResponding = false
-                    completion(AssistantReply(text: text, citations: citations, notice: notice, error: error))
-                }
+                let reply = Self.setupPromptReply()
+                self.responseDraft = reply.text
+                self.currentCitations = []
+                self.notice = nil
+                self.errorMessage = reply.error
+                self.isResponding = false
+                completion(reply)
                 return
             }
 
@@ -153,15 +146,8 @@ final class AssistantCoordinator: ObservableObject {
         responseTask = Task { [weak self] in
             guard let self else { return }
             guard let configuration = settings.configuration else {
-                await Self.answerWithOnDeviceModelOrSetupPrompt(
-                    question: question,
-                    context: Self.context(for: limitedResults),
-                    suppliedCitations: suppliedCitations
-                ) { text, citations, notice, error in
-                    guard !Task.isCancelled else { return }
-                    self.isResponding = false
-                    completion(AssistantReply(text: text, citations: citations, notice: notice, error: error))
-                }
+                isResponding = false
+                completion(Self.setupPromptReply())
                 return
             }
             let imageAttachments = Self.imageAttachments(
@@ -288,13 +274,6 @@ final class AssistantCoordinator: ObservableObject {
         return attachments
     }
 
-    /// Joins ranked passages into plain context text for the on-device model.
-    static func context(for results: [SearchResult]) -> String {
-        results.prefix(6).enumerated().map { index, result in
-            "[S\(index + 1)] \(result.chunk.label)\n<untrusted_note>\n\(result.snippet)\n</untrusted_note>"
-        }.joined(separator: "\n\n")
-    }
-
     /// Follow-up questions like "How does it work?" need the earlier topic
     /// for retrieval. Earlier assistant answers are deliberately excluded:
     /// they help with conversational wording but are not note evidence.
@@ -340,38 +319,15 @@ final class AssistantCoordinator: ObservableObject {
         }
     }
 
-    /// The tier used when no BYOK provider is configured: try Apple's
-    /// on-device model against the retrieved passages, and if that's not
-    /// available on this device (or fails), surface a clear setup prompt
-    /// instead of a canned local guess.
-    static func answerWithOnDeviceModelOrSetupPrompt(
-        question: String,
-        context: String,
-        suppliedCitations: [SourceCitation],
-        history: [AIConversationMessage] = [],
-        completion: @escaping (String, [SourceCitation], String?, String?) -> Void
-    ) async {
-        guard OnDeviceModelService.isAvailable else {
-            completion(
-                AppLocalization.text("Set up an AI provider in Settings to use the Assistant."),
-                [],
-                nil,
-                AppLocalization.text("No AI provider is configured, and this device doesn't support Apple's on-device model.")
-            )
-            return
-        }
-        do {
-            let answer = try await OnDeviceModelService.answer(question: question, context: context, history: history)
-            let citations = Self.validatedCitations(in: answer, supplied: suppliedCitations)
-            completion(answer, citations, AppLocalization.text("Answered by Apple's on-device model."), nil)
-        } catch {
-            completion(
-                AppLocalization.text("Set up an AI provider in Settings to use the Assistant."),
-                [],
-                nil,
-                error.localizedDescription
-            )
-        }
+    /// What the Assistant says when no BYOK provider is configured. The app
+    /// has no offline answerer, so this asks for setup rather than guessing.
+    static func setupPromptReply() -> AssistantReply {
+        AssistantReply(
+            text: AppLocalization.text("Set up an AI provider in Settings to use the Assistant."),
+            citations: [],
+            notice: nil,
+            error: AppLocalization.text("No AI provider configured")
+        )
     }
 
     private static func budgetedMessages(_ messages: [AIConversationMessage]) -> [AIConversationMessage] {
@@ -497,28 +453,11 @@ final class InkAnswerCoordinator: ObservableObject {
             }
 
             guard let configuration = settings.configuration else {
-                if OnDeviceModelService.isAvailable {
-                    do {
-                        let answer = try await OnDeviceModelService.answer(
-                            question: question,
-                            context: Self.onDeviceContext(for: sources, pageContext: pageContext),
-                            history: conversationHistory
-                        )
-                        finish(answer, notice: AppLocalization.text("Answered by Apple's on-device model."), error: nil)
-                    } catch {
-                        finish(
-                            AppLocalization.text("Set up an AI provider in Settings for a written reply."),
-                            notice: nil,
-                            error: error.localizedDescription
-                        )
-                    }
-                } else {
-                    finish(
-                        AppLocalization.text("Set up an AI provider in Settings for a written reply."),
-                        notice: nil,
-                        error: AppLocalization.text("No AI provider is configured, and this device doesn't support Apple's on-device model.")
-                    )
-                }
+                finish(
+                    AppLocalization.text("Set up an AI provider in Settings for a written reply."),
+                    notice: nil,
+                    error: AppLocalization.text("No AI provider configured")
+                )
                 return
             }
 
@@ -590,7 +529,7 @@ final class InkAnswerCoordinator: ObservableObject {
         let context = pageContext.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !context.isEmpty else { return question }
         return """
-        The question was handwritten on a notebook page. Here is the rest of that page,         as recognized text, for context only:
+        The question was handwritten on a notebook page. Here is the rest of that page, as recognized text, for context only:
 
         <untrusted_note>
         \(String(context.prefix(4_000)))
@@ -598,14 +537,6 @@ final class InkAnswerCoordinator: ObservableObject {
 
         Question: \(question)
         """
-    }
-
-    static func onDeviceContext(for sources: [SearchResult], pageContext: String) -> String {
-        let citedNotes = AssistantCoordinator.context(for: sources)
-        let currentPage = pageContext.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !currentPage.isEmpty else { return citedNotes }
-        let pagePassage = "Current page text (context, without a citation token):\n<untrusted_note>\n\(String(currentPage.prefix(1_000)))\n</untrusted_note>"
-        return citedNotes.isEmpty ? pagePassage : citedNotes + "\n\n" + pagePassage
     }
 
     private static let systemInstructions = """

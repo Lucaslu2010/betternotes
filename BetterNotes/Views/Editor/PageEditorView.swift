@@ -116,7 +116,7 @@ struct PageEditorView: View {
     @State private var noticeTask: Task<Void, Never>?
     @State private var isSwitchingPages = false
     /// Guards against re-entry into onDrawingChanged when we programmatically
-    /// set canvas.drawing (beautify, undo/redo apply, paste, delete, transform).
+    /// set canvas.drawing (undo/redo apply, paste, delete, transform).
     /// Without this, each programmatic assignment triggers canvasViewDrawingDidChange
     /// → onDrawingChanged, causing double history entries, redundant OCR, and
     /// selection flicker.
@@ -4292,12 +4292,8 @@ struct AIProviderSettingsSheet: View {
 
                 Section {
                     Label(
-                        service.isRemoteConfigured
-                            ? "Remote AI enabled"
-                            : (OnDeviceModelService.isAvailable ? "On-device assistance enabled" : "No AI provider configured"),
-                        systemImage: service.isRemoteConfigured
-                            ? "checkmark.shield"
-                            : (OnDeviceModelService.isAvailable ? "iphone" : "exclamationmark.triangle")
+                        service.isRemoteConfigured ? "Remote AI enabled" : "No AI provider configured",
+                        systemImage: service.isRemoteConfigured ? "checkmark.shield" : "exclamationmark.triangle"
                     )
                     if let errorMessage {
                         Text(errorMessage).foregroundStyle(.red)

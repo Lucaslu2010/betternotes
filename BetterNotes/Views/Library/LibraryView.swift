@@ -2297,12 +2297,8 @@ struct BetterNotesSettingsSheet: View {
 
                     LabeledContent("Mode") {
                         Label(
-                            AppLocalization.text(ai.isRemoteConfigured
-                                ? "Remote"
-                                : (OnDeviceModelService.isAvailable ? "On-device (Apple Intelligence)" : "Not available")),
-                            systemImage: ai.isRemoteConfigured
-                                ? "checkmark.shield"
-                                : (OnDeviceModelService.isAvailable ? "iphone" : "exclamationmark.triangle")
+                            AppLocalization.text(ai.isRemoteConfigured ? "Remote" : "Not available"),
+                            systemImage: ai.isRemoteConfigured ? "checkmark.shield" : "exclamationmark.triangle"
                         )
                         .foregroundStyle(.secondary)
                     }
@@ -2310,7 +2306,7 @@ struct BetterNotesSettingsSheet: View {
                         "Model",
                         value: ai.isRemoteConfigured
                             ? ai.configuredModel
-                            : AppLocalization.text(OnDeviceModelService.isAvailable ? "Apple on-device model" : "Set up AI provider")
+                            : AppLocalization.text("Set up AI provider")
                     )
                     Toggle("Assistant", systemImage: "bubble.left.and.bubble.right", isOn: $assistantEnabled)
                     Toggle("Ask Notes in Search", systemImage: "magnifyingglass", isOn: $searchAnswersEnabled)
