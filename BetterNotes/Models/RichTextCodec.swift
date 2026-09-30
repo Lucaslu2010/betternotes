@@ -28,6 +28,25 @@ enum RichTextCodec {
         let runs: [Run]
     }
 
+    /// Attributes a person can see that the portable format has no field for.
+    private static let unsupportedKeys: [NSAttributedString.Key] = [
+        .strikethroughStyle, .link, .backgroundColor, .attachment, .kern, .baselineOffset,
+        .shadow, .strokeWidth, .obliqueness, .expansion,
+    ]
+
+    /// Whether `encode` would keep everything visible in `value`. A migration
+    /// must not replace a legacy payload with one that drops formatting.
+    static func canRepresent(_ value: NSAttributedString) -> Bool {
+        var supported = true
+        value.enumerateAttributes(in: NSRange(location: 0, length: value.length)) { attrs, _, stop in
+            if unsupportedKeys.contains(where: { attrs[$0] != nil }) {
+                supported = false
+                stop.pointee = true
+            }
+        }
+        return supported
+    }
+
     static func isPortable(_ data: Data) -> Bool {
         (try? JSONDecoder().decode(Document.self, from: data))?.format == "betternotes-richtext-1"
     }

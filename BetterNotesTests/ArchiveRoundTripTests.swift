@@ -342,6 +342,25 @@ final class ArchiveRoundTripTests: XCTestCase {
         XCTAssertEqual(all.filter(\.replacesLocal), [.replaceLocal, .preserveLocalAndReplace])
     }
 
+    /// Merge baselines live in UserDefaults, so a reset or restore can lose
+    /// them while the notebooks survive. With no baseline, differing copies
+    /// must never resolve to "replace local": the worst outcome has to be an
+    /// extra conflict copy, never an overwrite.
+    func testALostBaselineNeverOverwritesADifferingLocalNotebook() {
+        for receivingFirst in [true, false] {
+            let decision = NearbyMergeDecision.decide(
+                localHash: "local", incomingHash: "remote",
+                lastSharedHash: nil, lastConflictHash: nil, receivingFirst: receivingFirst
+            )
+            XCTAssertTrue([.preserveLocalAndReplace, .saveConflictCopy].contains(decision),
+                          "with no baseline, receivingFirst=\(receivingFirst) chose \(decision)")
+        }
+        // A notebook this device deleted for good, and has no baseline for,
+        // is treated as new rather than silently dropped.
+        XCTAssertEqual(NearbyMergeDecision.decide(localHash: nil, incomingHash: "remote",
+                                                  lastSharedHash: nil, lastConflictHash: nil), .importNew)
+    }
+
     func testNearbyMergePreservesConcurrentEdits() {
         XCTAssertEqual(NearbyMergeDecision.decide(localHash: "base", incomingHash: "remote",
                                                   lastSharedHash: "base", lastConflictHash: nil), .replaceLocal)

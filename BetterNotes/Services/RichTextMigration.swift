@@ -10,6 +10,8 @@ enum RichTextMigration {
         for element in elements {
             guard let data = element.richTextData, !RichTextCodec.isPortable(data),
                   let attributed = PageElement.decodeRichText(from: data),
+                  // Keep the legacy payload rather than drop formatting.
+                  RichTextCodec.canRepresent(attributed),
                   let portable = RichTextCodec.encode(attributed) else { continue }
             element.richTextData = portable
             changed = true

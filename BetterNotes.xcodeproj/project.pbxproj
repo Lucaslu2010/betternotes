@@ -41,6 +41,7 @@
 		55EB4EEDD6802C90E0B63026 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = FFC73892DB3EED9585932563 /* Localizable.xcstrings */; };
 		584290111508B7459C3864E3 /* AppLocalization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99EC66D96F3B03B69777188A /* AppLocalization.swift */; };
 		5A1194C985B0E60A71A51F73 /* NoteCorpusIndexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0484CDDAB29CF8015C9AC80 /* NoteCorpusIndexer.swift */; };
+		5F878EBAAE4F1AA1760E9F5F /* legacy-assistant.store in Resources */ = {isa = PBXBuildFile; fileRef = AEC2587A860555B6811572A5 /* legacy-assistant.store */; };
 		67DD281360C71F084BCF23F9 /* RichTextMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = F04B7D24E6B224F5E303C1C6 /* RichTextMigration.swift */; };
 		6E2E3AA92F36CF11F45F3AD9 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 5DD98C9407E250E3325D54ED /* PrivacyInfo.xcprivacy */; };
 		6F8FB01718CC7451DBB044D6 /* AIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6E06CF172354818AA9E115 /* AIModels.swift */; };
@@ -178,6 +179,7 @@
 		A48C7A01F7D06D1931F26481 /* NotebookCover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookCover.swift; sourceTree = "<group>"; };
 		A66C627DFE0C644BB091693B /* ArchiveRoundTripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveRoundTripTests.swift; sourceTree = "<group>"; };
 		A9CEC020FC2A2F025421FB72 /* SmartImageExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartImageExtractor.swift; sourceTree = "<group>"; };
+		AEC2587A860555B6811572A5 /* legacy-assistant.store */ = {isa = PBXFileReference; path = "legacy-assistant.store"; sourceTree = "<group>"; };
 		B27AA21B9D0D53D1E34683AE /* Notebook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notebook.swift; sourceTree = "<group>"; };
 		B4B5D6AD6D5CD94146B28D95 /* MacPageSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPageSnapshot.swift; sourceTree = "<group>"; };
 		BA8F436377C7C7ECBE303EB2 /* BetterNotes.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BetterNotes.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -290,6 +292,7 @@
 		509E5B5C38732DA126194E3E /* Fixtures */ = {
 			isa = PBXGroup;
 			children = (
+				AEC2587A860555B6811572A5 /* legacy-assistant.store */,
 				563646E5ED1AC7851262D660 /* legacy-v1.store */,
 			);
 			path = Fixtures;
@@ -566,6 +569,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5F878EBAAE4F1AA1760E9F5F /* legacy-assistant.store in Resources */,
 				287BB88399A7DCEA55B6BBC0 /* legacy-v1.store in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

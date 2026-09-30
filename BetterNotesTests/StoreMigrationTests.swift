@@ -85,4 +85,65 @@ final class StoreMigrationTests: XCTestCase {
         try context.save()
         XCTAssertEqual(page.orderedElements.compactMap(\.text), ["top", "middle", "bottom"])
     }
+
+    // MARK: - Assistant conversations
+
+    /// `messages` became `storedMessages` (optional, `originalName: "messages"`)
+    /// when the CloudKit-era model was reshaped. Nothing else proved that a
+    /// conversation written before the rename still opens, or that its messages
+    /// are still attached to it -- losing chat history on update is silent.
+    ///
+    /// `Fixtures/legacy-assistant.store` was written by the pre-rename model
+    /// (`AssistantModels.swift` from 2f1cc65, compiled verbatim into a standalone
+    /// tool) holding one thread "Old chat" with two messages.
+    private func openLegacyAssistantStore() throws -> ModelContext {
+        let bundled = try XCTUnwrap(
+            Bundle(for: type(of: self)).url(forResource: "legacy-assistant", withExtension: "store"),
+            "the legacy assistant store fixture is missing from the test bundle"
+        )
+        let copy = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-assistant-\(UUID().uuidString).store")
+        try FileManager.default.copyItem(at: bundled, to: copy)
+        addTeardownBlock {
+            for suffix in ["", "-shm", "-wal"] {
+                try? FileManager.default.removeItem(atPath: copy.path + suffix)
+            }
+        }
+        let schema = Schema([
+            Notebook.self, Page.self, PageElement.self, AssistantThread.self, AssistantMessage.self,
+        ])
+        let container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(schema: schema, url: copy, cloudKitDatabase: .none)]
+        )
+        return ModelContext(container)
+    }
+
+    func testAConversationWrittenBeforeTheMessagesRenameStillOpensWithItsMessages() throws {
+        let context = try openLegacyAssistantStore()
+        let threads = try context.fetch(FetchDescriptor<AssistantThread>())
+        XCTAssertEqual(threads.count, 1)
+
+        let thread = try XCTUnwrap(threads.first)
+        XCTAssertEqual(thread.title, "Old chat")
+        XCTAssertEqual(thread.orderedMessages.map(\.content), ["What is ATP?", "ATP stores energy."],
+                       "the messages were orphaned from their thread by the rename")
+        XCTAssertTrue(thread.orderedMessages.allSatisfy { $0.thread?.stableID == thread.stableID })
+    }
+
+    func testAMigratedConversationAcceptsNewMessagesAndStillCascadesOnDelete() throws {
+        let context = try openLegacyAssistantStore()
+        let thread = try XCTUnwrap(try context.fetch(FetchDescriptor<AssistantThread>()).first)
+
+        let reply = AssistantMessage(role: .user, content: "And ADP?")
+        reply.thread = thread
+        thread.messages.append(reply)
+        try context.save()
+        XCTAssertEqual(thread.orderedMessages.count, 3)
+
+        try AssistantThread.deleteAll(in: context)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<AssistantThread>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<AssistantMessage>()), 0,
+                       "messages from the old store outlived their deleted thread")
+    }
 }
