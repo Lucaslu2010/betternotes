@@ -325,7 +325,12 @@ final class NoteCorpusStore: ObservableObject {
                 add(.ocr, "\(notebook.title) - \(pageLabel) - OCR", page.ocrText, page: page)
                 for (ordinal, element) in page.elements.sorted(by: { $0.createdAt < $1.createdAt }).enumerated() {
                     if let text = element.text {
-                        let kind: NoteSourceKind = element.type == .image ? .imageText : .typedText
+                        let kind: NoteSourceKind
+                        switch element.type {
+                        case .image:         kind = .imageText
+                        case .assistantNote: kind = .assistantAnswer
+                        default:             kind = .typedText
+                        }
                         add(kind, "\(notebook.title) - \(pageLabel) - \(kind.label)", text, page: page, ordinal: ordinal)
                     }
                     if let transcript = element.transcript {

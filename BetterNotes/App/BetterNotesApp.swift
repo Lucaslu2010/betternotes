@@ -3,6 +3,8 @@ import SwiftData
 
 @main
 struct BetterNotesApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(AppPreferenceKey.language) private var language = AppLanguage.english.rawValue
     let modelContainer: ModelContainer
     let startupError: String?
     let recoveryURL: URL?
@@ -10,11 +12,25 @@ struct BetterNotesApp: App {
     @StateObject private var aiService: AIService
     @StateObject private var corpusStore: NoteCorpusStore
     @StateObject private var assistantCoordinator: AssistantCoordinator
-    @StateObject private var writingSuggestionCoordinator: WritingSuggestionCoordinator
+    @StateObject private var inkAnswerCoordinator: InkAnswerCoordinator
+    @StateObject private var nearbySync = NearbySyncCoordinator()
 
     init() {
         let arguments = CommandLine.arguments
         let isUITesting = arguments.contains("-ui-testing")
+        let isUnitTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        // Finger drawing shipped defaulting to on; that shipped default is
+        // now off. Changing an @AppStorage default only changes what a
+        // never-written key reads as -- every device that ever launched the
+        // old build already has `true` persisted for this key, so the new
+        // default silently does nothing for anyone who'd already used the
+        // app. Force it once, the first time this build runs, and never
+        // touch it again so a later manual toggle sticks.
+        let fingerDrawingMigrationKey = "migration.fingerDrawingDefaultOff.v1"
+        if !isUITesting, !UserDefaults.standard.bool(forKey: fingerDrawingMigrationKey) {
+            UserDefaults.standard.set(false, forKey: AppPreferenceKey.allowsFingerDrawing)
+            UserDefaults.standard.set(true, forKey: fingerDrawingMigrationKey)
+        }
         if isUITesting {
             let defaults = UserDefaults.standard
             let toolbarDock: ToolbarDock = arguments.contains("-ui-testing-bottom-toolbar") ? .bottom : .top
@@ -25,7 +41,9 @@ struct BetterNotesApp: App {
             defaults.set(true, forKey: AppPreferenceKey.lassoHintSeen)
             defaults.set(true, forKey: AppPreferenceKey.assistantEnabled)
             defaults.set(true, forKey: AppPreferenceKey.searchAnswersEnabled)
-            defaults.set(false, forKey: AppPreferenceKey.automaticWritingSuggestions)
+            defaults.set(true, forKey: AppPreferenceKey.inkQuestionsEnabled)
+            defaults.set(AppLanguage.english.rawValue, forKey: AppPreferenceKey.language)
+            defaults.set(ScrollMode.singlePage.rawValue, forKey: AppPreferenceKey.scrollMode)
             // Pin finger drawing on. Every other preference the tests depend
             // on is pinned here, but this one was left to whatever the host
             // had stored -- so a drawing test passed in a fresh simulator
@@ -35,8 +53,13 @@ struct BetterNotesApp: App {
             // PaperCanvas only observes those when this is true.
             defaults.set(true, forKey: AppPreferenceKey.allowsFingerDrawing)
         }
-        let settings = AISettingsStore()
-        let client = AIClient()
+        // A UI test cannot inject a URLSession from outside the process, so
+        // the stubbed provider has to be chosen here, behind its own flag.
+        let usesStubbedAI = isUITesting && UITestingAIStub.isEnabled(arguments)
+        let settings = usesStubbedAI
+            ? UITestingAIStub.makeSettings(defaults: .standard)
+            : AISettingsStore()
+        let client = usesStubbedAI ? AIClient(session: UITestingAIStub.makeSession()) : AIClient()
         let corpus = NoteCorpusStore()
         _aiSettings = StateObject(wrappedValue: settings)
         _aiService = StateObject(wrappedValue: AIService(settingsStore: settings, client: client))
@@ -46,9 +69,10 @@ struct BetterNotesApp: App {
             client: client,
             indexer: corpus.indexer
         ))
-        _writingSuggestionCoordinator = StateObject(wrappedValue: WritingSuggestionCoordinator(
+        _inkAnswerCoordinator = StateObject(wrappedValue: InkAnswerCoordinator(
             settings: settings,
-            client: client
+            client: client,
+            indexer: corpus.indexer
         ))
         let schema = Schema([
             Notebook.self,
@@ -62,14 +86,28 @@ struct BetterNotesApp: App {
             let storeURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("BetterNotesUITests-\(storeID).store")
             config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+        } else if isUnitTesting {
+            config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         } else {
-            config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+            // Keep the existing store URL so already downloaded notes remain.
+            config = ModelConfiguration(schema: schema, cloudKitDatabase: .none)
         }
-        let startupSnapshot = isUITesting ? nil : StoreRecovery.createSnapshotIfPresent(for: config.url)
+        let startupSnapshot = (isUITesting || isUnitTesting) ? nil : StoreRecovery.createSnapshotIfPresent(for: config.url)
         do {
-            modelContainer = try ModelContainer(for: schema, configurations: [config])
-            startupError = nil
+            let opened = try ModelContainer(for: schema, configurations: [config])
+            modelContainer = opened
             recoveryURL = startupSnapshot
+            if !isUITesting && !isUnitTesting {
+                do {
+                    try RichTextMigration.run(in: opened)
+                    try InterruptedAnswerRecovery.run(in: opened)
+                    startupError = nil
+                } catch {
+                    startupError = "Notebook recovery could not be saved: \(error.localizedDescription)"
+                }
+            } else {
+                startupError = nil
+            }
         } catch {
             // Never delete a user's notes to recover from a migration failure.
             // Use a temporary in-memory container so the recovery UI can still launch.
@@ -90,18 +128,30 @@ struct BetterNotesApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if let startupError {
-                StoreRecoveryView(errorMessage: startupError, recoveryURL: recoveryURL)
-            } else {
-                LibraryView()
+            Group {
+                if let startupError {
+                    StoreRecoveryView(errorMessage: startupError, recoveryURL: recoveryURL)
+                } else {
+                    LibraryView()
+                        .task { if nearbySync.isPaired { nearbySync.start(context: modelContainer.mainContext) } }
+                        .onChange(of: scenePhase) { _, phase in
+                            if phase == .active, nearbySync.isPaired {
+                                nearbySync.start(context: modelContainer.mainContext)
+                            } else if phase == .background {
+                                nearbySync.stop()
+                            }
+                        }
+                }
             }
+            .environment(\.locale, Locale(identifier: language))
         }
         .modelContainer(modelContainer)
         .environmentObject(aiSettings)
         .environmentObject(aiService)
         .environmentObject(corpusStore)
         .environmentObject(assistantCoordinator)
-        .environmentObject(writingSuggestionCoordinator)
+        .environmentObject(inkAnswerCoordinator)
+        .environmentObject(nearbySync)
     }
 
     private static func argumentValue(after flag: String, in arguments: [String]) -> String? {

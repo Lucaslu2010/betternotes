@@ -6,10 +6,47 @@ import Vision
 enum HandwritingOCR {
     static func recognizeText(from inkData: Data?, pageSize: CGSize) async -> String {
         guard let inkData,
-              let drawing = try? PKDrawing(data: inkData),
-              !drawing.strokes.isEmpty else {
+              let drawing = try? PKDrawing(data: inkData) else {
             return ""
         }
+        return await recognizeText(from: drawing, pageSize: pageSize)
+    }
+
+    static func recognizeLines(from inkData: Data?, pageSize: CGSize) async -> [RecognizedLine] {
+        guard let inkData,
+              let drawing = try? PKDrawing(data: inkData) else {
+            return []
+        }
+        return await recognizeLines(from: drawing, pageSize: pageSize)
+    }
+
+    /// One recognized line, with where it sits **in page coordinates**.
+    ///
+    /// Vision reports a normalized box inside the cropped image it was handed;
+    /// on its own that is unusable for placing anything on the page, so the
+    /// crop rect is folded back in here rather than at each call site.
+    struct RecognizedLine: Equatable, Sendable {
+        let text: String
+        let bounds: CGRect
+        /// Vision's confidence in `text`, 0...1. Nothing downstream enforces
+        /// a threshold on this yet -- it exists so a low-confidence line can
+        /// be told apart from a high-confidence one instead of both looking
+        /// like equally-trustworthy text.
+        let confidence: Float
+    }
+
+    /// Recognize a drawing directly, without a round trip through `Data`.
+    ///
+    /// The lasso hands us a `PKDrawing` assembled from the selected strokes, so
+    /// re-encoding it only to decode it again would be pure waste. Every helper
+    /// below already worked on a drawing; this is the entry point that says so.
+    static func recognizeText(from drawing: PKDrawing, pageSize: CGSize) async -> String {
+        let lines = await recognizeLines(from: drawing, pageSize: pageSize)
+        return lines.map(\.text).joined(separator: "\n")
+    }
+
+    static func recognizeLines(from drawing: PKDrawing, pageSize: CGSize) async -> [RecognizedLine] {
+        guard !drawing.strokes.isEmpty else { return [] }
 
         let recognitionDrawing = normalizedDrawing(for: drawing)
         let recognitionRect = cropRect(for: recognitionDrawing, pageSize: pageSize)
@@ -18,11 +55,11 @@ enum HandwritingOCR {
             rect: recognitionRect,
             scale: renderScale(for: recognitionRect)
         )
-        guard let cgImage = image.cgImage else { return "" }
+        guard let cgImage = image.cgImage else { return [] }
 
         return await withTaskCancellationHandler(operation: {
             await Task.detached(priority: .utility) {
-                performRecognition(on: cgImage)
+                performRecognition(on: cgImage, cropRect: recognitionRect)
             }.value
         }, onCancel: {
             // The Vision request runs synchronously inside performRecognition,
@@ -33,7 +70,7 @@ enum HandwritingOCR {
     }
 
     @MainActor
-    private static func renderImage(for drawing: PKDrawing, rect: CGRect, scale: CGFloat) -> UIImage {
+    static func renderImage(for drawing: PKDrawing, rect: CGRect, scale: CGFloat) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.scale = scale
         format.opaque = true
@@ -41,23 +78,39 @@ enum HandwritingOCR {
 
         let outputRect = CGRect(origin: .zero, size: rect.size)
         let renderer = UIGraphicsImageRenderer(size: rect.size, format: format)
-        return renderer.image { context in
-            UIColor.white.setFill()
-            context.fill(outputRect)
+        var image = UIImage()
+        // PencilKit adapts black ink to white under Dark Mode even when the
+        // receiving bitmap has a white background. Vision then sees a blank
+        // page and cannot recognize a newly written question.
+        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+            image = renderer.image { context in
+                UIColor.white.setFill()
+                context.fill(outputRect)
 
-            let inkImage = drawing.image(from: rect, scale: scale)
-            inkImage.draw(in: outputRect)
+                drawing.image(from: rect, scale: scale).draw(in: outputRect)
+            }
         }
+        return image
     }
 
-    private static func performRecognition(on cgImage: CGImage) -> String {
+    private static func performRecognition(on cgImage: CGImage, cropRect: CGRect) -> [RecognizedLine] {
         let request = VNRecognizeTextRequest()
         if #available(iOS 16.0, *) {
             request.revision = VNRecognizeTextRequestRevision3
-            request.automaticallyDetectsLanguage = true
         }
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
+        // Confirmed live against real handwritten math (arctan/arcsin
+        // homework): with language correction and auto language-detection on,
+        // Vision "corrects" handwriting toward whatever language's dictionary
+        // it guessed -- observed substituting whole runs of random Chinese
+        // characters into what was actually English math notation, and
+        // separately collapsing a literal "??" (the ink-question trigger,
+        // see InkQuestionDetector) down to a single "?". Both behaviors bias
+        // toward natural-language prose, which handwritten equations and
+        // short symbol-heavy annotations are not. Pin to English and take
+        // Vision's raw stroke-shape reading over its "corrected" guess.
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en-US"]
         // minimumTextHeight MUST be > 0; 0 is rejected by Vision and makes
         // the entire request throw, silently returning no recognized text.
         // 0.02 keeps short words/captions detectable while filtering noise.
@@ -71,13 +124,22 @@ enum HandwritingOCR {
         do {
             try handler.perform([request])
         } catch {
-            return ""
+            // Distinguish "Vision threw" from "there was no text" -- both
+            // used to collapse into the same empty result, which made a
+            // real Vision-level failure indistinguishable from blank ink.
+            #if DEBUG
+            print("[HandwritingOCR] VNImageRequestHandler.perform failed: \(error)")
+            #endif
+            return []
         }
 
-        return recognizedText(from: request.results ?? [])
+        return recognizedLines(from: request.results ?? [], cropRect: cropRect)
     }
 
-    private static func recognizedText(from observations: [VNRecognizedTextObservation]) -> String {
+    private static func recognizedLines(
+        from observations: [VNRecognizedTextObservation],
+        cropRect: CGRect
+    ) -> [RecognizedLine] {
         observations
             .sorted { lhs, rhs in
                 let rowDistance = abs(lhs.boundingBox.midY - rhs.boundingBox.midY)
@@ -86,9 +148,26 @@ enum HandwritingOCR {
                 }
                 return lhs.boundingBox.minX < rhs.boundingBox.minX
             }
-            .compactMap { $0.topCandidates(1).first?.string.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
+            .compactMap { observation in
+                guard let candidate = observation.topCandidates(1).first else { return nil }
+                let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return nil }
+                return RecognizedLine(
+                    text: text,
+                    bounds: pageRect(of: observation.boundingBox, in: cropRect),
+                    confidence: candidate.confidence
+                )
+            }
+    }
+
+    /// Vision's normalized, bottom-left-origin box mapped back onto the page.
+    private static func pageRect(of boundingBox: CGRect, in cropRect: CGRect) -> CGRect {
+        CGRect(
+            x: cropRect.minX + boundingBox.minX * cropRect.width,
+            y: cropRect.minY + (1 - boundingBox.maxY) * cropRect.height,
+            width: boundingBox.width * cropRect.width,
+            height: boundingBox.height * cropRect.height
+        )
     }
 
     private static func normalizedDrawing(for drawing: PKDrawing) -> PKDrawing {

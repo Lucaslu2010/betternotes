@@ -7,9 +7,9 @@ enum AssistantScope: String, CaseIterable, Codable, Sendable {
 
     var label: String {
         switch self {
-        case .currentPage: return "Current Page"
-        case .currentNotebook: return "Current Notebook"
-        case .allNotes: return "All Notes"
+        case .currentPage: return AppLocalization.text("Current Page")
+        case .currentNotebook: return AppLocalization.text("Current Notebook")
+        case .allNotes: return AppLocalization.text("All Notes")
         }
     }
 }
@@ -28,7 +28,6 @@ struct AIConversationMessage: Codable, Sendable, Equatable {
 enum AIFeatureOrigin: String, Codable, Sendable {
     case assistant
     case search
-    case writingSuggestion
     case providerTest
 }
 
@@ -36,6 +35,7 @@ struct AIRequest: Sendable {
     let systemInstructions: String
     let conversationMessages: [AIConversationMessage]
     let retrievedSources: [NoteChunk]
+    let imageAttachments: [AIImageAttachment]
     let outputLimit: Int
     let featureOrigin: AIFeatureOrigin
 }
@@ -55,16 +55,19 @@ enum NoteSourceKind: String, CaseIterable, Codable, Sendable {
     case ocr
     case imageText
     case transcript
+    /// Text the assistant itself wrote onto a page.
+    case assistantAnswer
 
     var label: String {
         switch self {
-        case .notebookTitle: return "Notebook"
-        case .tags: return "Tags"
-        case .pageTitle: return "Page title"
-        case .typedText: return "Typed text"
-        case .ocr: return "OCR"
-        case .imageText: return "Image text"
-        case .transcript: return "Transcript"
+        case .notebookTitle: return AppLocalization.text("Notebook")
+        case .tags: return AppLocalization.text("Tags")
+        case .pageTitle: return AppLocalization.text("Page title")
+        case .typedText: return AppLocalization.text("Typed text")
+        case .ocr: return AppLocalization.text("OCR")
+        case .imageText: return AppLocalization.text("Image text")
+        case .transcript: return AppLocalization.text("Transcript")
+        case .assistantAnswer: return AppLocalization.text("Assistant answer")
         }
     }
 
@@ -77,6 +80,11 @@ enum NoteSourceKind: String, CaseIterable, Codable, Sendable {
         case .ocr: return 1.45
         case .imageText: return 1.35
         case .transcript: return 1.65
+        // Deliberately the lowest weight in the set. An assistant answer is
+        // still worth finding in search, but it is not evidence: ranking it
+        // alongside the user's own writing lets the model retrieve its own
+        // earlier output and cite it back as a source.
+        case .assistantAnswer: return 0.6
         }
     }
 }
@@ -146,6 +154,13 @@ struct SearchResult: Identifiable, Sendable, Equatable {
     let highlights: [String]
 }
 
+/// Whether a passage of this kind may be offered to the model as a citable
+/// source. Assistant answers are indexed for search but never cited -- citing
+/// them would launder the model's own claims into evidence.
+extension NoteSourceKind {
+    var isCitable: Bool { self != .assistantAnswer }
+}
+
 struct SourceCitation: Codable, Identifiable, Sendable, Equatable {
     var id: String { token }
     let notebookID: UUID
@@ -155,31 +170,12 @@ struct SourceCitation: Codable, Identifiable, Sendable, Equatable {
     let token: String
 }
 
-enum WritingSuggestionMode: String, CaseIterable, Codable, Sendable {
-    case improveClarity
-    case makeConcise
-    case explain
-    case outline
-    case continueWriting
-
-    var label: String {
-        switch self {
-        case .improveClarity: return "Improve Clarity"
-        case .makeConcise: return "Make Concise"
-        case .explain: return "Explain"
-        case .outline: return "Outline"
-        case .continueWriting: return "Continue Writing"
-        }
-    }
-}
-
-struct WritingSuggestion: Identifiable, Sendable, Equatable {
-    let id: UUID
-    let sourceRange: NSRange
-    let originalText: String
-    let replacementText: String
-    let mode: WritingSuggestionMode
-    let requestRevision: Int
+/// A page rendered as an image, attached to a single request turn only --
+/// never persisted into conversation history.
+struct AIImageAttachment: Sendable, Equatable {
+    let pageID: UUID
+    let label: String
+    let jpegData: Data
 }
 
 extension Notification.Name {

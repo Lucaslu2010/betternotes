@@ -5,6 +5,7 @@ struct AIProviderConfiguration: Sendable, Equatable {
     let apiKey: String
     let baseURL: String
     let model: String
+    let sendsPageImages: Bool
 }
 
 @MainActor
@@ -12,17 +13,20 @@ final class AISettingsStore: ObservableObject {
     @Published private(set) var isRemoteConfigured = false
     @Published private(set) var baseURL = "https://api.deepseek.com/v1"
     @Published private(set) var model = "deepseek-chat"
-    @Published var automaticWritingSuggestions: Bool {
-        didSet { defaults.set(automaticWritingSuggestions, forKey: AppPreferenceKey.automaticWritingSuggestions) }
-    }
+    @Published private(set) var sendsPageImages = false
 
     private var apiKey = ""
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    /// `ephemeralKey` configures the store for this launch only, without
+    /// touching the Keychain. It exists for the UI-testing provider stub: a
+    /// test that called `update` would write a fake key into the real Keychain
+    /// of whatever device it ran on, and leave the app pointed at a dead
+    /// provider long after the test finished.
+    init(defaults: UserDefaults = .standard, ephemeralKey: String? = nil) {
         self.defaults = defaults
-        self.automaticWritingSuggestions = defaults.bool(forKey: AppPreferenceKey.automaticWritingSuggestions)
-        apiKey = AIKeychainStore.load() ?? ""
+        sendsPageImages = defaults.bool(forKey: "ai.sendsPageImages")
+        apiKey = ephemeralKey ?? AIKeychainStore.load() ?? ""
         // Re-check the stored URL rather than trusting it. update() validates
         // on the way in, but UserDefaults is not a trust boundary the way the
         // Keychain is — a plain-HTTP URL written by an older build or a synced
@@ -37,7 +41,12 @@ final class AISettingsStore: ObservableObject {
 
     var configuration: AIProviderConfiguration? {
         guard isRemoteConfigured else { return nil }
-        return AIProviderConfiguration(apiKey: apiKey, baseURL: baseURL, model: model)
+        return AIProviderConfiguration(apiKey: apiKey, baseURL: baseURL, model: model, sendsPageImages: sendsPageImages)
+    }
+
+    func setSendsPageImages(_ value: Bool) {
+        sendsPageImages = value
+        defaults.set(value, forKey: "ai.sendsPageImages")
     }
 
     func update(apiKey: String?, baseURL: String, model: String) throws {
@@ -80,7 +89,7 @@ enum AIConfigurationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidURL:
-            return "Enter an HTTPS provider URL. Plain HTTP is allowed only for localhost."
+            return AppLocalization.text("Enter an HTTPS provider URL. Plain HTTP is allowed only for localhost.")
         case .secureStorage(let status):
             return "The API key could not be stored securely (Keychain error \(status))."
         }

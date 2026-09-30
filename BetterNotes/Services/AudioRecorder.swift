@@ -51,7 +51,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         guard recordingRequestID == requestID else { return false }
         guard AVAudioApplication.shared.recordPermission == .granted else {
             recordingRequestID = nil
-            lastError = "Microphone permission denied"
+            lastError = AppLocalization.text("Microphone permission denied")
             return false
         }
 
@@ -86,7 +86,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         }
         guard sessionReady else {
             recordingRequestID = nil
-            lastError = "Failed to configure the audio session"
+            lastError = AppLocalization.text("Failed to configure the audio session")
             return false
         }
 
@@ -123,7 +123,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate, 
             recorder?.stop()
             recorder = nil
             deactivateAudioSession()
-            lastError = "The recording file could not be found."
+            lastError = AppLocalization.text("The recording file could not be found.")
             return nil
         }
 
@@ -148,7 +148,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate, 
             guard !data.isEmpty else { throw AudioRecordingError.emptyFile }
             return data
         } catch {
-            lastError = "The recording could not be saved. \(error.localizedDescription)"
+            lastError = AppLocalization.format("The recording could not be saved. %@", error.localizedDescription)
             return nil
         }
     }
@@ -166,11 +166,11 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate, 
 
     func play(data: Data, elementID: PersistentIdentifier) {
         guard !isRecording else {
-            lastError = "Stop the current recording before playing another audio note."
+            lastError = AppLocalization.text("Stop the current recording before playing another audio note.")
             return
         }
         guard !data.isEmpty else {
-            lastError = "This recording has no audio data."
+            lastError = AppLocalization.text("This recording has no audio data.")
             return
         }
         stopPlayback(deactivatesSession: false)
@@ -394,7 +394,7 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate, 
             self.stopPlaybackTick()
             self.deactivateAudioSession()
             if !flag {
-                self.lastError = "The audio player stopped before the recording finished."
+                self.lastError = AppLocalization.text("The audio player stopped before the recording finished.")
             }
         }
     }
@@ -405,8 +405,8 @@ private enum AudioRecordingError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .couldNotStart: return "The recorder could not start."
-        case .emptyFile: return "The recording file is empty."
+        case .couldNotStart: return AppLocalization.text("The recorder could not start.")
+        case .emptyFile: return AppLocalization.text("The recording file is empty.")
         }
     }
 }
@@ -416,8 +416,8 @@ private enum AudioPlaybackError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .couldNotStart: return "The audio player could not start."
-        case .sessionUnavailable: return "The audio session is unavailable."
+        case .couldNotStart: return AppLocalization.text("The audio player could not start.")
+        case .sessionUnavailable: return AppLocalization.text("The audio session is unavailable.")
         }
     }
 }
@@ -427,11 +427,11 @@ private enum AudioTranscriptionError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .emptyRecording: return "This recording has no audio data."
-        case .permissionDenied: return "Speech recognition permission is required to transcribe audio."
-        case .unavailable: return "Speech recognition is currently unavailable."
-        case .noSpeech: return "No speech could be recognized in this recording."
-        case .cancelled: return "The previous transcription was cancelled."
+        case .emptyRecording: return AppLocalization.text("This recording has no audio data.")
+        case .permissionDenied: return AppLocalization.text("Speech recognition permission is required to transcribe audio.")
+        case .unavailable: return AppLocalization.text("Speech recognition is currently unavailable.")
+        case .noSpeech: return AppLocalization.text("No speech could be recognized in this recording.")
+        case .cancelled: return AppLocalization.text("The previous transcription was cancelled.")
         }
     }
 }

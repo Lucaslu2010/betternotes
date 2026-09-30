@@ -56,15 +56,13 @@ struct AssistantView: View {
     @EnvironmentObject private var aiService: AIService
     @Query(sort: \AssistantThread.updatedAt, order: .reverse) private var threads: [AssistantThread]
     @State private var selectedThreadID: UUID?
+    @State private var isNewConversation = false
     @State private var composer = ""
     @State private var lastQuestion = ""
     @State private var showingProviderSettings = false
-    @State private var showingRename = false
-    @State private var renameText = ""
+    @State private var conversationSaveError: String?
+    @State private var cancellationNotice: String?
     @State private var draftScope = AssistantScope.allNotes
-    @State private var isStartingNewConversation = false
-    @State private var confirmingClear = false
-    @State private var confirmingDelete = false
     @FocusState private var composerFocused: Bool
 
     private let starters = [
@@ -77,6 +75,12 @@ struct AssistantView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                HStack {
+                    conversationMenu
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
                 scopePicker
                 quickActions
                 Divider()
@@ -101,31 +105,50 @@ struct AssistantView: View {
                 .accessibilityIdentifier("assistant-dismiss")
                 .accessibilityLabel("Close Assistant")
             }
-            .navigationTitle(currentThread?.title ?? "Assistant")
+            .navigationTitle(currentThread?.title ?? AppLocalization.text("Assistant"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { assistantToolbar }
             .onDisappear { coordinator.cancel() }
             .sheet(isPresented: $showingProviderSettings) {
                 AIProviderSettingsSheet(service: aiService)
             }
-            .alert("Rename Conversation", isPresented: $showingRename) {
-                TextField("Conversation name", text: $renameText)
-                Button("Rename") { renameCurrentThread() }
-                Button("Cancel", role: .cancel) {}
-            }
-            .confirmationDialog("Clear this conversation?", isPresented: $confirmingClear, titleVisibility: .visible) {
-                Button("Clear Conversation", role: .destructive) { clearCurrentThread() }
-                Button("Cancel", role: .cancel) {}
+            .alert("Conversation Couldn’t Be Saved", isPresented: Binding(
+                get: { conversationSaveError != nil },
+                set: { if !$0 { conversationSaveError = nil } }
+            )) {
+                Button("OK", role: .cancel) { conversationSaveError = nil }
             } message: {
-                Text("The conversation will remain, but all of its messages will be removed.")
-            }
-            .confirmationDialog("Delete this conversation?", isPresented: $confirmingDelete, titleVisibility: .visible) {
-                Button("Delete Conversation", role: .destructive) { deleteCurrentThread() }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This cannot be undone.")
+                Text(conversationSaveError ?? "")
             }
         }
+    }
+
+    private var conversationMenu: some View {
+        Menu {
+            Button("New Conversation", systemImage: "plus.bubble") {
+                coordinator.clearTransientState()
+                draftScope = currentThread?.scope ?? draftScope
+                selectedThreadID = nil
+                isNewConversation = true
+                cancellationNotice = nil
+            }
+            if !threads.isEmpty {
+                Divider()
+                ForEach(Array(threads.prefix(12))) { thread in
+                    Button(thread.title) {
+                        coordinator.clearTransientState()
+                        selectedThreadID = thread.stableID
+                        isNewConversation = false
+                        draftScope = thread.scope
+                        cancellationNotice = nil
+                    }
+                }
+            }
+        } label: {
+            Label("Conversations", systemImage: "bubble.left.and.bubble.right")
+                .frame(minHeight: 44)
+        }
+        .buttonStyle(.bordered)
+        .accessibilityIdentifier("assistant-conversations-menu")
     }
 
     private var scopePicker: some View {
@@ -135,9 +158,14 @@ struct AssistantView: View {
                 coordinator.clearTransientState()
                 draftScope = scope
                 if let currentThread {
+                    let previousScope = currentThread.scope
+                    let previousUpdatedAt = currentThread.updatedAt
                     currentThread.scope = scope
                     currentThread.updatedAt = .now
-                    try? context.save()
+                    if !saveConversation() {
+                        currentThread.scope = previousScope
+                        currentThread.updatedAt = previousUpdatedAt
+                    }
                 }
             }
         )) {
@@ -194,24 +222,26 @@ struct AssistantView: View {
     }
 
     private func quickAction(_ title: String, icon: String, prompt: String) -> some View {
-        Button { submit(prompt) } label: { Label(title, systemImage: icon) }
+        Button { submit(AppLocalization.text(prompt)) } label: {
+            Label(AppLocalization.text(title), systemImage: icon)
+        }
             .buttonStyle(.bordered)
     }
 
     private var starterPrompts: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(aiService.isRemoteConfigured ? "Ask across your notes" : "On-device assistant")
+            Text(AppLocalization.text(aiService.isRemoteConfigured ? "Ask across your notes" : "On-device assistant"))
                 .font(.headline)
-            Text(aiService.isRemoteConfigured
+            Text(AppLocalization.text(aiService.isRemoteConfigured
                  ? "Choose a starting point or write your own question."
-                 : "Search and extract answers locally, or configure a provider for synthesized responses.")
+                 : "Search and extract answers locally, or configure a provider for synthesized responses."))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             ForEach(starters, id: \.0) { starter in
                 Button {
-                    submit(starter.1)
+                    submit(AppLocalization.text(starter.1))
                 } label: {
-                    Label(starter.0, systemImage: starterIcon(starter.0))
+                    Label(AppLocalization.text(starter.0), systemImage: starterIcon(starter.0))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 7)
                 }
@@ -332,6 +362,12 @@ struct AssistantView: View {
 
     private var composerBar: some View {
         VStack(spacing: 8) {
+            if let cancellationNotice {
+                Label(cancellationNotice, systemImage: "stop.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if let error = coordinator.errorMessage, !coordinator.isResponding {
                 HStack {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -353,7 +389,10 @@ struct AssistantView: View {
                     .submitLabel(.send)
                     .onSubmit { submit(composer) }
                 if coordinator.isResponding {
-                    Button { coordinator.cancel() } label: {
+                    Button {
+                        coordinator.clearTransientState()
+                        cancellationNotice = AppLocalization.text("Response stopped. Your notes were not changed.")
+                    } label: {
                         Image(systemName: "stop.fill")
                             .frame(width: 32, height: 32)
                     }
@@ -374,45 +413,8 @@ struct AssistantView: View {
         .background(.bar)
     }
 
-    @ToolbarContentBuilder
-    private var assistantToolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            Menu {
-                Button("New Conversation", systemImage: "square.and.pencil") { startNewConversation() }
-                Button("Rename Conversation", systemImage: "pencil") {
-                    renameText = currentThread?.title ?? ""
-                    showingRename = true
-                }
-                .disabled(currentThread == nil)
-                Button("Clear Conversation", systemImage: "eraser") { confirmingClear = true }
-                    .disabled(currentMessages.isEmpty)
-                Button("Delete Conversation", systemImage: "trash", role: .destructive) { confirmingDelete = true }
-                    .disabled(currentThread == nil)
-                if currentThread == nil {
-                    Text("Send a message to create a conversation.")
-                } else if currentMessages.isEmpty {
-                    Text("There are no messages to clear.")
-                }
-                Divider()
-                ForEach(threads) { thread in
-                    Button {
-                        coordinator.clearTransientState()
-                        selectedThreadID = thread.stableID
-                        isStartingNewConversation = false
-                        draftScope = thread.scope
-                    } label: {
-                        Label(thread.title, systemImage: selectedThreadID == thread.stableID ? "checkmark" : "bubble.left")
-                    }
-                }
-            } label: {
-                Image(systemName: "bubble.left.and.bubble.right")
-            }
-            .accessibilityLabel("Conversations")
-        }
-    }
-
     private var currentThread: AssistantThread? {
-        guard !isStartingNewConversation else { return nil }
+        if isNewConversation { return nil }
         guard let selectedThreadID else { return threads.first }
         return threads.first { $0.stableID == selectedThreadID }
     }
@@ -421,68 +423,36 @@ struct AssistantView: View {
         currentThread?.orderedMessages ?? []
     }
 
-    private func startNewConversation() {
-        coordinator.clearTransientState()
-        // Eagerly create the thread so it appears in the conversation
-        // switcher immediately, giving visible feedback that "New
-        // Conversation" worked. Previously the thread was only created
-        // lazily on first message send, making the button appear broken.
-        let thread = AssistantThread(scope: draftScope)
-        context.insert(thread)
-        try? context.save()
-        selectedThreadID = thread.stableID
-        isStartingNewConversation = false
-        draftScope = .allNotes
-        composer = ""
-        composerFocused = true
-    }
-
     private func threadForSubmission() -> AssistantThread {
         if let currentThread {
             selectedThreadID = currentThread.stableID
             return currentThread
         }
-        // Fallback: create thread if somehow none exists (shouldn't happen
-        // after the eager-creation fix above, but keeps the safety net).
+        // Lazily create a thread on first use -- there's no longer a UI
+        // affordance to create one explicitly.
         let thread = AssistantThread(scope: draftScope)
         context.insert(thread)
-        try? context.save()
         selectedThreadID = thread.stableID
-        isStartingNewConversation = false
+        isNewConversation = false
         return thread
-    }
-
-    private func clearCurrentThread() {
-        guard let thread = currentThread else { return }
-        coordinator.clearTransientState()
-        for message in thread.messages { context.delete(message) }
-        thread.messages = []
-        thread.updatedAt = .now
-        try? context.save()
-    }
-
-    private func deleteCurrentThread() {
-        guard let thread = currentThread else { return }
-        coordinator.clearTransientState()
-        context.delete(thread)
-        try? context.save()
-        selectedThreadID = threads.first(where: { $0.stableID != thread.stableID })?.stableID
-        isStartingNewConversation = selectedThreadID == nil
-    }
-
-    private func renameCurrentThread() {
-        let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let thread = currentThread, !name.isEmpty else { return }
-        thread.title = name
-        thread.updatedAt = .now
-        try? context.save()
     }
 
     private func submit(_ rawQuestion: String) {
         let question = rawQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !coordinator.isResponding else { return }
+        cancellationNotice = nil
+        let isNewThread = currentThread == nil
         let thread = threadForSubmission()
-        let history = thread.orderedMessages.map { AIConversationMessage(role: $0.role, content: $0.content) }
+        let previousTitle = thread.title
+        let previousUpdatedAt = thread.updatedAt
+        var history = thread.orderedMessages
+            .filter { !$0.isFailure }
+            .map { AIConversationMessage(role: $0.role, content: $0.content) }
+        // Retry already has the prior user question in the saved thread.
+        // Sending it twice wastes context and can skew retrieval.
+        if history.last?.role == .user, history.last?.content == question {
+            history.removeLast()
+        }
         let userMessage = AssistantMessage(role: .user, content: question)
         userMessage.thread = thread
         thread.messages.append(userMessage)
@@ -491,7 +461,18 @@ struct AssistantView: View {
         }
         thread.updatedAt = .now
         context.insert(userMessage)
-        try? context.save()
+        guard saveConversation() else {
+            thread.messages.removeAll { $0.id == userMessage.id }
+            context.delete(userMessage)
+            thread.title = previousTitle
+            thread.updatedAt = previousUpdatedAt
+            if isNewThread {
+                context.delete(thread)
+                selectedThreadID = nil
+                isNewConversation = true
+            }
+            return
+        }
         composer = ""
         lastQuestion = question
 
@@ -500,7 +481,12 @@ struct AssistantView: View {
             scope: thread.scope,
             notebookID: notebook.stableID,
             pageID: page.stableID,
-            history: history
+            history: history,
+            resolvePageImage: { pageID in
+                let descriptor = FetchDescriptor<Page>(predicate: #Predicate { $0.stableID == pageID })
+                guard let page = try? context.fetch(descriptor).first else { return nil }
+                return PDFExport.renderPageImage(page)
+            }
         ) { reply in
             guard thread.modelContext != nil else { return }
             let message = AssistantMessage(
@@ -514,8 +500,19 @@ struct AssistantView: View {
             thread.messages.append(message)
             thread.updatedAt = .now
             context.insert(message)
-            try? context.save()
-            coordinator.clearTransientState()
+            if saveConversation() { coordinator.clearTransientState() }
+        }
+    }
+
+    @discardableResult
+    private func saveConversation() -> Bool {
+        do {
+            try context.save()
+            conversationSaveError = nil
+            return true
+        } catch {
+            conversationSaveError = error.localizedDescription
+            return false
         }
     }
 
