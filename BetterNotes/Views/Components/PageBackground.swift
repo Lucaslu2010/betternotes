@@ -5,12 +5,13 @@ struct PageBackground: View {
     let backgroundHex: String
     let lineStyle: PageLineStyle
     let orientation: PageOrientation
+    var lineThickness: Double = PageLineAppearance.defaultThickness
+    var lineOpacity: Double = PageLineAppearance.defaultOpacity
 
     var body: some View {
         ZStack {
             Color(hex: backgroundHex) ?? .white
             lineOverlay
-                .opacity(0.5)
         }
     }
 
@@ -19,6 +20,8 @@ struct PageBackground: View {
         Canvas { context, size in
             let pageSize = orientation.size
             let scale = min(size.width / max(pageSize.width, 1), size.height / max(pageSize.height, 1))
+            let stroke = GraphicsContext.Shading.color(.black.opacity(PageLineAppearance.opacity(lineOpacity)))
+            let width = max(0.2, CGFloat(PageLineAppearance.thickness(lineThickness)) * scale)
             switch lineStyle {
             case .blank:
                 break
@@ -29,7 +32,7 @@ struct PageBackground: View {
                     var path = Path()
                     path.move(to: CGPoint(x: 0, y: y))
                     path.addLine(to: CGPoint(x: size.width, y: y))
-                    context.stroke(path, with: .color(.gray.opacity(0.3)), lineWidth: max(0.35, 0.5 * scale))
+                    context.stroke(path, with: stroke, lineWidth: width)
                     y += spacing
                 }
             case .grid:
@@ -39,7 +42,7 @@ struct PageBackground: View {
                     var p = Path()
                     p.move(to: CGPoint(x: x, y: 0))
                     p.addLine(to: CGPoint(x: x, y: size.height))
-                    context.stroke(p, with: .color(.gray.opacity(0.25)), lineWidth: max(0.35, 0.5 * scale))
+                    context.stroke(p, with: stroke, lineWidth: width)
                     x += spacing
                 }
                 var y = spacing
@@ -47,7 +50,7 @@ struct PageBackground: View {
                     var p = Path()
                     p.move(to: CGPoint(x: 0, y: y))
                     p.addLine(to: CGPoint(x: size.width, y: y))
-                    context.stroke(p, with: .color(.gray.opacity(0.25)), lineWidth: max(0.35, 0.5 * scale))
+                    context.stroke(p, with: stroke, lineWidth: width)
                     y += spacing
                 }
             case .dots:
@@ -56,9 +59,9 @@ struct PageBackground: View {
                 while y < size.height {
                     var x = spacing
                     while x < size.width {
-                        let dotSize = max(1, 2 * scale)
+                        let dotSize = max(1, CGFloat(PageLineAppearance.thickness(lineThickness)) * 4 * scale)
                         let rect = CGRect(x: x - dotSize / 2, y: y - dotSize / 2, width: dotSize, height: dotSize)
-                        context.fill(Path(ellipseIn: rect), with: .color(.gray.opacity(0.4)))
+                        context.fill(Path(ellipseIn: rect), with: stroke)
                         x += spacing
                     }
                     y += spacing
@@ -68,17 +71,17 @@ struct PageBackground: View {
                 var divider = Path()
                 divider.move(to: CGPoint(x: marginX, y: 0))
                 divider.addLine(to: CGPoint(x: marginX, y: size.height))
-                context.stroke(divider, with: .color(.blue.opacity(0.5)), lineWidth: max(0.5, 1.2 * scale))
-                drawRuled(context: context, size: size, startY: 52 * scale, spacing: 30 * scale, scale: scale)
+                context.stroke(divider, with: stroke, lineWidth: width * 1.5)
+                drawRuled(context: context, size: size, startY: 52 * scale, spacing: 30 * scale, stroke: stroke, width: width)
             case .checklist:
-                drawRuled(context: context, size: size, startY: 60 * scale, spacing: 40 * scale, scale: scale)
+                drawRuled(context: context, size: size, startY: 60 * scale, spacing: 40 * scale, stroke: stroke, width: width)
                 let spacing: CGFloat = 40 * scale
                 var y = spacing
                 while y < size.height {
                     context.stroke(
                         Path(CGRect(x: 18 * scale, y: y - 11 * scale, width: 20 * scale, height: 20 * scale)),
-                        with: .color(.gray.opacity(0.45)),
-                        lineWidth: max(0.4, scale)
+                        with: stroke,
+                        lineWidth: width
                     )
                     y += spacing
                 }
@@ -101,18 +104,19 @@ struct PageBackground: View {
                 }
                 grid.move(to: CGPoint(x: 0, y: headerHeight))
                 grid.addLine(to: CGPoint(x: size.width, y: headerHeight))
-                context.stroke(grid, with: .color(.gray.opacity(0.4)), lineWidth: max(0.4, 0.8 * scale))
+                context.stroke(grid, with: stroke, lineWidth: width)
             }
         }
     }
 
-    private func drawRuled(context: GraphicsContext, size: CGSize, startY: CGFloat, spacing: CGFloat, scale: CGFloat) {
+    private func drawRuled(context: GraphicsContext, size: CGSize, startY: CGFloat, spacing: CGFloat,
+                           stroke: GraphicsContext.Shading, width: CGFloat) {
         var y = startY
         while y < size.height {
             var path = Path()
             path.move(to: CGPoint(x: 0, y: y))
             path.addLine(to: CGPoint(x: size.width, y: y))
-            context.stroke(path, with: .color(.gray.opacity(0.3)), lineWidth: max(0.35, 0.5 * scale))
+            context.stroke(path, with: stroke, lineWidth: width)
             y += spacing
         }
     }
@@ -122,6 +126,8 @@ struct PageTemplatePicker: View {
     @Binding var selection: PageLineStyle
     let backgroundHex: String
     let orientation: PageOrientation
+    var lineThickness: Double = PageLineAppearance.defaultThickness
+    var lineOpacity: Double = PageLineAppearance.defaultOpacity
 
     private let columns = [GridItem(.adaptive(minimum: 132), spacing: 12)]
 
@@ -136,7 +142,9 @@ struct PageTemplatePicker: View {
                         PageBackground(
                             backgroundHex: backgroundHex,
                             lineStyle: style,
-                            orientation: orientation
+                            orientation: orientation,
+                            lineThickness: lineThickness,
+                            lineOpacity: lineOpacity
                         )
                         .aspectRatio(orientation.size.width / orientation.size.height, contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -166,5 +174,30 @@ struct PageTemplatePicker: View {
             }
         }
         .padding(.vertical, 6)
+    }
+}
+
+struct LineAppearanceControls: View {
+    @Binding var thickness: Double
+    @Binding var opacity: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            LabeledContent("Thickness", value: String(format: "%.2f pt", thickness))
+            Slider(value: $thickness, in: PageLineAppearance.thicknessRange, step: 0.25)
+                .accessibilityIdentifier("line-thickness-slider")
+        }
+        VStack(alignment: .leading, spacing: 6) {
+            LabeledContent("Opacity", value: "\(Int((opacity * 100).rounded()))%")
+            Slider(value: $opacity, in: PageLineAppearance.opacityRange, step: 0.05)
+                .accessibilityIdentifier("line-opacity-slider")
+            HStack {
+                Text("Grey")
+                Spacer()
+                Text("Black")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
     }
 }

@@ -10,6 +10,8 @@ enum PageOperations {
         page.ocrUpdatedAt = source.ocrUpdatedAt
         page.backgroundHex = source.backgroundHex
         page.lineStyle = source.lineStyle
+        page.lineThickness = source.lineThickness
+        page.lineOpacity = source.lineOpacity
         page.orientation = source.orientation
         page.notebook = notebook
         for sourceElement in source.orderedElements {

@@ -8,7 +8,7 @@ enum PDFImportError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unreadableDocument:
-            return "The selected PDF could not be opened."
+            return AppLocalization.text("The selected PDF could not be opened.")
         }
     }
 }

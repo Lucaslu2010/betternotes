@@ -7,11 +7,11 @@ private enum LibrarySection: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .notes: return "Notes"
-        case .favorites: return "Favorites"
-        case .bookmarks: return "Bookmarks"
-        case .archive: return "Archive"
-        case .trash: return "Trash"
+        case .notes: return AppLocalization.text("Notes")
+        case .favorites: return AppLocalization.text("Favorites")
+        case .bookmarks: return AppLocalization.text("Bookmarks")
+        case .archive: return AppLocalization.text("Archive")
+        case .trash: return AppLocalization.text("Trash")
         }
     }
 
@@ -27,21 +27,21 @@ private enum LibrarySection: String, CaseIterable {
 
     var emptyTitle: String {
         switch self {
-        case .notes: return "No Notebooks Yet"
-        case .favorites: return "No Favorites"
-        case .bookmarks: return "No Bookmarked Pages"
-        case .archive: return "Archive Is Empty"
-        case .trash: return "Trash Is Empty"
+        case .notes: return AppLocalization.text("No Notebooks Yet")
+        case .favorites: return AppLocalization.text("No Favorites")
+        case .bookmarks: return AppLocalization.text("No Bookmarked Pages")
+        case .archive: return AppLocalization.text("Archive Is Empty")
+        case .trash: return AppLocalization.text("Trash Is Empty")
         }
     }
 
     var emptyMessage: String {
         switch self {
-        case .notes: return "Create a notebook to start writing and drawing"
-        case .favorites: return "Favorite notebooks appear here"
-        case .bookmarks: return "Bookmark a page from the page overview and it appears here"
-        case .archive: return "Archived notebooks stay out of your main library"
-        case .trash: return "Deleted notebooks can be restored from here"
+        case .notes: return AppLocalization.text("Create a notebook to start writing and drawing")
+        case .favorites: return AppLocalization.text("Favorite notebooks appear here")
+        case .bookmarks: return AppLocalization.text("Bookmark a page from the page overview and it appears here")
+        case .archive: return AppLocalization.text("Archived notebooks stay out of your main library")
+        case .trash: return AppLocalization.text("Deleted notebooks can be restored from here")
         }
     }
 
@@ -64,9 +64,9 @@ enum TrashRetention {
     static func deletedLabel(_ trashedAt: Date, now: Date = .now) -> String {
         let elapsed = Calendar.current.dateComponents([.day], from: trashedAt, to: now).day ?? 0
         switch elapsed {
-        case ..<1: return "Deleted today"
-        case 1: return "Deleted yesterday"
-        default: return "Deleted \(elapsed) days ago"
+        case ..<1: return AppLocalization.text("Deleted today")
+        case 1: return AppLocalization.text("Deleted yesterday")
+        default: return AppLocalization.format("Deleted %lld days ago", Int64(elapsed))
         }
     }
 
@@ -82,9 +82,9 @@ private enum LibrarySort: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .modified: return "Last Modified"
-        case .created: return "Date Created"
-        case .title: return "Title"
+        case .modified: return AppLocalization.text("Last Modified")
+        case .created: return AppLocalization.text("Date Created")
+        case .title: return AppLocalization.text("Title")
         }
     }
 
@@ -102,11 +102,49 @@ private enum SearchDateFilter: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .any: return "Any Date"
-        case .week: return "Past Week"
-        case .month: return "Past Month"
-        case .year: return "Past Year"
+        case .any: return AppLocalization.text("Any Date")
+        case .week: return AppLocalization.text("Past Week")
+        case .month: return AppLocalization.text("Past Month")
+        case .year: return AppLocalization.text("Past Year")
         }
+    }
+}
+
+/// Folder paths live in the existing notebook metadata, so they travel with
+/// notebooks through backups and nearby sync without a data migration.
+enum LibraryFolderPath {
+    static func normalized(_ path: String) -> String {
+        path.split(separator: "/", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "/")
+    }
+
+    static func contains(_ notebookPath: String, in folder: String) -> Bool {
+        let path = normalized(notebookPath)
+        return path == folder || path.hasPrefix(folder + "/")
+    }
+
+    static func ancestors(of path: String) -> [String] {
+        let parts = normalized(path).split(separator: "/")
+        return parts.indices.map { parts[...$0].joined(separator: "/") }
+    }
+
+    static func sorted(_ paths: Set<String>) -> [String] {
+        paths.sorted { left, right in
+            let a = left.split(separator: "/")
+            let b = right.split(separator: "/")
+            for (first, second) in zip(a, b) {
+                let order = first.localizedStandardCompare(second)
+                if order != .orderedSame { return order == .orderedAscending }
+            }
+            return a.count < b.count
+        }
+    }
+
+    static func replacing(_ path: String, folder: String, with replacement: String) -> String {
+        guard contains(path, in: folder) else { return path }
+        return normalized(replacement + String(normalized(path).dropFirst(folder.count)))
     }
 }
 
@@ -135,6 +173,7 @@ struct LibraryView: View {
     @State private var searchRequestID = UUID()
     @State private var searchDebounceTask: Task<Void, Never>?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var isNotebookOpen = false
     @State private var notebookToDelete: Notebook?
     @State private var notebookToPermanentlyDelete: Notebook?
     @State private var recentlyTrashedNotebook: Notebook?
@@ -149,9 +188,17 @@ struct LibraryView: View {
     @State private var selectedTags: Set<String> = []
     @State private var confirmingEmptyTrash = false
     @State private var movingToFolderNotebook: Notebook?
+    @State private var showingNewFolder = false
+    @State private var newFolderName = ""
+    @State private var newFolderParent = ""
+    @State private var folderToRename: String?
+    @State private var folderToRemove: String?
+    @State private var folderNameDraft = ""
+    @State private var folderError: String?
     @State private var indexingTotal = 0
     @State private var indexingCompleted = 0
     @AppStorage(AppPreferenceKey.librarySort) private var librarySort = LibrarySort.modified.rawValue
+    @AppStorage(AppPreferenceKey.libraryFolderPaths) private var storedFolderPaths = "[]"
     @AppStorage(AppPreferenceKey.searchAnswersEnabled) private var searchAnswersEnabled = true
 
     private let columns = [
@@ -185,13 +232,19 @@ struct LibraryView: View {
 
     // MARK: - Folder and tag filtering
 
-    /// Every folder name in use, sorted for display.
+    private var savedFolderPaths: Set<String> {
+        let paths = (try? JSONDecoder().decode([String].self, from: Data(storedFolderPaths.utf8))) ?? []
+        return Set(paths.map(LibraryFolderPath.normalized).filter { !$0.isEmpty })
+    }
+
+    /// Include parents and empty folders created in this library.
     private var allFolders: [String] {
-        let names = notebooks
+        let notebookPaths = notebooks
             .filter { $0.trashedAt == nil }
             .map(\.folderName)
             .filter { !$0.isEmpty }
-        return Array(Set(names)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        let paths = savedFolderPaths.union(notebookPaths)
+        return LibraryFolderPath.sorted(Set(paths.flatMap(LibraryFolderPath.ancestors)))
     }
 
     /// Every tag in use, sorted for display.
@@ -203,12 +256,12 @@ struct LibraryView: View {
     }
 
     private func folderCount(_ folder: String) -> Int {
-        notebooks.filter { $0.trashedAt == nil && $0.folderName == folder }.count
+        notebooks.filter { $0.trashedAt == nil && LibraryFolderPath.contains($0.folderName, in: folder) }.count
     }
 
     private func matchesFolder(_ notebook: Notebook) -> Bool {
         guard let selectedFolder else { return true }
-        return notebook.folderName == selectedFolder
+        return LibraryFolderPath.contains(notebook.folderName, in: selectedFolder)
     }
 
     /// A notebook must carry every selected tag (AND), which is what makes
@@ -244,6 +297,7 @@ struct LibraryView: View {
             if horizontalSizeClass == .regular {
                 NavigationSplitView(columnVisibility: $columnVisibility) {
                     librarySidebar
+                        .toolbar(removing: isNotebookOpen ? .sidebarToggle : nil)
                 } detail: {
                     libraryNavigation
                 }
@@ -282,7 +336,7 @@ struct LibraryView: View {
                         ForEach(sectionNotebooks) { notebook in
                             VStack(spacing: 0) {
                                 NavigationLink {
-                                    NotebookWorkspaceView(initialNotebook: notebook, sidebarVisibility: $columnVisibility)
+                                    NotebookWorkspaceView(initialNotebook: notebook, sidebarVisibility: $columnVisibility, isNotebookOpen: $isNotebookOpen)
                                 } label: {
                                     NotebookCover(notebook: notebook)
                                 }
@@ -448,7 +502,7 @@ struct LibraryView: View {
             set: { if !$0 { quickNotebook = nil } }
         )) {
             if let quickNotebook {
-                NotebookWorkspaceView(initialNotebook: quickNotebook, sidebarVisibility: $columnVisibility)
+                NotebookWorkspaceView(initialNotebook: quickNotebook, sidebarVisibility: $columnVisibility, isNotebookOpen: $isNotebookOpen)
             }
         }
     }
@@ -468,7 +522,45 @@ struct LibraryView: View {
             Text("This permanently removes every notebook in the trash and cannot be undone.")
         }
         .sheet(item: $movingToFolderNotebook) { notebook in
-            MoveToFolderSheet(notebook: notebook, existingFolders: allFolders)
+            MoveToFolderSheet(notebook: notebook, existingFolders: allFolders) { folder in
+                rememberFolder(folder)
+            }
+        }
+        .sheet(isPresented: $showingNewFolder) {
+            newFolderSheet
+        }
+        .alert("Rename Folder", isPresented: Binding(
+            get: { folderToRename != nil },
+            set: { if !$0 { folderToRename = nil } }
+        )) {
+            TextField("Folder name", text: $folderNameDraft)
+            Button("Save") {
+                if let folderToRename { renameFolder(folderToRename, to: folderNameDraft) }
+                folderToRename = nil
+            }
+            Button("Cancel", role: .cancel) { folderToRename = nil }
+        } message: {
+            Text("Notebooks and subfolders will move with this folder.")
+        }
+        .confirmationDialog("Remove Folder?", isPresented: Binding(
+            get: { folderToRemove != nil },
+            set: { if !$0 { folderToRemove = nil } }
+        ), titleVisibility: .visible) {
+            Button("Remove Folder", role: .destructive) {
+                if let folderToRemove { removeFolder(folderToRemove) }
+                folderToRemove = nil
+            }
+            Button("Cancel", role: .cancel) { folderToRemove = nil }
+        } message: {
+            Text("Notebooks and subfolders will move to the parent folder.")
+        }
+        .alert("Folder Change Failed", isPresented: Binding(
+            get: { folderError != nil },
+            set: { if !$0 { folderError = nil } }
+        )) {
+            Button("OK", role: .cancel) { folderError = nil }
+        } message: {
+            Text(folderError ?? "")
         }
         .task {
             await corpusStore.rebuild(notebooks: notebooks)
@@ -595,9 +687,26 @@ struct LibraryView: View {
     /// compact widths (which have no sidebar) can still clear a folder.
     @ViewBuilder
     private var tagFilterBar: some View {
-        if !allTags.isEmpty || hasActiveFilters {
+        if !allTags.isEmpty || hasActiveFilters || (horizontalSizeClass == .compact && !allFolders.isEmpty) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    if horizontalSizeClass == .compact && !allFolders.isEmpty {
+                        Menu {
+                            Button("All Folders") { selectedFolder = nil }
+                            ForEach(allFolders, id: \.self) { folder in
+                                Button {
+                                    selectedFolder = folder
+                                } label: {
+                                    Label(folder, systemImage: selectedFolder == folder ? "checkmark" : "folder")
+                                }
+                            }
+                            Button("New Folder", systemImage: "folder.badge.plus") { prepareNewFolder() }
+                        } label: {
+                            Label("Folders", systemImage: "folder")
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("library-folder-menu")
+                    }
                     if let selectedFolder {
                         Button {
                             self.selectedFolder = nil
@@ -663,7 +772,8 @@ struct LibraryView: View {
                                 NotebookWorkspaceView(
                                     initialNotebook: entry.notebook,
                                     initialPageID: entry.page.persistentModelID,
-                                    sidebarVisibility: $columnVisibility
+                                    sidebarVisibility: $columnVisibility,
+                                    isNotebookOpen: $isNotebookOpen
                                 )
                             } label: {
                                 VStack(alignment: .leading, spacing: 6) {
@@ -706,8 +816,7 @@ struct LibraryView: View {
                 }
             }
 
-            if !allFolders.isEmpty {
-                Section("Folders") {
+            Section {
                     Button {
                         selectedFolder = nil
                     } label: {
@@ -728,7 +837,8 @@ struct LibraryView: View {
                             selectedFolder = (selectedFolder == folder) ? nil : folder
                         } label: {
                             HStack {
-                                Label(folder, systemImage: "folder")
+                                Label(folder.split(separator: "/").last.map(String.init) ?? folder,
+                                      systemImage: "folder")
                                 Spacer()
                                 Text("\(folderCount(folder))")
                                     .font(.caption)
@@ -737,12 +847,32 @@ struct LibraryView: View {
                                     Image(systemName: "checkmark").foregroundStyle(.tint)
                                 }
                             }
+                            .padding(.leading, CGFloat(max(0, folder.split(separator: "/").count - 1)) * 16)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(selectedFolder == folder ? .isSelected : [])
                         .accessibilityIdentifier("library-folder-\(folder)")
+                        .contextMenu {
+                            Button("New Subfolder", systemImage: "folder.badge.plus") {
+                                prepareNewFolder(parent: folder)
+                            }
+                            Button("Rename Folder", systemImage: "pencil") {
+                                folderNameDraft = folder.split(separator: "/").last.map(String.init) ?? folder
+                                folderToRename = folder
+                            }
+                            Button("Remove Folder", systemImage: "trash", role: .destructive) {
+                                folderToRemove = folder
+                            }
+                        }
                     }
+            } header: {
+                HStack {
+                    Text("Folders")
+                    Spacer()
+                    Button("New Folder", systemImage: "folder.badge.plus") { prepareNewFolder() }
+                        .labelStyle(.iconOnly)
+                        .accessibilityIdentifier("library-new-folder")
                 }
             }
 
@@ -758,6 +888,121 @@ struct LibraryView: View {
         }
         .navigationTitle("BetterNotes")
         .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 280)
+    }
+
+    private var newFolderSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Location") {
+                    Picker("Parent Folder", selection: $newFolderParent) {
+                        Text("Top Level").tag("")
+                        ForEach(allFolders, id: \.self) { folder in
+                            Text(folder).tag(folder)
+                        }
+                    }
+                }
+                Section {
+                    TextField("Folder name", text: $newFolderName)
+                        .accessibilityIdentifier("new-folder-name")
+                } header: {
+                    Text("New Folder")
+                } footer: {
+                    Text("Choose a parent to create a subfolder. Notebooks in a parent also appear when that parent is selected.")
+                }
+            }
+            .navigationTitle("New Folder")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { showingNewFolder = false }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Create") { createFolder() }
+                        .bold()
+                        .disabled(!validNewFolder)
+                }
+            }
+        }
+    }
+
+    private var validNewFolder: Bool {
+        let name = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/"), !name.contains("\n") else { return false }
+        let path = newFolderParent.isEmpty ? name : newFolderParent + "/" + name
+        return !allFolders.contains(path)
+    }
+
+    private func prepareNewFolder(parent: String = "") {
+        newFolderParent = parent
+        newFolderName = ""
+        showingNewFolder = true
+    }
+
+    private func createFolder() {
+        guard validNewFolder else { return }
+        let name = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        rememberFolder(newFolderParent.isEmpty ? name : newFolderParent + "/" + name)
+        showingNewFolder = false
+    }
+
+    private func storeFolders(_ paths: Set<String>) {
+        let sorted = LibraryFolderPath.sorted(paths)
+        guard let data = try? JSONEncoder().encode(sorted), let value = String(data: data, encoding: .utf8) else {
+            folderError = AppLocalization.text("Couldn’t save folders.")
+            return
+        }
+        storedFolderPaths = value
+    }
+
+    private func rememberFolder(_ folder: String) {
+        let path = LibraryFolderPath.normalized(folder)
+        guard !path.isEmpty else { return }
+        storeFolders(savedFolderPaths.union([path]))
+    }
+
+    private func changeFolder(_ folder: String, to replacement: String) {
+        let affected = notebooks.filter { LibraryFolderPath.contains($0.folderName, in: folder) }
+        let prior = affected.map { ($0, $0.folderName, $0.modifiedAt) }
+        for notebook in affected {
+            notebook.folderName = LibraryFolderPath.replacing(notebook.folderName, folder: folder, with: replacement)
+            notebook.modifiedAt = .now
+        }
+        do {
+            try context.save()
+            let retained = savedFolderPaths.map { LibraryFolderPath.replacing($0, folder: folder, with: replacement) }
+            storeFolders(Set(retained.filter { !$0.isEmpty }))
+            if let selectedFolder, LibraryFolderPath.contains(selectedFolder, in: folder) {
+                let next = LibraryFolderPath.replacing(selectedFolder, folder: folder, with: replacement)
+                self.selectedFolder = next.isEmpty ? nil : next
+            }
+        } catch {
+            for (notebook, path, date) in prior {
+                notebook.folderName = path
+                notebook.modifiedAt = date
+            }
+            folderError = error.localizedDescription
+        }
+    }
+
+    private func renameFolder(_ folder: String, to rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/"), !name.contains("\n") else {
+            folderError = AppLocalization.text("Enter a folder name without a slash.")
+            return
+        }
+        let parent = folder.split(separator: "/").dropLast().joined(separator: "/")
+        let replacement = parent.isEmpty ? name : parent + "/" + name
+        guard replacement != folder else { return }
+        guard !allFolders.contains(replacement) else {
+            folderError = AppLocalization.text("A folder with this name already exists here.")
+            return
+        }
+        changeFolder(folder, to: replacement)
+    }
+
+    private func removeFolder(_ folder: String) {
+        let parent = folder.split(separator: "/").dropLast().joined(separator: "/")
+        changeFolder(folder, to: parent)
     }
 
     private var searchResults: some View {
@@ -795,7 +1040,7 @@ struct LibraryView: View {
                         ForEach(answer.citations) { citation in
                             if let destination = searchDestination(for: citation) {
                                 NavigationLink {
-                                    NotebookWorkspaceView(initialNotebook: destination.notebook, initialPageID: destination.page?.persistentModelID, sidebarVisibility: $columnVisibility)
+                                    NotebookWorkspaceView(initialNotebook: destination.notebook, initialPageID: destination.page?.persistentModelID, sidebarVisibility: $columnVisibility, isNotebookOpen: $isNotebookOpen)
                                 } label: {
                                     Label("[\(citation.token)] \(citation.sourceLabel)", systemImage: "doc.text.magnifyingglass")
                                         .font(.caption)
@@ -819,7 +1064,8 @@ struct LibraryView: View {
                                     NotebookWorkspaceView(
                                         initialNotebook: destination.notebook,
                                         initialPageID: destination.page?.persistentModelID,
-                                        sidebarVisibility: $columnVisibility
+                                        sidebarVisibility: $columnVisibility,
+                                        isNotebookOpen: $isNotebookOpen
                                     )
                                 } label: {
                                     VStack(alignment: .leading, spacing: 4) {
@@ -947,7 +1193,15 @@ struct LibraryView: View {
         let requestID = searchRequestID
         searchAnswer = nil
         isAnsweringSearch = true
-        assistantCoordinator.answerSearch(question: queryText, results: rankedSearchResults) { reply in
+        assistantCoordinator.answerSearch(
+            question: queryText,
+            results: rankedSearchResults,
+            resolvePageImage: { pageID in
+                let descriptor = FetchDescriptor<Page>(predicate: #Predicate { $0.stableID == pageID })
+                guard let page = try? context.fetch(descriptor).first else { return nil }
+                return PDFExport.renderPageImage(page)
+            }
+        ) { reply in
             guard searchText.trimmingCharacters(in: .whitespacesAndNewlines) == queryText,
                   searchRequestID == requestID else { return }
             searchAnswer = reply
@@ -1074,13 +1328,18 @@ private struct NotebookWorkspaceView: View {
     @Query(sort: \Notebook.modifiedAt, order: .reverse) private var notebooks: [Notebook]
     @State private var openTabIDs: [PersistentIdentifier]
     @State private var selectedTabID: PersistentIdentifier?
+    @State private var pageIndexByNotebook: [PersistentIdentifier: Int] = [:]
+    @State private var showingNewNotebook = false
     @StateObject private var editorState: EditorActionState
     @Binding var sidebarVisibility: NavigationSplitViewVisibility
+    @Binding var isNotebookOpen: Bool
 
-    init(initialNotebook: Notebook, initialPageID: PersistentIdentifier? = nil, sidebarVisibility: Binding<NavigationSplitViewVisibility> = .constant(.all)) {
+    init(initialNotebook: Notebook, initialPageID: PersistentIdentifier? = nil,
+         sidebarVisibility: Binding<NavigationSplitViewVisibility>, isNotebookOpen: Binding<Bool>) {
         self.initialNotebook = initialNotebook
         self.initialPageID = initialPageID
         self._sidebarVisibility = sidebarVisibility
+        self._isNotebookOpen = isNotebookOpen
         let id = initialNotebook.id
         let pages = initialNotebook.pages.filter { $0.trashedAt == nil }.sorted { $0.index < $1.index }
         let initialIndex = initialPageID.flatMap { pageID in
@@ -1092,53 +1351,32 @@ private struct NotebookWorkspaceView: View {
     }
 
     var body: some View {
-        notebookContent
+        VStack(spacing: 0) {
+            notebookTabBar
+            notebookContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
             .background(Color(.systemGroupedBackground).ignoresSafeArea(.container, edges: .bottom))
             .background(DisableInteractivePop())
             .navigationBarBackButtonHidden(true)
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Label("Back", systemImage: "chevron.left")
-                    }
-                }
-                ToolbarItem(placement: .principal) {
-                    VStack(spacing: 1) {
-                        Text(selectedNotebook?.title ?? "Notebook")
-                            .font(.headline)
-                            .lineLimit(1)
-                        if editorState.isViewOnly {
-                            Text("View Only")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(editorHeadingAccessibilityLabel)
-                    .accessibilityIdentifier("notebook-title")
-                }
-                // Compact tab switcher in the trailing toolbar. Replaces the
-                // old sidebar that wasted ~250pt of horizontal space.
-                // Always shown: it is the only entry point to "Open Notebook",
-                // so gating it on openTabIDs.count > 1 made a second tab
-                // impossible to open in the first place.
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    tabSwitcherMenu
-                }
+            .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showingNewNotebook) {
+                NewNotebookSheet { notebook in openNotebook(notebook) }
             }
             .onAppear(perform: reconcileTabs)
             .onChange(of: notebooks.count) { _, _ in reconcileTabs() }
+            .onChange(of: editorState.currentPageIndex) { _, newIndex in
+                if let selectedTabID { pageIndexByNotebook[selectedTabID] = newIndex }
+            }
             .onAppear {
+                isNotebookOpen = true
                 // Collapse the library sidebar so the editor gets full width.
                 if horizontalSizeClass == .regular {
                     sidebarVisibility = .detailOnly
                 }
             }
             .onDisappear {
+                isNotebookOpen = false
                 // Restore the sidebar when returning to the library.
                 if horizontalSizeClass == .regular {
                     sidebarVisibility = .all
@@ -1146,35 +1384,111 @@ private struct NotebookWorkspaceView: View {
             }
     }
 
-    /// Compact dropdown menu for switching between open notebook tabs.
-    private var tabSwitcherMenu: some View {
-        Menu {
-            ForEach(openNotebooks) { notebook in
-                Button {
-                    selectNotebook(notebook)
-                } label: {
-                    Label(notebook.title, systemImage: selectedTabID == notebook.id ? "book.fill" : "book")
+    private var notebookTabBar: some View {
+        HStack(spacing: 8) {
+            Button { dismiss() } label: {
+                Image(systemName: "chevron.left")
+                    .font(.headline)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back")
+            .padding(.leading, 6)
+
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(openNotebooks) { notebook in
+                            notebookTab(notebook)
+                                .id(notebook.id)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                }
+                .onChange(of: selectedTabID) { _, newID in
+                    if let newID {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            proxy.scrollTo(newID, anchor: .center)
+                        }
+                    }
                 }
             }
-            Divider()
-            if !availableNotebooks.isEmpty {
-                Menu("Open Notebook") {
+
+            Rectangle()
+                .fill(Color.secondary.opacity(0.2))
+                .frame(width: 1, height: 26)
+
+            Menu {
+                if availableNotebooks.isEmpty {
+                    Text("All notebooks are open")
+                } else {
                     ForEach(availableNotebooks) { notebook in
                         Button(notebook.title) { openNotebook(notebook) }
                     }
                 }
+                Divider()
+                Button("New Notebook", systemImage: "plus") {
+                    showingNewNotebook = true
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.headline)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
-            if openTabIDs.count > 1 {
-                Button("Close Current Tab", systemImage: "xmark") {
-                    if let current = selectedNotebook {
-                        removeFromWorkspace(current)
+            .accessibilityLabel("Open Notebook Tab")
+            .accessibilityIdentifier("editor-add-tab")
+            .padding(.trailing, 8)
+        }
+        .frame(height: 56)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func notebookTab(_ notebook: Notebook) -> some View {
+        let isSelected = selectedTabID == notebook.id
+        return HStack(spacing: 0) {
+            Button {
+                selectNotebook(notebook)
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: isSelected ? "book.closed.fill" : "book.closed")
+                        .font(.caption)
+                    Text(notebook.title)
+                        .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                        .lineLimit(1)
+                    if isSelected && editorState.isViewOnly {
+                        Image(systemName: "eye")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
                     }
                 }
+                .frame(minWidth: 100, maxWidth: 190, minHeight: 44)
+                .contentShape(Rectangle())
             }
-        } label: {
-            Image(systemName: "books.vertical")
+            .buttonStyle(.plain)
+            .accessibilityLabel(isSelected ? editorHeadingAccessibilityLabel : notebook.title)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityIdentifier(isSelected ? "notebook-title" : "editor-tab-\(notebook.stableID.uuidString)")
+
+            if openTabIDs.count > 1 {
+                Button {
+                    removeFromWorkspace(notebook)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close \(notebook.title) Tab")
+            }
         }
-        .accessibilityLabel("Switch Notebook")
+        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+        .background(isSelected ? Color.accentColor.opacity(0.13) : Color.secondary.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     @ViewBuilder
@@ -1217,7 +1531,7 @@ private struct NotebookWorkspaceView: View {
     }
 
     private var availableNotebooks: [Notebook] {
-        notebooks.filter { $0.trashedAt == nil && !$0.isArchived && !openTabIDs.contains($0.id) }
+        notebooks.filter { $0.trashedAt == nil && !openTabIDs.contains($0.id) }
     }
 
     private func openNotebook(_ notebook: Notebook) {
@@ -1228,11 +1542,15 @@ private struct NotebookWorkspaceView: View {
     }
 
     private func selectNotebook(_ notebook: Notebook, pageID: UUID? = nil) {
+        if let selectedTabID {
+            pageIndexByNotebook[selectedTabID] = editorState.currentPageIndex
+        }
         selectedTabID = notebook.id
         let pages = notebook.pages.filter { $0.trashedAt == nil }.sorted { $0.index < $1.index }
-        editorState.currentPageIndex = pageID.flatMap { stablePageID in
+        let targetIndex = pageID.flatMap { stablePageID in
             pages.firstIndex { $0.stableID == stablePageID }
-        } ?? 0
+        } ?? pageIndexByNotebook[notebook.id] ?? 0
+        editorState.currentPageIndex = min(targetIndex, max(0, pages.count - 1))
         editorState.presentedPanel = nil
         editorState.isAssistantPresented = false
     }
@@ -1249,9 +1567,10 @@ private struct NotebookWorkspaceView: View {
         guard openTabIDs.count > 1 else { return }
         guard let index = openTabIDs.firstIndex(of: notebook.id) else { return }
         openTabIDs.remove(at: index)
+        pageIndexByNotebook.removeValue(forKey: notebook.id)
         if selectedTabID == notebook.id {
             selectedTabID = openTabIDs.isEmpty ? nil : openTabIDs[min(index, openTabIDs.count - 1)]
-            editorState.currentPageIndex = 0
+            editorState.currentPageIndex = selectedTabID.flatMap { pageIndexByNotebook[$0] } ?? 0
         }
         reconcileTabs()
     }
@@ -1307,6 +1626,8 @@ private var emptyState: some View {
         copy.folderName = original.folderName
         copy.tagsText = original.tagsText
         copy.defaultLineStyle = original.defaultLineStyle
+        copy.defaultLineThickness = original.defaultLineThickness
+        copy.defaultLineOpacity = original.defaultLineOpacity
         copy.defaultBackgroundHex = original.defaultBackgroundHex
         copy.defaultOrientation = original.defaultOrientation
         for (newIndex, srcPage) in original.pages.filter({ $0.trashedAt == nil }).sorted(by: { $0.index < $1.index }).enumerated() {
@@ -1318,6 +1639,8 @@ private var emptyState: some View {
             newPage.ocrUpdatedAt = srcPage.ocrUpdatedAt
             newPage.backgroundHex = srcPage.backgroundHex
             newPage.lineStyle = srcPage.lineStyle
+            newPage.lineThickness = srcPage.lineThickness
+            newPage.lineOpacity = srcPage.lineOpacity
             newPage.orientation = srcPage.orientation
             for srcElem in srcPage.orderedElements {
                 let e = PageElement.copy(of: srcElem)
@@ -1387,15 +1710,25 @@ private var emptyState: some View {
     }
 
     private func exportNotebook(_ notebook: Notebook) {
-        let data = PDFExport.renderNotebook(notebook)
-        sharingURL = PDFExport.writePDF(data, name: notebook.title)
-        showingShare = true
+        // This runs from the "..." Menu's action closure, which is still
+        // mid-dismissal when it fires. Presenting a new sheet in the same
+        // run-loop turn races that transition and UIKit can leave the sheet
+        // on screen with nothing drawn inside it — defer to the next turn so
+        // the menu has actually finished closing first.
+        DispatchQueue.main.async {
+            let data = PDFExport.renderNotebook(notebook)
+            sharingURL = PDFExport.writePDF(data, name: notebook.title)
+            showingShare = true
+        }
     }
 
     private func exportBackup(_ notebook: Notebook) {
         do {
-            sharingURL = try CloudTranslator.writeArchive(for: notebook)
-            showingShare = true
+            let url = try CloudTranslator.writeArchive(for: notebook)
+            DispatchQueue.main.async {
+                sharingURL = url
+                showingShare = true
+            }
         } catch {
             exportError = error.localizedDescription
         }
@@ -1424,6 +1757,8 @@ private var emptyState: some View {
         let page = Page(index: notebook.pages.filter { $0.trashedAt == nil }.count)
         page.title = Date.now.formatted(date: .abbreviated, time: .shortened)
         page.lineStyle = notebook.defaultLineStyle
+        page.lineThickness = notebook.defaultLineThickness
+        page.lineOpacity = notebook.defaultLineOpacity
         page.backgroundHex = notebook.defaultBackgroundHex
         page.orientation = notebook.defaultOrientation
         page.notebook = notebook
@@ -1475,6 +1810,7 @@ private var emptyState: some View {
 }
 
 private struct NewNotebookSheet: View {
+    let onCreated: ((Notebook) -> Void)?
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
@@ -1483,7 +1819,14 @@ private struct NewNotebookSheet: View {
     @State private var selectedStyle: NotebookCoverStyle = .solid
     @State private var selectedEmoji: String? = nil
     @State private var selectedLineStyle: PageLineStyle = .blank
+    @State private var selectedOrientation: PageOrientation = .portrait
+    @State private var selectedLineThickness = PageLineAppearance.defaultThickness
+    @State private var selectedLineOpacity = PageLineAppearance.defaultOpacity
     @State private var saveError: String?
+
+    init(onCreated: ((Notebook) -> Void)? = nil) {
+        self.onCreated = onCreated
+    }
 
     var body: some View {
         NavigationStack {
@@ -1492,12 +1835,28 @@ private struct NewNotebookSheet: View {
                     TextField("Untitled Notebook", text: $title)
                 }
 
+                Section("Page Orientation") {
+                    Picker("Orientation", selection: $selectedOrientation) {
+                        ForEach(PageOrientation.allCases, id: \.self) { orientation in
+                            Label(orientation.label, systemImage: orientation.icon).tag(orientation)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("new-notebook-orientation")
+                }
+
                 Section("Page Template") {
                     PageTemplatePicker(
                         selection: $selectedLineStyle,
                         backgroundHex: "FFFFFF",
-                        orientation: .portrait
+                        orientation: selectedOrientation,
+                        lineThickness: selectedLineThickness,
+                        lineOpacity: selectedLineOpacity
                     )
+                }
+
+                Section("Line Appearance") {
+                    LineAppearanceControls(thickness: $selectedLineThickness, opacity: $selectedLineOpacity)
                 }
 
                 Section {
@@ -1602,12 +1961,19 @@ private struct NewNotebookSheet: View {
         )
         let page = Page(index: 0)
         notebook.defaultLineStyle = selectedLineStyle.rawValue
+        notebook.defaultLineThickness = selectedLineThickness
+        notebook.defaultLineOpacity = selectedLineOpacity
+        notebook.defaultOrientation = selectedOrientation.rawValue
         page.lineStyle = selectedLineStyle.rawValue
+        page.lineThickness = selectedLineThickness
+        page.lineOpacity = selectedLineOpacity
+        page.orientation = selectedOrientation.rawValue
         page.notebook = notebook
         notebook.pages.append(page)
         context.insert(notebook)
         do {
             try context.save()
+            onCreated?(notebook)
             dismiss()
         } catch {
             context.delete(notebook)
@@ -1621,8 +1987,10 @@ private struct NewNotebookSheet: View {
 private struct MoveToFolderSheet: View {
     @Bindable var notebook: Notebook
     let existingFolders: [String]
+    let onCreateFolder: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var newFolder = ""
+    @State private var parentFolder = ""
     @State private var saveError: String?
 
     var body: some View {
@@ -1640,12 +2008,14 @@ private struct MoveToFolderSheet: View {
                                 apply(folder)
                             } label: {
                                 HStack {
-                                    Label(folder, systemImage: "folder")
+                                    Label(folder.split(separator: "/").last.map(String.init) ?? folder,
+                                          systemImage: "folder")
                                     Spacer()
                                     if notebook.folderName == folder {
                                         Image(systemName: "checkmark").foregroundStyle(.tint)
                                     }
                                 }
+                                .padding(.leading, CGFloat(max(0, folder.split(separator: "/").count - 1)) * 16)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -1654,9 +2024,19 @@ private struct MoveToFolderSheet: View {
                 }
 
                 Section("New Folder") {
+                    Picker("Parent Folder", selection: $parentFolder) {
+                        Text("Top Level").tag("")
+                        ForEach(existingFolders, id: \.self) { folder in
+                            Text(folder).tag(folder)
+                        }
+                    }
                     TextField("Folder name", text: $newFolder)
-                    Button("Create and Move") { apply(newFolder) }
-                        .disabled(newFolder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Create and Move") {
+                        let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let path = parentFolder.isEmpty ? name : parentFolder + "/" + name
+                        apply(path, creating: true)
+                    }
+                    .disabled(!validNewFolder)
                 }
 
                 if !notebook.folderName.isEmpty {
@@ -1683,16 +2063,28 @@ private struct MoveToFolderSheet: View {
         }
     }
 
-    private func apply(_ folder: String) {
-        notebook.folderName = folder.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var validNewFolder: Bool {
+        let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/"), !name.contains("\n") else { return false }
+        let path = parentFolder.isEmpty ? name : parentFolder + "/" + name
+        return !existingFolders.contains(path)
+    }
+
+    private func apply(_ folder: String, creating: Bool = false) {
+        let previousFolder = notebook.folderName
+        let previousModifiedAt = notebook.modifiedAt
+        notebook.folderName = LibraryFolderPath.normalized(folder)
         notebook.modifiedAt = .now
         do {
             guard let context = notebook.modelContext else {
                 throw NotebookEditError.notebookUnavailable
             }
             try context.save()
+            if creating { onCreateFolder(notebook.folderName) }
             dismiss()
         } catch {
+            notebook.folderName = previousFolder
+            notebook.modifiedAt = previousModifiedAt
             saveError = error.localizedDescription
         }
     }
@@ -1723,6 +2115,9 @@ private struct RenameNotebookSheet: View {
                     TextField("Folder", text: $folderName)
                     TextField("Tags, separated by commas", text: $tagsText)
                     Toggle("Favorite", isOn: $isFavorite)
+                    Text("Use / to place this notebook in a nested folder.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Rename")
@@ -1757,7 +2152,7 @@ private struct RenameNotebookSheet: View {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedTitle.isEmpty { notebook.title = trimmedTitle }
         notebook.subtitle = subtitle
-        notebook.folderName = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        notebook.folderName = LibraryFolderPath.normalized(folderName)
         notebook.tagsText = tagsText
         notebook.isFavorite = isFavorite
         notebook.modifiedAt = .now
@@ -1776,7 +2171,7 @@ private struct RenameNotebookSheet: View {
 private enum NotebookEditError: LocalizedError {
     case notebookUnavailable
 
-    var errorDescription: String? { "This notebook is no longer available." }
+    var errorDescription: String? { AppLocalization.text("This notebook is no longer available.") }
 }
 
 // MARK: - Notebook Manage Menu
@@ -1784,18 +2179,89 @@ private enum NotebookEditError: LocalizedError {
 // MARK: - App Settings
 
 struct BetterNotesSettingsSheet: View {
+    private enum SettingsPage: String, CaseIterable, Hashable {
+        case language, input, sync, ai, about
+
+        var title: String {
+            switch self {
+            case .language: return AppLocalization.text("Language")
+            case .input: return AppLocalization.text("Input")
+            case .sync: return AppLocalization.text("Sync")
+            case .ai: return AppLocalization.text("AI")
+            case .about: return AppLocalization.text("About")
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .language: return "globe"
+            case .input: return "hand.draw"
+            case .sync: return "arrow.triangle.2.circlepath"
+            case .ai: return "sparkles"
+            case .about: return "info.circle"
+            }
+        }
+    }
+
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = true
-    @AppStorage(AppPreferenceKey.librarySort) private var librarySort = LibrarySort.modified.rawValue
+    @EnvironmentObject private var nearbySync: NearbySyncCoordinator
+    @AppStorage(AppPreferenceKey.language) private var language = AppLanguage.english.rawValue
+    @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = false
     @EnvironmentObject private var ai: AIService
     @EnvironmentObject private var aiSettings: AISettingsStore
     @State private var showingAIProviderSettings = false
+    @State private var showingNearbySync = false
+    @State private var selectedPage: SettingsPage? = .language
     @AppStorage(AppPreferenceKey.assistantEnabled) private var assistantEnabled = true
     @AppStorage(AppPreferenceKey.searchAnswersEnabled) private var searchAnswersEnabled = true
+    @AppStorage(AppPreferenceKey.inkQuestionsEnabled) private var inkQuestionsEnabled = true
 
     var body: some View {
-        NavigationStack {
-            Form {
+        NavigationSplitView {
+            List(selection: $selectedPage) {
+                ForEach(SettingsPage.allCases, id: \.self) { page in
+                    NavigationLink(value: page) {
+                        Label(page.title, systemImage: page.icon)
+                    }
+                    .accessibilityIdentifier("settings-section-\(page.rawValue)")
+                }
+            }
+            .navigationTitle(AppLocalization.text("Settings"))
+            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 270)
+        } detail: {
+            NavigationStack {
+                settingsDetail
+                    .navigationTitle(AppLocalization.text("Settings"))
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { dismiss() }
+                                .bold()
+                        }
+                    }
+            }
+        }
+        .navigationSplitViewStyle(.balanced)
+        .sheet(isPresented: $showingAIProviderSettings) {
+            AIProviderSettingsSheet(service: ai)
+        }
+        .sheet(isPresented: $showingNearbySync) { NearbySyncSheet() }
+    }
+
+    @ViewBuilder
+    private var settingsDetail: some View {
+        Form {
+            switch selectedPage ?? .language {
+            case .language:
+                Section("Language") {
+                    Picker("App Language", selection: $language) {
+                        ForEach(AppLanguage.allCases) { option in
+                            Text(option.displayName).tag(option.rawValue)
+                        }
+                    }
+                    .accessibilityIdentifier("app-language-picker")
+                }
+            case .input:
                 Section {
                     Toggle(isOn: $allowsFingerDrawing) {
                         Label("Draw with Finger", systemImage: "hand.draw")
@@ -1805,21 +2271,24 @@ struct BetterNotesSettingsSheet: View {
                 } footer: {
                     Text("When this is off, fingers scroll pages and operate controls. Apple Pencil still draws.")
                 }
-
-                Section("Library") {
-                    Picker("Default Sort", selection: $librarySort) {
-                        ForEach(LibrarySort.allCases, id: \.self) { sort in
-                            Label(sort.label, systemImage: sort.icon).tag(sort.rawValue)
-                        }
+            case .sync:
+                Section("Sync") {
+                    Button { showingNearbySync = true } label: {
+                        Label("Nearby Sync", systemImage: "laptopcomputer.and.ipad")
+                    }
+                    Text("Once paired, notes sync over the local network while both apps are open.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Last activity").font(.subheadline)
+                        Text(AppLocalization.nearbyStatus(nearbySync.status))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-
+            case .ai:
                 Section("AI") {
-                    Toggle(isOn: $aiSettings.automaticWritingSuggestions) {
-                        Label("Automatic Writing Suggestions", systemImage: "sparkles")
-                    }
-                    .accessibilityValue(aiSettings.automaticWritingSuggestions ? "On" : "Off")
-
                     Button {
                         showingAIProviderSettings = true
                     } label: {
@@ -1828,38 +2297,38 @@ struct BetterNotesSettingsSheet: View {
 
                     LabeledContent("Mode") {
                         Label(
-                            ai.isRemoteConfigured ? "Remote" : "On-device",
-                            systemImage: ai.isRemoteConfigured ? "checkmark.shield" : "iphone"
+                            AppLocalization.text(ai.isRemoteConfigured
+                                ? "Remote"
+                                : (OnDeviceModelService.isAvailable ? "On-device (Apple Intelligence)" : "Not available")),
+                            systemImage: ai.isRemoteConfigured
+                                ? "checkmark.shield"
+                                : (OnDeviceModelService.isAvailable ? "iphone" : "exclamationmark.triangle")
                         )
                         .foregroundStyle(.secondary)
                     }
-                    LabeledContent("Model", value: ai.isRemoteConfigured ? ai.configuredModel : "Local fallback")
+                    LabeledContent(
+                        "Model",
+                        value: ai.isRemoteConfigured
+                            ? ai.configuredModel
+                            : AppLocalization.text(OnDeviceModelService.isAvailable ? "Apple on-device model" : "Set up AI provider")
+                    )
                     Toggle("Assistant", systemImage: "bubble.left.and.bubble.right", isOn: $assistantEnabled)
                     Toggle("Ask Notes in Search", systemImage: "magnifyingglass", isOn: $searchAnswersEnabled)
+                    Toggle("Offer to Answer \"??\" in Ink", systemImage: "pencil.and.scribble", isOn: $inkQuestionsEnabled)
                 }
                 Section {
-                    Text("Writing suggestions run only after you opt in. Ask Notes appears after search results and runs only when you choose it. Suggestions and answers never change notes until you accept an edit.")
+                    Text("Ask Notes appears after search results and runs only when you choose it. A handwritten question ending in \"??\" is only offered an answer -- nothing is sent until you tap it. Answers never change notes until you accept an edit.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-
+            case .about:
                 Section("About") {
                     LabeledContent("Version", value: appVersion)
                     LabeledContent("Build", value: buildNumber)
                 }
             }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .bold()
-                }
-            }
-            .sheet(isPresented: $showingAIProviderSettings) {
-                AIProviderSettingsSheet(service: ai)
-            }
         }
+        .accessibilityIdentifier("settings-detail-\((selectedPage ?? .language).rawValue)")
     }
 
     private var appVersion: String {

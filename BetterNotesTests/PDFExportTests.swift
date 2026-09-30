@@ -98,6 +98,30 @@ final class PDFExportTests: XCTestCase {
         XCTAssertEqual(size.height, PageOrientation.portrait.size.height, accuracy: 1)
     }
 
+    func testRuledLineOpacityAndThicknessAppearInPDF() throws {
+        let page = Page(index: 0)
+        page.lineStyle = PageLineStyle.ruled.rawValue
+
+        func darkRows() throws -> Int {
+            let image = try raster(PDFExport.renderPage(page)).image
+            let (data, width, height) = try pixels(image)
+            return (0..<height).filter { y in data[(y * width + 100) * 4] < 128 }.count
+        }
+
+        page.lineOpacity = 0.1
+        page.lineThickness = 3
+        let faint = try darkRows()
+        page.lineOpacity = 1
+        page.lineThickness = 1
+        let thin = try darkRows()
+        page.lineThickness = 3
+        let thick = try darkRows()
+
+        XCTAssertEqual(faint, 0, "grey rules should remain light")
+        XCTAssertGreaterThan(thin, 0, "black rules should be visible")
+        XCTAssertGreaterThan(thick, thin, "thicker rules should cover more pixels")
+    }
+
     private func blackPenStroke(from start: CGPoint, to end: CGPoint) -> PKStroke {
         let controlPoints = [start, end].enumerated().map { index, point in
             PKStrokePoint(
@@ -196,6 +220,31 @@ final class PDFExportTests: XCTestCase {
         (image, _) = try raster(PDFExport.renderPage(page))
         (r, g, b) = try colorAt(center, in: image)
         XCTAssertTrue(r > 150 && b < 100, "layering was ignored by the export: rgb(\(r), \(g), \(b))")
+    }
+
+    func testOpaqueCustomTapeHidesContentUntilRevealed() throws {
+        let image = imageElement(.red, at: CGPoint(x: 300, y: 400), size: CGSize(width: 180, height: 80))
+        let tape = PageElement(type: .tape, x: 300, y: 400, width: 180, height: 80)
+        let page = page(with: [image, tape])
+
+        let (defaultCover, _) = try raster(PDFExport.renderPage(page))
+        let (defaultRed, defaultGreen, defaultBlue) = try colorAt(CGPoint(x: 250, y: 400), in: defaultCover)
+        XCTAssertEqual(Int(defaultRed), 198, accuracy: 3)
+        XCTAssertEqual(Int(defaultGreen), 203, accuracy: 3)
+        XCTAssertEqual(Int(defaultBlue), 210, accuracy: 3, "an older tape leaked the underlying red")
+
+        tape.colorHex = "BBD8F1"
+        let (covered, _) = try raster(PDFExport.renderPage(page))
+        let (red, green, blue) = try colorAt(CGPoint(x: 250, y: 400), in: covered)
+        XCTAssertEqual(Int(red), 187, accuracy: 3)
+        XCTAssertEqual(Int(green), 216, accuracy: 3)
+        XCTAssertEqual(Int(blue), 241, accuracy: 3, "underlying red leaked through the tape")
+
+        tape.isRevealed = true
+        let (revealed, _) = try raster(PDFExport.renderPage(page))
+        let (revealedRed, _, revealedBlue) = try colorAt(CGPoint(x: 250, y: 400), in: revealed)
+        XCTAssertGreaterThan(revealedRed, 240)
+        XCTAssertLessThan(revealedBlue, 30)
     }
 
     func testANotebookExportsEveryPageInOrderAndSkipsTheTrash() throws {

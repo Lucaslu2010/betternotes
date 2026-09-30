@@ -2,18 +2,20 @@ import SwiftUI
 import PencilKit
 
 enum AppPreferenceKey {
+    static let language = "app.language"
     static let allowsFingerDrawing = "drawing.allowsFingerDrawing"
     static let librarySort = "library.sort"
-    static let beautifyHandwriting = "beautifyHandwriting"
+    static let libraryFolderPaths = "library.folderPaths"
     static let recentColors = "drawing.recentColors"
     static let toolbarDock = "drawing.toolbarDock"
     static let toolbarHintSeen = "hints.toolbar"
     static let panHintSeen = "hints.twoFingerPan"
     static let fingerHintSeen = "hints.fingerDrawing"
     static let lassoHintSeen = "hints.lassoTransform"
-    static let automaticWritingSuggestions = "ai.automaticWritingSuggestions"
     static let assistantEnabled = "ai.assistantEnabled"
     static let searchAnswersEnabled = "ai.searchAnswersEnabled"
+    /// Offer to answer a handwritten question ending in "??".
+    static let inkQuestionsEnabled = "ai.inkQuestionsEnabled"
     static let scrollMode = "display.scrollMode"
 }
 
@@ -24,8 +26,8 @@ enum ScrollMode: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .singlePage:     return "Single Page"
-        case .verticalScroll: return "Vertical Scroll"
+        case .singlePage:     return AppLocalization.text("Single Page")
+        case .verticalScroll: return AppLocalization.text("Vertical Scroll")
         }
     }
 
@@ -58,9 +60,6 @@ final class ToolSettings: ObservableObject {
 
     // Lasso
     @Published var lassoMode: LassoMode = .freeform
-
-    // Handwriting
-    @Published var beautifyHandwriting: Bool = true
 
     @Published private(set) var recentColorHexes: [String] = []
 
@@ -170,15 +169,7 @@ final class ToolSettings: ObservableObject {
         highlighterOpacity = defaults.object(forKey: "highlighterOpacity") as? Double ?? 0.45
         eraserStyle = EraserStyle(rawValue: defaults.string(forKey: "eraserStyle") ?? "") ?? .bitmap
         lassoMode = LassoMode(rawValue: defaults.string(forKey: "lassoMode") ?? "") ?? .freeform
-        if defaults.object(forKey: AppPreferenceKey.beautifyHandwriting) != nil {
-            beautifyHandwriting = defaults.bool(forKey: AppPreferenceKey.beautifyHandwriting)
-        }
         recentColorHexes = defaults.stringArray(forKey: AppPreferenceKey.recentColors) ?? []
-    }
-
-    func setBeautifyHandwriting(_ isEnabled: Bool) {
-        beautifyHandwriting = isEnabled
-        save()
     }
 
     func setHighlighterOpacity(_ opacity: Double) {
@@ -205,7 +196,6 @@ final class ToolSettings: ObservableObject {
         defaults.set(eraserWidth, forKey: "eraserWidth")
         defaults.set(eraserStyle.rawValue, forKey: "eraserStyle")
         defaults.set(lassoMode.rawValue, forKey: "lassoMode")
-        defaults.set(beautifyHandwriting, forKey: AppPreferenceKey.beautifyHandwriting)
         defaults.set(recentColorHexes, forKey: AppPreferenceKey.recentColors)
     }
 }

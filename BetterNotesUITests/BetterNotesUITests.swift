@@ -2,9 +2,11 @@ import XCTest
 
 final class BetterNotesUITests: XCTestCase {
     private var app: XCUIApplication!
+    private var fingerDrawingDisabledForPageSwipes = false
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+        fingerDrawingDisabledForPageSwipes = false
         app = XCUIApplication()
         app.launchArguments.append("-ui-testing")
         app.launchArguments.append(contentsOf: ["-ui-testing-store-id", UUID().uuidString])
@@ -17,7 +19,7 @@ final class BetterNotesUITests: XCTestCase {
 
         let notebook = app.buttons[title].firstMatch
         XCTAssertTrue(notebook.waitForExistence(timeout: 5))
-        attachScreenshot(named: "iPhone Library")
+        attachScreenshot(named: "iPad Library")
         notebook.tap()
 
         let editorTitle = app.descendants(matching: .any)["notebook-title"]
@@ -25,6 +27,8 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertEqual(editorTitle.label, title)
         XCTAssertTrue(editorTitle.isHittable)
         XCTAssertTrue(app.buttons["Back"].isHittable)
+        let addTab = app.buttons["editor-add-tab"]
+        XCTAssertTrue(addTab.isHittable)
 
         for label in ["Pen", "Pencil", "Highlighter", "Eraser", "Lasso"] {
             let button = app.buttons[label]
@@ -33,12 +37,145 @@ final class BetterNotesUITests: XCTestCase {
             // XCTest reports 44-point SwiftUI frames a few ulps below 44.
             XCTAssertGreaterThanOrEqual(button.frame.width, 43.9)
             XCTAssertGreaterThanOrEqual(button.frame.height, 43.9)
+            XCTAssertGreaterThanOrEqual(button.frame.minY, addTab.frame.maxY - 1,
+                                        "\(label) is covered by the notebook tab strip")
         }
         XCTAssertTrue(app.buttons["Undo"].exists)
         XCTAssertTrue(app.buttons["Redo"].exists)
-        XCTAssertTrue(app.buttons["Add Page"].exists)
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Zoom,'")).firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["floating-page-controls"].exists)
+        XCTAssertFalse(app.buttons["Add Page"].exists)
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 1 of'")).firstMatch.exists)
-        attachScreenshot(named: "iPhone Editor")
+        attachScreenshot(named: "iPad Editor")
+    }
+
+    func testPageControlsStayInBottomRightCornerInBothOrientations() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-bottom-toolbar")
+        app.launch()
+        _ = openNotebook(named: uniqueTitle("Page Controls"))
+
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let controls = app.descendants(matching: .any)["floating-page-controls"].firstMatch
+            let toolbar = app.descendants(matching: .any)["floating-editor-toolbar"].firstMatch
+            let pen = app.buttons["Pen"]
+            let redo = app.buttons["Redo"].firstMatch
+            XCTAssertTrue(controls.waitForExistence(timeout: 5))
+            XCTAssertTrue(controls.isHittable)
+            XCTAssertTrue(pen.isHittable)
+            XCTAssertTrue(redo.exists)
+            let bottomGap = XCUIScreen.main.screenshot().image.size.height - controls.frame.maxY
+            XCTAssertGreaterThanOrEqual(bottomGap, 0, "Page controls extend off the bottom edge")
+            XCTAssertLessThanOrEqual(bottomGap, 6, "Page controls sit too high above the bottom edge")
+            XCTAssertLessThanOrEqual(abs(toolbar.frame.maxY - controls.frame.maxY), 3,
+                                     "Bottom toolbar and page controls should share a bottom edge: toolbar \(toolbar.frame), controls \(controls.frame)")
+            XCTAssertGreaterThan(controls.frame.minX, redo.frame.maxX + 6,
+                                 "Page controls overlap the bottom drawing toolbar")
+            attachScreenshot(named: orientation == .portrait ? "Page Controls Portrait" : "Page Controls Landscape")
+        }
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    func testToolbarDocksVerticallyAtEitherSide() {
+        _ = openNotebook(named: uniqueTitle("Side Toolbar"))
+        let toolbar = app.descendants(matching: .any)["floating-editor-toolbar"].firstMatch
+        let handle = app.descendants(matching: .any)["Move Toolbar"].firstMatch
+        XCTAssertTrue(toolbar.waitForExistence(timeout: 5))
+        XCTAssertTrue(handle.isHittable)
+        let penWidth = toolbar.frame.width
+        app.buttons["Lasso"].tap()
+        XCTAssertLessThan(toolbar.frame.width, penWidth - 30,
+                          "Horizontal toolbar should shrink when fewer controls are visible")
+        app.buttons["Pen"].tap()
+        let screen = app.windows.firstMatch.frame
+
+        for x in [screen.minX + 28, screen.maxX - 28] {
+            let target = app.coordinate(withNormalizedOffset: CGVector(
+                dx: x / screen.width, dy: screen.midY / screen.height
+            ))
+            handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.1)
+            XCTAssertLessThan(toolbar.frame.width, 80, "Side-docked toolbar should be vertical")
+            XCTAssertGreaterThan(toolbar.frame.height, 300)
+            XCTAssertTrue(app.buttons["Pen"].isHittable)
+            XCTAssertTrue(app.buttons["Insert"].isHittable)
+            let penHeight = toolbar.frame.height
+            app.buttons["Lasso"].tap()
+            XCTAssertLessThan(toolbar.frame.height, penHeight - 30,
+                              "Vertical toolbar should shrink when fewer controls are visible")
+            app.buttons["Pen"].tap()
+            if x < screen.midX {
+                XCTAssertLessThan(toolbar.frame.midX, screen.midX / 2)
+            } else {
+                XCTAssertGreaterThan(toolbar.frame.midX, screen.midX * 1.5)
+            }
+        }
+    }
+
+    func testInsertingTextBoxAndStickyNoteOpensEditableSheet() {
+        _ = openNotebook(named: uniqueTitle("Text Elements"))
+        for (item, title) in [("Text Box", "Text"), ("Sticky Note", "Sticky Note")] {
+            app.buttons["Insert"].tap()
+            app.buttons[item].tap()
+            let editor = app.navigationBars[title]
+            XCTAssertTrue(editor.waitForExistence(timeout: 5), "\(item) editor did not open")
+            let textView = app.textViews.firstMatch
+            XCTAssertTrue(textView.waitForExistence(timeout: 5))
+            textView.typeText("Study note")
+            textView.typeText(" for tomorrow.")
+            XCTAssertEqual(textView.value as? String, "Study note for tomorrow.",
+                           "Typing must not move the insertion point or reorder text")
+            editor.buttons["Done"].tap()
+            XCTAssertFalse(editor.exists)
+        }
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "page-element").count, 2)
+    }
+
+    func testLandscapeNotebookAndExplicitPortraitPage() {
+        openNewNotebookSheet()
+        let name = uniqueTitle("Landscape Notebook")
+        let field = app.textFields["Untitled Notebook"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(focus(field))
+        field.typeText(name)
+        let hideKeyboard = app.buttons["Hide keyboard"]
+        if hideKeyboard.exists { hideKeyboard.tap() }
+        let landscape = app.buttons["Landscape"].firstMatch
+        XCTAssertTrue(landscape.waitForExistence(timeout: 5))
+        landscape.tap()
+        app.navigationBars["New Notebook"].buttons["Create"].tap()
+        app.buttons[name].firstMatch.tap()
+
+        openToolbarMenu(named: "More")
+        app.buttons["Page Style"].tap()
+        XCTAssertTrue(app.buttons["Landscape"].isSelected)
+        app.buttons["Done"].tap()
+
+        openToolbarMenu(named: "More")
+        app.buttons["Insert Page"].tap()
+        app.buttons["Portrait Page"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'")).firstMatch.waitForExistence(timeout: 5))
+        openToolbarMenu(named: "More")
+        app.buttons["Page Style"].tap()
+        XCTAssertTrue(app.buttons["Portrait"].isSelected)
+    }
+
+    func testSinglePageAddsOnlyWithLeftSwipeAtEnd() {
+        _ = openNotebook(named: uniqueTitle("Swipe to Add Page"))
+        let canvas = app.scrollViews["page-canvas"]
+        let pageOne = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 1 of 1'"))
+        XCTAssertTrue(pageOne.firstMatch.exists)
+
+        let verticalStart = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.78))
+        let verticalEnd = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12))
+        verticalStart.press(forDuration: 0.1, thenDragTo: verticalEnd, withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(pageOne.firstMatch.exists, "vertical scrolling created a page in single-page mode")
+
+        let pageTwo = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'"))
+        swipeCanvasLeft()
+        XCTAssertTrue(pageTwo.firstMatch.waitForExistence(timeout: 5), "swiping left on the last page did not add one")
+        attachScreenshot(named: "Page Added by Swipe")
     }
 
     func testNotebookPersistsAcrossRelaunch() {
@@ -52,8 +189,30 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertTrue(app.buttons[title].firstMatch.waitForExistence(timeout: 5))
     }
 
+    func testLanguagePickerSwitchesBetweenEnglishAndChinese() {
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+
+        let languagePicker = app.descendants(matching: .any)["app-language-picker"].firstMatch
+        XCTAssertTrue(languagePicker.waitForExistence(timeout: 5))
+        languagePicker.tap()
+        app.buttons["简体中文"].tap()
+        XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
+
+        languagePicker.tap()
+        app.buttons["繁體中文"].tap()
+        XCTAssertTrue(app.navigationBars["設定"].waitForExistence(timeout: 5))
+
+        languagePicker.tap()
+        app.buttons["English"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+    }
+
     func testAssistantCreatesAndReopensConversation() {
-        openNotebook(named: uniqueTitle("Assistant"))
+        app.terminate()
+        app.launchArguments.append("-ui-testing-ai-stub")
+        app.launch()
+        let notebookTitle = openNotebook(named: uniqueTitle("Assistant"))
 
         // The assistant is a dedicated toolbar button now, not a More-menu item.
         let assistant = app.buttons["editor-assistant"]
@@ -63,38 +222,24 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Summary"].exists)
 
         app.buttons["Explain a concept"].tap()
-        // Wait for any on-device answer. Which of the two local outcomes you
-        // get ("no evidence" vs. "here are the passages") depends on whether
-        // the corpus index and the NLEmbedding sentence model have finished
-        // loading, so asserting one specific string made this test depend on a
-        // race. This test covers conversation creation and reopening; the
-        // ranking behaviour itself is covered by the corpus unit tests.
-        let answered = NSPredicate(format:
-            "label CONTAINS 'could not find enough evidence' OR label CONTAINS 'most relevant passages'"
-        )
-        let response = app.staticTexts.containing(answered).firstMatch
-        XCTAssertTrue(response.waitForExistence(timeout: 10), "Assistant produced no on-device answer")
+        XCTAssertTrue(app.staticTexts["Because it kept the French stress on the second syllable."].waitForExistence(timeout: 10))
         dismissAssistant()
 
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.buttons[notebookTitle].firstMatch.waitForExistence(timeout: 5))
+        app.buttons[notebookTitle].firstMatch.tap()
         app.buttons["editor-assistant"].tap()
         XCTAssertTrue(app.staticTexts["Explain the most important concept in these notes in simple terms."].waitForExistence(timeout: 4))
+        let conversations = app.descendants(matching: .any)["assistant-conversations-menu"]
+        XCTAssertTrue(conversations.waitForExistence(timeout: 4))
+        conversations.tap()
+        app.buttons["New Conversation"].tap()
+        XCTAssertFalse(app.staticTexts["Explain the most important concept in these notes in simple terms."].exists)
+        conversations.tap()
+        app.buttons["Explain the most important concept in"].tap()
+        XCTAssertTrue(app.staticTexts["Explain the most important concept in these notes in simple terms."].exists)
         dismissAssistant()
-    }
-
-    func testAutomaticWritingSuggestionsAreOptIn() {
-        app.buttons["More"].tap()
-        let settings = app.buttons["Settings"]
-        XCTAssertTrue(settings.waitForExistence(timeout: 4))
-        settings.tap()
-
-        let toggle = app.switches["Automatic Writing Suggestions"]
-        XCTAssertTrue(toggle.waitForExistence(timeout: 4))
-        XCTAssertEqual(toggle.value as? String, "Off")
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-        let enabled = NSPredicate(format: "value == 'On'")
-        expectation(for: enabled, evaluatedWith: toggle)
-        waitForExpectations(timeout: 3)
-        app.buttons["Done"].tap()
     }
 
     func testTemplatePreviewsAndConsolidatedHandwritingMenu() {
@@ -112,9 +257,7 @@ final class BetterNotesUITests: XCTestCase {
 
         openNotebook(named: uniqueTitle("Handwriting Menu"))
         openToolbarMenu(named: "More")
-        for label in ["Beautify Handwriting", "Draw with Finger", "Beautify Existing Ink", "Reset Learned Style"] {
-            XCTAssertTrue(app.buttons[label].waitForExistence(timeout: 3), "Missing handwriting action: \(label)")
-        }
+        XCTAssertTrue(app.buttons["Draw with Finger"].waitForExistence(timeout: 3), "Missing handwriting action: Draw with Finger")
 
         app.buttons["Draw with Finger"].tap()
         let insert = app.buttons["Insert"]
@@ -123,7 +266,6 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Text Box"].exists)
         XCTAssertTrue(app.buttons["Sticky Note"].exists)
         XCTAssertFalse(app.buttons["Draw with Finger"].exists)
-        XCTAssertFalse(app.buttons["Beautify Existing Ink"].exists)
     }
 
     func testExportNotebookPDFInVerticalScrollModeShowsShareSheet() {
@@ -267,7 +409,7 @@ final class BetterNotesUITests: XCTestCase {
 
     func testAdaptiveOverviewAndReadOnlyMode() {
         openNotebook(named: uniqueTitle("Overview Read Only"))
-        for _ in 0..<4 { app.buttons["Add Page"].firstMatch.tap() }
+        for _ in 0..<4 { swipeCanvasLeft() }
 
         openOverview()
         let firstThumbnail = app.descendants(matching: .any)["page-thumbnail-1"]
@@ -281,7 +423,8 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertTrue(editorHeading.waitForExistence(timeout: 3))
         XCTAssertTrue(editorHeading.label.contains("View Only"))
         XCTAssertFalse(app.buttons["Pen"].isEnabled)
-        XCTAssertFalse(app.buttons["Add Page"].firstMatch.isEnabled)
+        swipeCanvasLeft()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 5 of 5'")).firstMatch.exists)
 
         openToolbarMenu(named: "More")
         app.buttons["Page Info"].tap()
@@ -293,7 +436,7 @@ final class BetterNotesUITests: XCTestCase {
 
     func testDeletionTimeoutRestoreAndPermanentDeleteConfirmation() {
         openNotebook(named: uniqueTitle("Page Trash"))
-        app.buttons["Add Page"].firstMatch.tap()
+        swipeCanvasLeft()
         deleteCurrentPage()
 
         let banner = app.descendants(matching: .any)["page-deletion-undo-banner"]
@@ -359,20 +502,38 @@ final class BetterNotesUITests: XCTestCase {
         createNotebook(named: firstTitle)
         createNotebook(named: secondTitle)
         app.buttons[firstTitle].firstMatch.tap()
+        swipeCanvasLeft()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'")).firstMatch.exists)
 
-        // Open the second notebook as an additional tab via the toolbar's
-        // tab switcher menu.
-        let tabSwitcher = app.buttons["Switch Notebook"]
-        XCTAssertTrue(tabSwitcher.waitForExistence(timeout: 5))
-        tabSwitcher.tap()
-        let openNotebook = app.buttons["Open Notebook"]
-        XCTAssertTrue(openNotebook.waitForExistence(timeout: 3))
-        openNotebook.tap()
+        // Add the second notebook from the visible tab strip.
+        let addTab = app.buttons["editor-add-tab"]
+        XCTAssertTrue(addTab.waitForExistence(timeout: 5))
+        addTab.tap()
         app.buttons[secondTitle].tap()
+        XCTAssertEqual(app.buttons["notebook-title"].label, secondTitle)
+
+        // Switching tabs keeps both notebooks open.
+        app.buttons[firstTitle].tap()
+        XCTAssertEqual(app.buttons["notebook-title"].label, firstTitle)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'")).firstMatch.exists,
+                      "Switching tabs should retain the page position")
+        app.buttons[secondTitle].tap()
+        attachScreenshot(named: "Two Notebook Tabs Portrait")
+
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let activeTab = app.buttons["notebook-title"]
+        let drawingTool = app.buttons["Pen"]
+        XCTAssertTrue(activeTab.waitForExistence(timeout: 5))
+        XCTAssertTrue(drawingTool.isHittable)
+        XCTAssertLessThan(activeTab.frame.maxY, drawingTool.frame.minY,
+                          "Notebook tabs must stay above the drawing toolbar")
+        XCTAssertTrue(app.buttons["editor-add-tab"].isHittable)
+        XCTAssertTrue(app.buttons["editor-assistant"].isHittable)
+        attachScreenshot(named: "Two Notebook Tabs Landscape")
+        XCUIDevice.shared.orientation = .portrait
 
         // The second notebook is now the active tab; close it again.
-        tabSwitcher.tap()
-        let closeTab = app.buttons["Close Current Tab"]
+        let closeTab = app.buttons["Close \(secondTitle) Tab"]
         XCTAssertTrue(closeTab.waitForExistence(timeout: 3))
         closeTab.tap()
 
@@ -380,6 +541,24 @@ final class BetterNotesUITests: XCTestCase {
 
         app.buttons["Back"].tap()
         XCTAssertTrue(app.buttons[secondTitle].firstMatch.waitForExistence(timeout: 5))
+    }
+
+    func testAddTabCanCreateAndOpenNotebook() {
+        openNotebook(named: uniqueTitle("First Tab"))
+        app.buttons["editor-add-tab"].tap()
+        app.buttons["New Notebook"].tap()
+
+        let title = uniqueTitle("Created Tab")
+        let field = app.textFields["Untitled Notebook"].firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(focus(field))
+        field.typeText(title)
+        app.navigationBars["New Notebook"].buttons["Create"].tap()
+
+        let selectedTab = app.buttons["notebook-title"]
+        XCTAssertTrue(selectedTab.waitForExistence(timeout: 5))
+        XCTAssertEqual(selectedTab.label, title)
+        XCTAssertTrue(app.buttons["Close \(title) Tab"].exists)
     }
 
     func testFolderAndTagFiltersNarrowTheLibrary() throws {
@@ -415,6 +594,59 @@ final class BetterNotesUITests: XCTestCase {
                 folder.tap()
             }
         }
+    }
+
+    func testNestedFolderFiltersIncludeChildNotebooks() {
+        let algebra = uniqueTitle("Algebra")
+        let history = uniqueTitle("History")
+        createNotebook(named: algebra)
+        createNotebook(named: history)
+        organize(notebook: algebra, folder: "School/Math", tags: "study")
+
+        let parent = app.buttons["library-folder-School"]
+        let child = app.buttons["library-folder-School/Math"]
+        XCTAssertTrue(parent.waitForExistence(timeout: 5))
+        XCTAssertTrue(child.exists)
+        parent.tap()
+        XCTAssertTrue(app.buttons[algebra].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons[history].firstMatch.exists)
+        child.tap()
+        XCTAssertTrue(app.buttons[algebra].firstMatch.exists)
+        XCTAssertFalse(app.buttons[history].firstMatch.exists)
+        attachScreenshot(named: "Nested Folders")
+    }
+
+    func testSettingsSidebarChangesDetailPane() {
+        app.buttons["More"].tap()
+        app.buttons["Settings"].tap()
+
+        XCTAssertTrue(app.descendants(matching: .any)["settings-section-language"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["app-language-picker"].firstMatch.exists)
+        app.descendants(matching: .any)["settings-section-input"].firstMatch.tap()
+        XCTAssertTrue(app.switches["Draw with Finger"].waitForExistence(timeout: 5))
+        app.descendants(matching: .any)["settings-section-sync"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Nearby Sync"].waitForExistence(timeout: 5))
+        attachScreenshot(named: "Settings Sidebar")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(app.buttons["Nearby Sync"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["settings-section-language"].firstMatch.isHittable)
+        attachScreenshot(named: "Settings Sidebar Landscape")
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    func testEmptyFolderSurvivesRelaunch() {
+        let name = uniqueTitle("Courses")
+        app.buttons["library-new-folder"].tap()
+        let field = app.textFields["new-folder-name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(focus(field))
+        field.typeText(name)
+        app.navigationBars["New Folder"].buttons["Create"].tap()
+        XCTAssertTrue(app.buttons["library-folder-\(name)"].waitForExistence(timeout: 5))
+
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.buttons["library-folder-\(name)"].waitForExistence(timeout: 5))
     }
 
     /// Sets a folder and tags on a notebook through its Rename sheet.
@@ -775,6 +1007,138 @@ final class BetterNotesUITests: XCTestCase {
         )
     }
 
+    func testInsertedElementMovesWithFingerDrag() {
+        assertInsertedElementMovesWithFingerDrag()
+    }
+
+    func testFingerDragWorksWhenCanvasReceivesTouch() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-force-canvas-finger")
+        app.launch()
+        assertInsertedElementMovesWithFingerDrag()
+    }
+
+    func testResizeHandleWorksWhenCanvasReceivesFingerTouch() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-force-canvas-finger")
+        app.launch()
+        _ = openNotebook(named: uniqueTitle("Canvas Resize"))
+        insertFromMenu("Tape")
+        let element = app.descendants(matching: .any)["page-element"].firstMatch
+        let handle = app.descendants(matching: .any)["element-resize-handle-br"].firstMatch
+        XCTAssertTrue(element.waitForExistence(timeout: 5))
+        XCTAssertTrue(handle.waitForExistence(timeout: 5))
+        let before = element.frame
+        let canvas = app.scrollViews["page-canvas"]
+        let target = canvas.coordinate(withNormalizedOffset: CGVector(
+            dx: (handle.frame.midX + 90 - canvas.frame.minX) / canvas.frame.width,
+            dy: (handle.frame.midY + 70 - canvas.frame.minY) / canvas.frame.height
+        ))
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.1)
+        let after = element.frame
+        XCTAssertGreaterThan(after.width - before.width, 40, "finger resize did not enlarge the element")
+        XCTAssertGreaterThan(after.height - before.height, 30, "finger resize did not increase element height")
+    }
+
+    func testRotationHandleWorksWhenCanvasReceivesFingerTouch() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-force-canvas-finger")
+        app.launchArguments.append("-ui-testing-seed-image")
+        app.launch()
+        _ = openNotebook(named: uniqueTitle("Image Rotation"))
+        let element = app.descendants(matching: .any)["page-element"].firstMatch
+        XCTAssertTrue(element.waitForExistence(timeout: 5), "test image did not appear")
+        let handle = app.descendants(matching: .any)["element-rotate-handle"].firstMatch
+        XCTAssertTrue(handle.waitForExistence(timeout: 5), "image has no rotation handle")
+        let before = element.value as? String
+        let canvas = app.scrollViews["page-canvas"]
+        let target = canvas.coordinate(withNormalizedOffset: CGVector(
+            dx: (handle.frame.midX + 70 - canvas.frame.minX) / canvas.frame.width,
+            dy: (handle.frame.midY + 55 - canvas.frame.minY) / canvas.frame.height
+        ))
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertNotEqual(element.value as? String, before, "finger rotation did not change the image angle")
+    }
+
+    func testTextAndStickyNoteResizeWithFinger() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-force-canvas-finger")
+        app.launch()
+        _ = openNotebook(named: uniqueTitle("Text Control Resize"))
+        for (item, title) in [("Text Box", "Text"), ("Sticky Note", "Sticky Note")] {
+            app.buttons["Insert"].tap()
+            app.buttons[item].tap()
+            let editor = app.navigationBars[title]
+            XCTAssertTrue(editor.waitForExistence(timeout: 5))
+            app.textViews.firstMatch.typeText("Study")
+            editor.buttons["Done"].tap()
+            let kind = item == "Text Box" ? "Text box" : "Sticky note"
+            let element = app.descendants(matching: .any)
+                .matching(identifier: "page-element")
+                .matching(NSPredicate(format: "label BEGINSWITH %@", kind))
+                .firstMatch
+            XCTAssertTrue(element.waitForExistence(timeout: 5))
+            let handle = app.descendants(matching: .any)["element-resize-handle-br"].firstMatch
+            XCTAssertTrue(handle.waitForExistence(timeout: 5), "\(item) has no resize handle")
+            let before = element.frame
+            let canvas = app.scrollViews["page-canvas"]
+            let target = canvas.coordinate(withNormalizedOffset: CGVector(
+                dx: (handle.frame.midX + 65 - canvas.frame.minX) / canvas.frame.width,
+                dy: (handle.frame.midY + 55 - canvas.frame.minY) / canvas.frame.height
+            ))
+            handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.1)
+            XCTAssertGreaterThan(element.frame.width - before.width, 25, "\(item) did not resize with a finger")
+        }
+    }
+
+    private func assertInsertedElementMovesWithFingerDrag() {
+        _ = openNotebook(named: uniqueTitle("Element Drag"))
+        insertFromMenu("Tape")
+        let element = app.descendants(matching: .any)["page-element"].firstMatch
+        XCTAssertTrue(element.waitForExistence(timeout: 5))
+        let before = element.frame
+        let canvas = app.scrollViews["page-canvas"]
+        let target = canvas.coordinate(withNormalizedOffset: CGVector(
+            dx: (before.midX + 80 - canvas.frame.minX) / canvas.frame.width,
+            dy: (before.midY + 70 - canvas.frame.minY) / canvas.frame.height
+        ))
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: target, withVelocity: .slow, thenHoldForDuration: 0.1)
+        let after = element.frame
+        XCTAssertGreaterThan(after.midX - before.midX, 40, "element did not follow the finger horizontally")
+        XCTAssertGreaterThan(after.midY - before.midY, 30, "element did not follow the finger vertically")
+    }
+
+    func testTapeOptionsChangeColorLengthAndHeight() {
+        openNotebook(named: uniqueTitle("Tape Options"))
+        app.buttons["Insert"].tap()
+        app.buttons["Tape"].tap()
+
+        let options = app.navigationBars["Tape Options"]
+        XCTAssertTrue(options.waitForExistence(timeout: 5))
+        let color = app.buttons["tape-color-F2B8BC"]
+        XCTAssertTrue(color.exists)
+        color.tap()
+        app.sliders["tape-length-slider"].adjust(toNormalizedSliderPosition: 0.7)
+        app.sliders["tape-height-slider"].adjust(toNormalizedSliderPosition: 0.65)
+        options.buttons["Save"].tap()
+
+        let tape = app.descendants(matching: .any)["page-element"].firstMatch
+        XCTAssertTrue(tape.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Saving"].exists)
+        XCTAssertGreaterThan(tape.frame.width, 200)
+        XCTAssertGreaterThan(tape.frame.height, 60)
+        attachScreenshot(named: "Opaque Tape on Page")
+
+        app.buttons["Tape Options"].tap()
+        XCTAssertTrue(options.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["tape-color-F2B8BC"].isSelected)
+        attachScreenshot(named: "Opaque Tape Options")
+    }
+
     /// Inserted elements must land where the page is actually showing, and
     /// two of them must not occupy the same point. Both were broken: every
     /// image, recording, note and tape was created at a hardcoded (200, 300).
@@ -835,6 +1199,11 @@ final class BetterNotesUITests: XCTestCase {
         let item = app.buttons[label]
         XCTAssertTrue(item.waitForExistence(timeout: 3), "no \(label) item in the Insert menu")
         item.tap()
+        if label == "Tape" {
+            let options = app.navigationBars["Tape Options"]
+            XCTAssertTrue(options.waitForExistence(timeout: 5), "new tape did not open its options")
+            options.buttons["Save"].tap()
+        }
     }
 
     private func openNotebook(named title: String) -> String {
@@ -844,6 +1213,21 @@ final class BetterNotesUITests: XCTestCase {
         notebook.tap()
         XCTAssertTrue(app.scrollViews["page-canvas"].waitForExistence(timeout: 8))
         return title
+    }
+
+    private func swipeCanvasLeft() {
+        if !fingerDrawingDisabledForPageSwipes {
+            // UI testing enables finger drawing to exercise PencilKit. Turn
+            // it off for the one-finger page-turn gesture under test.
+            openToolbarMenu(named: "More")
+            app.buttons["Draw with Finger"].tap()
+            fingerDrawingDisabledForPageSwipes = true
+        }
+        let canvas = app.scrollViews["page-canvas"]
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        let start = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.78, dy: 0.5))
+        let end = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0)
     }
 
     private func insertShape(named name: String) {

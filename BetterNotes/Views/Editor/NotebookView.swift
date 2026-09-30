@@ -32,7 +32,6 @@ struct EditorCommand: Identifiable, Equatable {
         case redo
         case insert(InsertKind)
         case insertShape(ShapeKind)
-        case beautifyInk
         case copy
         case cut
         case paste
@@ -43,8 +42,6 @@ struct EditorCommand: Identifiable, Equatable {
         case showSourceText
         case exportPage
         case scanDocument
-        case recognizeHandwriting
-        case resetLearnedHandwriting
     }
 
     let id = UUID()
@@ -75,7 +72,6 @@ struct NotebookView: View {
     @State private var notebookPDFURL: URL?
     @State private var showingNotebookShare = false
     @State private var showingPDFImporter = false
-    @State private var confirmingResetHandwriting = false
     @State private var recentlyDeletedPage: Page?
     @State private var pdfImportError: String?
     @State private var saveError: String?
@@ -113,6 +109,8 @@ struct NotebookView: View {
     }
 
     private var isReadOnly: Bool { editorState.isViewOnly }
+    // The page pill and bottom-docked toolbar share this visual bottom edge.
+    private let floatingControlBottomOverflow: CGFloat = 18
 
     private var currentPageIndex: Int {
         get { editorState.currentPageIndex }
@@ -200,10 +198,23 @@ struct NotebookView: View {
                 .zIndex(100)
             }
 
+            editorTopActions
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.top, 10)
+                .padding(.trailing, 16)
+                .zIndex(110)
+
+            editorPageBar
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(.trailing, 18)
+                .padding(.bottom, 4)
+                .offset(y: horizontalSizeClass == .compact ? 0 : floatingControlBottomOverflow + 4)
+                .zIndex(110)
+
             if let recentlyDeletedPage, deletionBanner.isPresented {
                 VStack {
                     Spacer()
-                    UndoBanner(message: "Page moved to trash") {
+                    UndoBanner(message: AppLocalization.text("Page moved to trash")) {
                         guard PageOperations.restore(recentlyDeletedPage, in: notebook, isReadOnly: isReadOnly) else { return }
                         if saveChanges() {
                             deletionBanner.clear()
@@ -223,9 +234,10 @@ struct NotebookView: View {
                     .zIndex(150)
             }
         }
-        .clipped()
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            editorBottomBar
+            if horizontalSizeClass == .compact {
+                editorBottomBar
+            }
         }
         .overlay {
             if isImportingPDF {
@@ -242,59 +254,6 @@ struct NotebookView: View {
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
                 .transition(.opacity)
-            }
-        }
-        .toolbar {
-            // Page navigation in the top trailing toolbar — frees the bottom
-            // bar for the compact drawing toolbar only.
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button(action: prevPage) {
-                    Image(systemName: "chevron.left")
-                }
-                .disabled(safePageIndex == 0)
-                .accessibilityLabel("Previous Page")
-
-                Button {
-                    editorState.presentedPanel = .overview
-                } label: {
-                    Text("\(safePageIndex + 1)/\(sortedPages.count)")
-                        .font(.subheadline.monospacedDigit())
-                        .lineLimit(1)
-                }
-                .accessibilityLabel("Page \(safePageIndex + 1) of \(sortedPages.count), open overview")
-
-                Button(action: nextPage) {
-                    Image(systemName: "chevron.right")
-                }
-                .disabled(safePageIndex >= sortedPages.count - 1)
-                .accessibilityLabel("Next Page")
-
-                Button(action: addNewPage) {
-                    Image(systemName: "plus.square")
-                }
-                .disabled(isReadOnly)
-                .accessibilityLabel("Add Page")
-
-                Button {
-                    editorState.presentedPanel = .overview
-                } label: {
-                    Image(systemName: "rectangle.grid.2x2")
-                }
-                .accessibilityLabel("Page Overview")
-
-                // Promoted out of the More menu — the assistant is a headline
-                // feature and was previously two taps deep with no visible cue.
-                if assistantEnabled {
-                    Button {
-                        editorState.isAssistantPresented = true
-                    } label: {
-                        Image(systemName: "sparkles")
-                    }
-                    .accessibilityLabel("Assistant")
-                    .accessibilityIdentifier("editor-assistant")
-                }
-
-                editorMoreMenu
             }
         }
         .sheet(item: $editorState.presentedPanel) { panel in
@@ -325,18 +284,6 @@ struct NotebookView: View {
             Button("OK", role: .cancel) { pdfImportError = nil }
         } message: {
             Text(pdfImportError ?? "")
-        }
-        .confirmationDialog(
-            "Reset Learned Handwriting Style?",
-            isPresented: $confirmingResetHandwriting,
-            titleVisibility: .visible
-        ) {
-            Button("Reset", role: .destructive) {
-                sendEditorCommand(.resetLearnedHandwriting)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This erases your learned handwriting profile. The beautifier will start learning from scratch.")
         }
         .alert("Couldn’t Save", isPresented: Binding(
             get: { saveError != nil },
@@ -410,11 +357,8 @@ struct NotebookView: View {
                     }
                 }
 
-                // Explicit add-page affordance. This was previously an
-                // invisible sentinel that called addNewPage() from onAppear;
-                // inside a LazyVStack that fires every time it scrolls into
-                // view, and each new page re-triggered it — creating pages in
-                // a runaway loop rather than the intended "pull to add page".
+                // Vertical scroll keeps its explicit end-of-document action.
+                // Single-page mode uses a horizontal page-turn gesture.
                 if !isReadOnly {
                     Button(action: addNewPage) {
                         Label("Add Page", systemImage: "plus.square")
@@ -444,9 +388,7 @@ struct NotebookView: View {
     // MARK: - Navigation
 
     private var editorBottomBar: some View {
-        VStack(spacing: 0) {
-            if horizontalSizeClass == .compact {
-                GeometryReader { geometry in
+        GeometryReader { geometry in
                     EditorToolbar(
                         tool: $editorTool,
                         color: activeColor,
@@ -460,20 +402,74 @@ struct NotebookView: View {
                         isReadOnly: isReadOnly,
                         canUndo: editorCanUndo,
                         canRedo: editorCanRedo,
-                        zoomPercentage: Int((pageZoomScale * 100).rounded()),
                         onUndo: { sendEditorCommand(.undo) },
                         onRedo: { sendEditorCommand(.redo) },
                         onInsert: { sendEditorCommand(.insert($0)) },
-                        onInsertShape: { editorState.presentedPanel = .shapePicker },
-                        onZoom: applyZoomAction
+                        onInsertShape: { editorState.presentedPanel = .shapePicker }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .frame(height: 98)
-                Divider()
-            }
         }
+        .frame(height: 98)
         .background(.bar)
+    }
+
+    private var editorPageBar: some View {
+        HStack(spacing: 0) {
+            Button(action: prevPage) {
+                Image(systemName: "chevron.left")
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(safePageIndex == 0)
+            .accessibilityLabel("Previous Page")
+
+            Button {
+                editorState.presentedPanel = .overview
+            } label: {
+                Text("\(safePageIndex + 1)/\(sortedPages.count)")
+                    .font(.subheadline.monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .frame(minWidth: 52, minHeight: 44)
+            }
+            .accessibilityLabel("Page \(safePageIndex + 1) of \(sortedPages.count), open overview")
+
+            Button(action: nextPage) {
+                Image(systemName: "chevron.right")
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(safePageIndex >= sortedPages.count - 1)
+            .accessibilityLabel("Next Page")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color(uiColor: .separator).opacity(0.35)))
+        .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("floating-page-controls")
+    }
+
+    private var editorTopActions: some View {
+        HStack(spacing: 2) {
+            if assistantEnabled {
+                Button {
+                    editorState.isAssistantPresented = true
+                } label: {
+                    Image(systemName: "sparkles")
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Assistant")
+                .accessibilityIdentifier("editor-assistant")
+            }
+
+            editorMoreMenu
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 4)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color(uiColor: .separator).opacity(0.35)))
+        .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
     }
 
     private var editorMoreMenu: some View {
@@ -487,10 +483,16 @@ struct NotebookView: View {
                 }
             }
 
-            // The assistant now has its own toolbar button, so it is no longer
-            // duplicated here.
-
             Section("Page") {
+                Menu("Insert Page", systemImage: "plus.square") {
+                    Button("Portrait Page", systemImage: PageOrientation.portrait.icon) {
+                        addNewPage(orientation: .portrait)
+                    }
+                    Button("Landscape Page", systemImage: PageOrientation.landscape.icon) {
+                        addNewPage(orientation: .landscape)
+                    }
+                }
+                .disabled(isReadOnly)
                 Button("Page Info", systemImage: "info.circle") {
                     editorState.presentedPanel = .pageInfo
                 }
@@ -515,25 +517,8 @@ struct NotebookView: View {
             }
 
             Section("Handwriting") {
-                Button("Recognize Handwriting", systemImage: "text.viewfinder") {
-                    sendEditorCommand(.recognizeHandwriting)
-                }
-                Toggle(isOn: Binding(
-                    get: { toolSettings.beautifyHandwriting },
-                    set: { toolSettings.setBeautifyHandwriting($0) }
-                )) {
-                    Label("Beautify Handwriting", systemImage: "sparkles")
-                }
-                .disabled(isReadOnly)
                 Toggle("Draw with Finger", systemImage: "hand.draw", isOn: $allowsFingerDrawing)
                     .disabled(isReadOnly)
-                Button("Beautify Existing Ink", systemImage: "wand.and.stars") {
-                    sendEditorCommand(.beautifyInk)
-                }
-                .disabled(isReadOnly)
-                Button("Reset Learned Style", systemImage: "arrow.counterclockwise", role: .destructive) {
-                    confirmingResetHandwriting = true
-                }
             }
 
             Section("Display") {
@@ -545,6 +530,19 @@ struct NotebookView: View {
             }
 
             Section("Notebook") {
+                Picker("New Page Orientation", selection: Binding(
+                    get: { PageOrientation(rawValue: notebook.defaultOrientation) ?? .portrait },
+                    set: { orientation in
+                        let previous = notebook.defaultOrientation
+                        notebook.defaultOrientation = orientation.rawValue
+                        if !saveChanges() { notebook.defaultOrientation = previous }
+                    }
+                )) {
+                    ForEach(PageOrientation.allCases, id: \.self) { orientation in
+                        Label(orientation.label, systemImage: orientation.icon).tag(orientation)
+                    }
+                }
+                .disabled(isReadOnly)
                 Button("Import PDF", systemImage: "doc.badge.plus") {
                     showingPDFImporter = true
                 }
@@ -559,6 +557,8 @@ struct NotebookView: View {
             }
         } label: {
             Image(systemName: "ellipsis.circle")
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("More")
     }
@@ -644,6 +644,8 @@ struct NotebookView: View {
         page.title = "Assistant Note"
         page.backgroundHex = notebook.defaultBackgroundHex
         page.lineStyle = notebook.defaultLineStyle
+        page.lineThickness = notebook.defaultLineThickness
+        page.lineOpacity = notebook.defaultLineOpacity
         page.orientation = notebook.defaultOrientation
         page.notebook = notebook
         let pageSize = page.pageOrientation.size
@@ -681,10 +683,10 @@ struct NotebookView: View {
 
     private func hintText(_ hint: EditorHint) -> String {
         switch hint {
-        case .toolbar: return "Drag the toolbar handle to dock it at any edge."
-        case .pan: return "Use two fingers to move the page while finger drawing is on."
-        case .finger: return "Finger drawing is off, so your finger scrolls. Turn it on from the More menu."
-        case .lasso: return "Drag inside the selection to move it; use edge, corner, and rotation handles to transform it."
+        case .toolbar: return AppLocalization.text("Drag the toolbar handle to dock it at any edge.")
+        case .pan: return AppLocalization.text("Use two fingers to move the page while finger drawing is on.")
+        case .finger: return AppLocalization.text("Finger drawing is off, so your finger scrolls. Turn it on from the More menu.")
+        case .lasso: return AppLocalization.text("Drag inside the selection to move it; use edge, corner, and rotation handles to transform it.")
         }
     }
 
@@ -725,12 +727,18 @@ struct NotebookView: View {
     }
 
     private func addNewPage() {
+        addNewPage(orientation: PageOrientation(rawValue: notebook.defaultOrientation) ?? .portrait)
+    }
+
+    private func addNewPage(orientation: PageOrientation) {
         guard !isReadOnly else { return }
         let newIndex = sortedPages.count
         let page = Page(index: newIndex)
         page.lineStyle = notebook.defaultLineStyle
+        page.lineThickness = notebook.defaultLineThickness
+        page.lineOpacity = notebook.defaultLineOpacity
         page.backgroundHex = notebook.defaultBackgroundHex
-        page.orientation = notebook.defaultOrientation
+        page.orientation = orientation.rawValue
         page.notebook = notebook
         notebook.pages.append(page)
         notebook.modifiedAt = .now
@@ -897,34 +905,27 @@ struct NotebookView: View {
     }
 
     private func floatingToolbar(in size: CGSize) -> some View {
-        HStack(spacing: 0) {
-            toolbarDragHandle(in: size)
-
-            Divider()
-                .frame(height: 30)
-
-            EditorToolbar(
-                tool: $editorTool,
-                color: activeColor,
-                lineWidth: activeLineWidth,
-                eraserWidth: eraserWidth,
-                eraserStyle: eraserStyle,
-                lassoMode: lassoMode,
-                toolSettings: toolSettings,
-                availableWidth: EditorToolbarLayout.contentWidth(for: size.width),
-                dock: ToolbarDock(rawValue: toolbarDockRaw) ?? .top,
-                isReadOnly: isReadOnly,
-                canUndo: editorCanUndo,
-                canRedo: editorCanRedo,
-                zoomPercentage: Int((pageZoomScale * 100).rounded()),
-                onUndo: { sendEditorCommand(.undo) },
-                onRedo: { sendEditorCommand(.redo) },
-                onInsert: { sendEditorCommand(.insert($0)) },
-                onInsertShape: { if !sortedPages.isEmpty { editorState.presentedPanel = .shapePicker } },
-                onZoom: applyZoomAction
-            )
+        let dock = ToolbarDock(rawValue: toolbarDockRaw) ?? .top
+        let isVertical = dock == .left || dock == .right
+        return Group {
+            if isVertical {
+                VStack(spacing: 0) {
+                    toolbarDragHandle(in: size)
+                    Divider().frame(width: 30)
+                    ScrollView(.vertical) { toolbarContent(in: size) }
+                        .scrollIndicators(.hidden)
+                }
+            } else {
+                HStack(spacing: 0) {
+                    toolbarDragHandle(in: size)
+                    Divider().frame(height: 30)
+                    toolbarContent(in: size)
+                }
+            }
         }
-        .frame(width: toolbarFrameWidth(in: size), alignment: .leading)
+        .frame(width: toolbarFrameWidth(in: size),
+               height: isVertical ? min(max(size.height - 16, 1), verticalToolbarHeight) : nil,
+               alignment: isVertical ? .top : .leading)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
@@ -932,6 +933,30 @@ struct NotebookView: View {
                 .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.14), radius: 12, y: 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("floating-editor-toolbar")
+    }
+
+    private func toolbarContent(in size: CGSize) -> some View {
+        EditorToolbar(
+                tool: $editorTool,
+                color: activeColor,
+                lineWidth: activeLineWidth,
+                eraserWidth: eraserWidth,
+                eraserStyle: eraserStyle,
+                lassoMode: lassoMode,
+                toolSettings: toolSettings,
+                availableWidth: max(toolbarFrameWidth(in: size) - EditorToolbarLayout.toolbarChromeWidth, 1),
+                preferredLayout: toolbarLayout(in: size),
+                dock: ToolbarDock(rawValue: toolbarDockRaw) ?? .top,
+                isReadOnly: isReadOnly,
+                canUndo: editorCanUndo,
+                canRedo: editorCanRedo,
+                onUndo: { sendEditorCommand(.undo) },
+                onRedo: { sendEditorCommand(.redo) },
+                onInsert: { sendEditorCommand(.insert($0)) },
+                onInsertShape: { if !sortedPages.isEmpty { editorState.presentedPanel = .shapePicker } }
+            )
     }
 
     private var activeColor: Binding<Color> {
@@ -947,16 +972,6 @@ struct NotebookView: View {
             targetPageID: sortedPages[safePageIndex].persistentModelID,
             action: action
         )
-    }
-
-    private func applyZoomAction(_ action: EditorZoomAction) {
-        switch action {
-        case .fitPage: pageZoomCommand = .fitPage
-        case .fitWidth: pageZoomCommand = .fitWidth
-        case .actualSize: pageZoomCommand = .actualSize
-        case .zoomIn: pageZoomCommand = .zoomIn
-        case .zoomOut: pageZoomCommand = .zoomOut
-        }
     }
 
     private var activeLineWidth: Binding<CGFloat> {
@@ -1028,7 +1043,48 @@ struct NotebookView: View {
     }
 
     private func toolbarFrameWidth(in size: CGSize) -> CGFloat {
-        EditorToolbarLayout.frameWidth(for: size.width)
+        if toolbarDockRaw == ToolbarDock.left.rawValue || toolbarDockRaw == ToolbarDock.right.rawValue {
+            return 52
+        }
+        let limit = toolbarWidthLimit(in: size)
+        return min(limit, preferredToolbarWidth(for: toolbarLayout(in: size)))
+    }
+
+    private func toolbarWidthLimit(in size: CGSize) -> CGFloat {
+        let normalWidth = EditorToolbarLayout.frameWidth(for: size.width)
+        guard ToolbarDock(rawValue: toolbarDockRaw) == .bottom else { return normalWidth }
+        // A narrow iPad window cannot fit the full toolbar and the page pill
+        // side by side. Let the toolbar use its compact layout before it can
+        // cover the bottom-right page control.
+        let pageBarWidth: CGFloat = 160
+        let reservedCorner = 18 + pageBarWidth + 12
+        return min(normalWidth, max(size.width - 16 - reservedCorner, 1))
+    }
+
+    private var activeToolbarControlCount: CGFloat {
+        editorTool.supportsColor && editorTool.supportsSize ? 2 : 1
+    }
+
+    private var verticalToolbarHeight: CGFloat {
+        // Drag handle, dividers, five drawing tools, active controls, four
+        // commands, and the editor toolbar's vertical padding.
+        44 + 3 + CGFloat(DrawingTool.allCases.count) * 44
+            + activeToolbarControlCount * 44 + 3 * 44 + 8
+    }
+
+    private func preferredToolbarWidth(for layout: EditorToolbarLayout) -> CGFloat {
+        switch layout {
+        case .expanded: return 418 + activeToolbarControlCount * 44
+        case .compact: return 51 + max(220, 136 + activeToolbarControlCount * 44)
+        case .narrow: return 47 + max(220, activeToolbarControlCount * 44, 132)
+        }
+    }
+
+    private func toolbarLayout(in size: CGSize) -> EditorToolbarLayout {
+        let limit = toolbarWidthLimit(in: size)
+        if limit >= preferredToolbarWidth(for: .expanded) { return .expanded }
+        if limit >= preferredToolbarWidth(for: .compact) { return .compact }
+        return .narrow
     }
 
     private func clampedToolbarOffset(_ proposed: CGSize, in size: CGSize) -> CGSize {
@@ -1039,7 +1095,7 @@ struct NotebookView: View {
         // content-edge margin. Reserving nav-bar height here prevented use of
         // the top portion of the page.
         let minY: CGFloat = 8
-        let maxY = max(size.height - height - 8, minY)
+        let maxY = max(size.height - height + floatingControlBottomOverflow, minY)
         return CGSize(
             width: min(max(proposed.width, -maxX), maxX),
             height: min(max(proposed.height, minY), maxY)
@@ -1058,7 +1114,7 @@ struct NotebookView: View {
     private func nearestToolbarDock(to offset: CGSize, in size: CGSize) -> ToolbarDock {
         let clamped = clampedToolbarOffset(offset, in: size)
         let height = toolbarSize.height > 0 ? toolbarSize.height : 52
-        let maxY = max(size.height - height - 8, 8)
+        let maxY = max(size.height - height + floatingControlBottomOverflow, 8)
         let width = toolbarSize.width > 0 ? toolbarSize.width : toolbarFrameWidth(in: size)
         let maxX = max((size.width - width) / 2 - 16, 0)
         let distances: [(ToolbarDock, CGFloat)] = [
@@ -1071,12 +1127,21 @@ struct NotebookView: View {
     private func dockedToolbarOffset(in size: CGSize, dock: ToolbarDock? = nil) -> CGSize {
         let chosen = dock ?? ToolbarDock(rawValue: toolbarDockRaw) ?? .top
         let height = toolbarSize.height > 0 ? toolbarSize.height : 52
-        let maxY = max(size.height - height - 8, 8)
+        let maxY = max(size.height - height + floatingControlBottomOverflow, 8)
         let width = toolbarSize.width > 0 ? toolbarSize.width : toolbarFrameWidth(in: size)
         let maxX = max((size.width - width) / 2 - 16, 0)
         switch chosen {
         case .top: return CGSize(width: 0, height: 8)
-        case .bottom: return CGSize(width: 0, height: maxY)
+        case .bottom:
+            // Make room for the page pill in the bottom-right corner. On a
+            // narrow iPad window the centered toolbar otherwise occupies
+            // part of that corner, so shift it left just enough to clear it.
+            let pageBarWidth: CGFloat = 160
+            let gap: CGFloat = 12
+            let pageBarLeading = size.width - 18 - pageBarWidth
+            let centeredToolbarTrailing = (size.width + width) / 2
+            let neededShift = max(0, centeredToolbarTrailing + gap - pageBarLeading)
+            return CGSize(width: -min(neededShift, maxX), height: maxY)
         case .left: return CGSize(width: -maxX, height: min(max(editorToolbarOffset.height, 8), maxY))
         case .right: return CGSize(width: maxX, height: min(max(editorToolbarOffset.height, 8), maxY))
         }
@@ -1294,7 +1359,7 @@ private struct NotebookOverviewGrid: View {
             .background(Color(.systemGroupedBackground))
             .safeAreaInset(edge: .bottom) {
                 if let recentlyDeletedPage, deletionBanner.isPresented {
-                    UndoBanner(message: "Page moved to trash") {
+                    UndoBanner(message: AppLocalization.text("Page moved to trash")) {
                         guard PageOperations.restore(recentlyDeletedPage, in: notebook, isReadOnly: isReadOnly) else { return }
                         if saveChanges() {
                             deletionBanner.clear()
@@ -1602,7 +1667,7 @@ private struct PageInfoSheet: View {
 private enum PageInfoError: LocalizedError {
     case pageUnavailable
 
-    var errorDescription: String? { "This page is no longer available." }
+    var errorDescription: String? { AppLocalization.text("This page is no longer available.") }
 }
 
 // MARK: - Page Thumbnail
@@ -1623,7 +1688,9 @@ struct PageThumbnail: View {
                     PageBackground(
                         backgroundHex: page.backgroundHex,
                         lineStyle: page.lines,
-                        orientation: page.pageOrientation
+                        orientation: page.pageOrientation,
+                        lineThickness: page.effectiveLineThickness,
+                        lineOpacity: page.effectiveLineOpacity
                     )
                     .frame(width: transform.renderedSize.width, height: transform.renderedSize.height)
                     .offset(x: transform.origin.x, y: transform.origin.y)

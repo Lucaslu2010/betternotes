@@ -15,10 +15,29 @@ enum PDFExport {
         let renderer = UIGraphicsPDFRenderer(bounds: CGRect(origin: .zero, size: pageSize))
         return renderer.pdfData { ctx in
             ctx.beginPage()
-            drawBackground(page, in: ctx)
+            drawBackground(page)
             drawInk(page, in: pageSize)
             drawElements(page, in: pageSize)
         }
+    }
+
+    /// Flattens a page (background, ink, elements) into a JPEG, for sending
+    /// as vision context to an AI provider -- not for export/sharing, which
+    /// is what `renderPage` is for. Lower scale/quality than the PDF export
+    /// path since this goes over the network per request.
+    @MainActor
+    static func renderPageImage(_ page: Page, scale: CGFloat = 1.5, compressionQuality: CGFloat = 0.7) -> Data? {
+        let pageSize = page.pageOrientation.size
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: pageSize, format: format)
+        let image = renderer.image { _ in
+            drawBackground(page)
+            drawInk(page, in: pageSize)
+            drawElements(page, in: pageSize)
+        }
+        return image.jpegData(compressionQuality: compressionQuality)
     }
 
     // MARK: - Entire notebook
@@ -41,7 +60,7 @@ enum PDFExport {
             for page in sorted {
                 let size = page.pageOrientation.size
                 ctx.beginPage(withBounds: CGRect(origin: .zero, size: size), pageInfo: [:])
-                drawBackground(page, in: ctx)
+                drawBackground(page)
                 drawInk(page, in: size)
                 drawElements(page, in: size)
             }
@@ -50,7 +69,7 @@ enum PDFExport {
 
     // MARK: - Drawing helpers
 
-    private static func drawBackground(_ page: Page, in ctx: UIGraphicsPDFRendererContext) {
+    private static func drawBackground(_ page: Page) {
         let size = page.pageOrientation.size
         let rect = CGRect(origin: .zero, size: size)
 
@@ -63,12 +82,14 @@ enum PDFExport {
     }
 
     private static func drawLines(_ page: Page, in rect: CGRect) {
+        let lineColor = UIColor.black.withAlphaComponent(CGFloat(page.effectiveLineOpacity))
+        let lineWidth = CGFloat(page.effectiveLineThickness)
         switch page.lines {
         case .blank:
             break
         case .ruled:
             let spacing: CGFloat = 36
-            UIColor.gray.withAlphaComponent(0.25).setStroke()
+            lineColor.setStroke()
             let path = UIBezierPath()
             var y = spacing
             while y < rect.height {
@@ -76,11 +97,11 @@ enum PDFExport {
                 path.addLine(to: CGPoint(x: rect.width, y: y))
                 y += spacing
             }
-            path.lineWidth = 0.5
+            path.lineWidth = lineWidth
             path.stroke()
         case .grid:
             let spacing: CGFloat = 36
-            UIColor.gray.withAlphaComponent(0.2).setStroke()
+            lineColor.setStroke()
             let path = UIBezierPath()
             var x: CGFloat = spacing
             while x < rect.width {
@@ -94,12 +115,12 @@ enum PDFExport {
                 path.addLine(to: CGPoint(x: rect.width, y: y))
                 y += spacing
             }
-            path.lineWidth = 0.5
+            path.lineWidth = lineWidth
             path.stroke()
         case .dots:
             let spacing: CGFloat = 28
-            UIColor.gray.withAlphaComponent(0.35).setFill()
-            let dotSize: CGFloat = 2
+            lineColor.setFill()
+            let dotSize = max(1, lineWidth * 4)
             var y = spacing
             while y < rect.height {
                 var x = spacing
@@ -112,19 +133,21 @@ enum PDFExport {
             }
         case .cornell:
             let marginX = min(180, rect.width * 0.24)
-            UIColor.systemBlue.withAlphaComponent(0.45).setStroke()
+            lineColor.setStroke()
             let divider = UIBezierPath()
             divider.move(to: CGPoint(x: marginX, y: 0))
             divider.addLine(to: CGPoint(x: marginX, y: rect.height))
-            divider.lineWidth = 1.2
+            divider.lineWidth = lineWidth * 1.5
             divider.stroke()
-            drawRuled(in: rect, startY: 52, spacing: 30)
+            drawRuled(in: rect, startY: 52, spacing: 30, color: lineColor, width: lineWidth)
         case .checklist:
-            drawRuled(in: rect, startY: 60, spacing: 40)
-            UIColor.gray.withAlphaComponent(0.45).setStroke()
+            drawRuled(in: rect, startY: 60, spacing: 40, color: lineColor, width: lineWidth)
+            lineColor.setStroke()
             var y: CGFloat = 40
             while y < rect.height {
-                UIBezierPath(rect: CGRect(x: 18, y: y - 11, width: 20, height: 20)).stroke()
+                let box = UIBezierPath(rect: CGRect(x: 18, y: y - 11, width: 20, height: 20))
+                box.lineWidth = lineWidth
+                box.stroke()
                 y += 40
             }
         case .weeklyPlanner:
@@ -143,14 +166,15 @@ enum PDFExport {
                 grid.addLine(to: CGPoint(x: rect.width, y: y))
                 y += rowHeight
             }
-            UIColor.gray.withAlphaComponent(0.4).setStroke()
-            grid.lineWidth = 0.8
+            lineColor.setStroke()
+            grid.lineWidth = lineWidth
             grid.stroke()
         }
     }
 
-    private static func drawRuled(in rect: CGRect, startY: CGFloat, spacing: CGFloat) {
-        UIColor.gray.withAlphaComponent(0.25).setStroke()
+    private static func drawRuled(in rect: CGRect, startY: CGFloat, spacing: CGFloat,
+                                  color: UIColor, width: CGFloat) {
+        color.setStroke()
         let path = UIBezierPath()
         var y = startY
         while y < rect.height {
@@ -158,7 +182,7 @@ enum PDFExport {
             path.addLine(to: CGPoint(x: rect.width, y: y))
             y += spacing
         }
-        path.lineWidth = 0.5
+        path.lineWidth = width
         path.stroke()
     }
 
@@ -325,13 +349,14 @@ enum PDFExport {
             path.setLineDash([4, 4], count: 2, phase: 0)
             path.stroke()
         } else {
-            // Opaque tape.
-            UIColor.gray.withAlphaComponent(0.8).setFill()
+            // Match the editor's fully opaque tape; exported answers stay hidden.
+            let hex = TapeStyle.colorHex(for: element)
+            UIColor.fixedFromHex(hex).setFill()
             UIBezierPath(roundedRect: frame, cornerRadius: 4).fill()
             let font = UIFont.systemFont(ofSize: 12)
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: font,
-                .foregroundColor: UIColor.white.withAlphaComponent(0.7)
+                .foregroundColor: TapeStyle.usesDarkForeground(hex) ? UIColor.black : UIColor.white
             ]
             ("Tape" as NSString).draw(at: CGPoint(x: frame.midX - 15, y: frame.midY - 6), withAttributes: attrs)
         }

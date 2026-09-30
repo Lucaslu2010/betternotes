@@ -13,22 +13,83 @@ final class PencilInputCanvasView: PKCanvasView {
             return super.hitTest(point, with: event)
         }
 
-        // Apple Pencil always belongs to PencilKit. Finger touches only pass
-        // through over interactive element regions so the page scroll view and
-        // element controls can still receive them.
-        let containsPencil = event?.allTouches?.contains(where: { $0.type == .pencil }) == true
-        if !containsPencil {
-            // Convert the point from the superview (zoomed content) coordinate
-            // space to the canvas's own local (page) coordinate space. Without
-            // this, elementInteractionRects (which are page-local) don't match
-            // hitTest points (which are in zoomed space) at zoom ≠ 1.0.
-            let localPoint = convert(point, from: superview)
-            if elementInteractionRects.contains(where: { $0.contains(localPoint) }) {
+        // Apple Pencil always belongs to PencilKit, including over images.
+        // Only a *known finger* passes through to an element. During some
+        // hit-test phases the event has no touches yet; treating that as a
+        // finger made Pencil strokes drag the object instead of drawing.
+        let touches = event?.allTouches ?? []
+        // XCTest's synthetic touch events can arrive at hitTest without a
+        // UITouch. Treat those as fingers only in UI tests so element drag
+        // coverage still exercises the pass-through path.
+        let forceCanvasFinger = ProcessInfo.processInfo.arguments.contains("-ui-testing-force-canvas-finger")
+        let simulatedFinger = touches.isEmpty
+            && ProcessInfo.processInfo.arguments.contains("-ui-testing")
+        let isFingerTouch = !forceCanvasFinger
+            && (simulatedFinger || (!touches.isEmpty && touches.allSatisfy { $0.type == .direct }))
+        if isFingerTouch {
+            // `point` is already expressed in this view's local coordinates.
+            // Converting it from the superview again offsets hit regions,
+            // especially after zooming the page.
+            if elementInteractionRects.contains(where: { $0.contains(point) }) {
                 return nil
             }
         }
         return super.hitTest(point, with: event)
     }
+}
+
+enum FingerElementDragEvent {
+    case began(CGPoint)
+    case changed(CGPoint)
+    case ended(CGPoint)
+    case cancelled
+}
+
+private final class FingerElementTouchRecognizer: UIGestureRecognizer {
+    var canBegin: (CGPoint) -> Bool = { _ in false }
+    var onEvent: (FingerElementDragEvent) -> Void = { _ in }
+    private weak var activeTouch: UITouch?
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let view, let touch = touches.first(where: { $0.type == .direct }) else {
+            state = .failed
+            return
+        }
+        let point = touch.location(in: view)
+        guard canBegin(point) else {
+            state = .failed
+            return
+        }
+        activeTouch = touch
+        state = .began
+        onEvent(.began(point))
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let view, let activeTouch, touches.contains(activeTouch) else { return }
+        onEvent(.changed(activeTouch.location(in: view)))
+        state = .changed
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let view, let activeTouch, touches.contains(activeTouch) else { return }
+        onEvent(.ended(activeTouch.location(in: view)))
+        state = .ended
+        self.activeTouch = nil
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard activeTouch != nil else { return }
+        onEvent(.cancelled)
+        state = .cancelled
+        activeTouch = nil
+    }
+
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool {
+        preventedGestureRecognizer is UIPanGestureRecognizer
+    }
+
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
 }
 
 /// Observes Apple Pencil locations without taking ownership of PencilKit's
@@ -99,8 +160,9 @@ struct PaperCanvas: UIViewRepresentable {
     let isReadOnly: Bool
     let allowsFingerDrawing: Bool
     let elementInteractionRects: [CGRect]
+    var canBeginFingerElementDrag: (CGPoint) -> Bool = { _ in false }
+    var onFingerElementDrag: (FingerElementDragEvent) -> Void = { _ in }
     let inkData: Data?
-    let beautifiesHandwriting: Bool
     let canvasInkOpacity: CGFloat
     var onDrawingChange: ((Int) -> Void)?
     var onToolUseChange: ((Bool) -> Void)?
@@ -165,6 +227,7 @@ struct PaperCanvas: UIViewRepresentable {
         c.delegate = context.coordinator
         context.coordinator.canvas = c
         context.coordinator.attachDrawingGesture(to: c)
+        context.coordinator.attachFingerElementDrag(to: c)
         return c
     }
 
@@ -189,6 +252,7 @@ struct PaperCanvas: UIViewRepresentable {
         }
         context.coordinator.updateToolIfIdle(on: uiView)
         context.coordinator.attachDrawingGesture(to: uiView)
+        context.coordinator.attachFingerElementDrag(to: uiView)
     }
 
     /// Lightweight holder so parent SwiftUI views can reach the coordinator
@@ -211,6 +275,7 @@ struct PaperCanvas: UIViewRepresentable {
         private var isApplyingProgrammaticDrawing = false
         private var suppressesProgrammaticDrawingNotification = false
         private var pencilObserver: PencilStrokeObserverGestureRecognizer?
+        private weak var fingerElementTouch: FingerElementTouchRecognizer?
         private var isCapturingPencilStroke = false
         private var activeTouchType: UITouch.TouchType?
         private var capturedPencilPoints: [CGPoint] = []
@@ -256,6 +321,9 @@ struct PaperCanvas: UIViewRepresentable {
             shapeCommitClearTimer?.invalidate()
             if let pencilObserver {
                 pencilObserver.view?.removeGestureRecognizer(pencilObserver)
+            }
+            if let fingerElementTouch {
+                fingerElementTouch.view?.removeGestureRecognizer(fingerElementTouch)
             }
         }
 
@@ -310,6 +378,25 @@ struct PaperCanvas: UIViewRepresentable {
             }
             canvas.addGestureRecognizer(observer)
             pencilObserver = observer
+        }
+
+        func attachFingerElementDrag(to canvas: PKCanvasView) {
+            if fingerElementTouch?.view === canvas { return }
+            if let fingerElementTouch {
+                fingerElementTouch.view?.removeGestureRecognizer(fingerElementTouch)
+            }
+            let recognizer = FingerElementTouchRecognizer()
+            recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.canBegin = { [weak self] point in
+                self?.parent.canBeginFingerElementDrag(point) ?? false
+            }
+            recognizer.onEvent = { [weak self] event in
+                self?.parent.onFingerElementDrag(event)
+            }
+            canvas.addGestureRecognizer(recognizer)
+            fingerElementTouch = recognizer
         }
 
         func makeTool() -> PKTool {
@@ -453,6 +540,11 @@ struct PaperCanvas: UIViewRepresentable {
         }
 
         private func beginPencilStroke(at point: CGPoint, touchType: UITouch.TouchType, on canvas: PKCanvasView) {
+            // A finger that begins on a page element belongs to its move or
+            // selection handles, even when Draw with Finger is enabled.
+            // Reporting it as ink use clears the selected element before the
+            // finger recognizer can identify a resize or rotation handle.
+            if touchType == .direct && parent.canBeginFingerElementDrag(point) { return }
             if pendingShapeCommit != nil {
                 _ = commitPendingShapeIfPossible(on: canvas)
             }
@@ -508,7 +600,6 @@ struct PaperCanvas: UIViewRepresentable {
             isCapturingPencilStroke = false
             activeTouchType = nil
 
-            let awaitsShapeCommit = commitsShape && heldPreview != nil
             if let heldPreview, commitsShape {
                 pendingShapeCommit = heldPreview
                 if !commitPendingShapeIfPossible(on: canvas) {
@@ -520,7 +611,7 @@ struct PaperCanvas: UIViewRepresentable {
 
             capturedPencilPoints.removeAll(keepingCapacity: true)
             shapeHoldAnchor = nil
-            endToolUse(on: canvas, skipsHandwritingBeautification: awaitsShapeCommit)
+            endToolUse(on: canvas)
         }
 
         private func beginToolUse(on canvas: PKCanvasView) {
@@ -534,14 +625,11 @@ struct PaperCanvas: UIViewRepresentable {
             shapeCommitClearTimer = nil
         }
 
-        private func endToolUse(on canvas: PKCanvasView, skipsHandwritingBeautification: Bool = false) {
+        private func endToolUse(on canvas: PKCanvasView) {
             guard isUsingTool else { return }
             isUsingTool = false
             shapeHoldTimer?.invalidate()
             shapeHoldTimer = nil
-            if !skipsHandwritingBeautification {
-                finalizeHandwritingBeautification(on: canvas)
-            }
             strokeCountAtToolBegin = canvas.drawing.strokes.count
             drawingChangeObservedForToolUse = false
             parent.onToolUseChange?(false)
@@ -741,36 +829,6 @@ struct PaperCanvas: UIViewRepresentable {
                 return true
             case .eraser, .lasso:
                 return false
-            }
-        }
-
-        private var canBeautifyHandwriting: Bool {
-            guard canvasAcceptsInput, !parent.isReadOnly else { return false }
-            switch parent.tool {
-            case .pen, .pencil:
-                return true
-            case .marker, .eraser, .lasso:
-                return false
-            }
-        }
-
-        private func finalizeHandwritingBeautification(on canvas: PKCanvasView) {
-            guard canBeautifyHandwriting else { return }
-
-            var strokes = canvas.drawing.strokes
-            guard strokeCountAtToolBegin >= 0,
-                  strokeCountAtToolBegin < strokes.count else { return }
-
-            let changedRange = strokeCountAtToolBegin..<strokes.count
-            let newStrokes = Array(strokes[changedRange])
-            HandwritingBeautifier.learn(from: newStrokes)
-
-            guard parent.beautifiesHandwriting else { return }
-            let beautified = HandwritingBeautifier.beautified(strokes: newStrokes)
-            strokes.replaceSubrange(changedRange, with: beautified)
-
-            performProgrammaticDrawingChange(on: canvas) {
-                canvas.drawing = PKDrawing(strokes: strokes)
             }
         }
 

@@ -101,7 +101,7 @@ struct NotebookCover: View {
                 Image(systemName: "doc.text")
                     .font(.caption2)
                 let pageCount = notebook.pages.filter { $0.trashedAt == nil }.count
-                Text("\(pageCount) page\(pageCount == 1 ? "" : "s")")
+                Text("Pages: \(pageCount)")
                     .font(.caption2)
                 if !notebook.folderName.isEmpty {
                     Text("·")

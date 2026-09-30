@@ -2,11 +2,8 @@ import XCTest
 import UIKit
 @testable import BetterNotes
 
-/// The extractor runs on every photo imported into a note: it reads the text
-/// and crops away the desk, the margin and the shadow. It had no coverage.
-/// The costly failures are silent ones — a crop that returns nothing, or the
-/// upscaled recognition image leaking into the *output*, which would quietly
-/// double the size of every photo the user imports.
+/// OCR may scale an image for recognition, but the imported bytes and full
+/// frame must survive unchanged so the page remains editable and searchable.
 final class SmartImageExtractorTests: XCTestCase {
 
     /// Renders text onto a white canvas — a stand-in for a photographed note.
@@ -37,7 +34,7 @@ final class SmartImageExtractorTests: XCTestCase {
         let result = await SmartImageExtractor.extract(from: junk)
         XCTAssertEqual(result.extractedText, "")
         XCTAssertFalse(result.hasExtractedText)
-        XCTAssertEqual(result.croppedImageData, junk, "the original data was dropped")
+        XCTAssertEqual(result.originalImageData, junk, "the original data was dropped")
     }
 
     func testTextInAPhotoIsRead() async {
@@ -47,47 +44,42 @@ final class SmartImageExtractorTests: XCTestCase {
                       "recognised \(result.extractedText) instead of HELLO")
     }
 
-    func testThePhotoIsCroppedToTheWriting() async {
+    func testThePhotoRetainsItsFullFrame() async {
         let size = CGSize(width: 1200, height: 900)
-        let result = await SmartImageExtractor.extract(from: imageData(text: "HELLO", size: size))
-        XCTAssertLessThan(result.croppedImageSize.width * result.croppedImageSize.height,
-                          size.width * size.height,
-                          "the crop kept the whole frame instead of tightening onto the text")
-        XCTAssertGreaterThan(result.croppedImageSize.width, 0)
-        XCTAssertGreaterThan(result.croppedImageSize.height, 0)
+        let original = imageData(text: "HELLO", size: size)
+        let result = await SmartImageExtractor.extract(from: original)
+        XCTAssertEqual(result.originalImageData, original)
+        XCTAssertEqual(result.originalImageSize.width, size.width, accuracy: 1)
+        XCTAssertEqual(result.originalImageSize.height, size.height, accuracy: 1)
     }
 
-    func testTheCropNeverExceedsTheOriginalResolution() async {
+    func testRecognitionUpscaleDoesNotChangeTheStoredImage() async {
         // Recognition upscales small images to ~2200px. That upscale is for
         // Vision only; if it reached the output, every imported photo would be
         // stored several times larger than the one the user picked.
         let size = CGSize(width: 640, height: 480)
-        let result = await SmartImageExtractor.extract(
-            from: imageData(text: "NOTE", size: size, fontSize: 90, inset: 130)
-        )
-        XCTAssertLessThanOrEqual(result.croppedImageSize.width, size.width,
-                                 "the upscaled recognition image leaked into the output")
-        XCTAssertLessThanOrEqual(result.croppedImageSize.height, size.height)
+        let original = imageData(text: "NOTE", size: size, fontSize: 90, inset: 130)
+        let result = await SmartImageExtractor.extract(from: original)
+        XCTAssertEqual(result.originalImageData, original)
+        XCTAssertEqual(result.originalImageSize.width, size.width, accuracy: 1)
+        XCTAssertEqual(result.originalImageSize.height, size.height, accuracy: 1)
     }
 
     func testABlankPhotoKeepsItsFullFrame() async {
-        // Nothing to crop to: the user still gets their picture back, whole.
+        // A blank image is still the user's content and keeps its full frame.
         let size = CGSize(width: 800, height: 600)
         let result = await SmartImageExtractor.extract(from: imageData(text: "", size: size))
         XCTAssertFalse(result.hasExtractedText)
-        XCTAssertNotNil(result.croppedImageData)
-        XCTAssertEqual(result.croppedImageSize.width, size.width, accuracy: 1)
-        XCTAssertEqual(result.croppedImageSize.height, size.height, accuracy: 1)
+        XCTAssertEqual(result.originalImageSize.width, size.width, accuracy: 1)
+        XCTAssertEqual(result.originalImageSize.height, size.height, accuracy: 1)
     }
 
-    func testTheCroppedDataIsAnImageOfTheStatedSize() async {
+    func testTheOriginalDataIsAnImageOfTheStatedSize() async {
         let result = await SmartImageExtractor.extract(from: imageData(text: "HELLO"))
-        let data = try? XCTUnwrap(result.croppedImageData)
-        let decoded = UIImage(data: data ?? Data())
-        XCTAssertNotNil(decoded, "croppedImageData did not decode as an image")
-        XCTAssertEqual(decoded?.size.width ?? 0, result.croppedImageSize.width, accuracy: 1,
-                       "croppedImageSize disagrees with the data it describes")
-        XCTAssertEqual(decoded?.size.height ?? 0, result.croppedImageSize.height, accuracy: 1)
+        let decoded = UIImage(data: result.originalImageData)
+        XCTAssertNotNil(decoded)
+        XCTAssertEqual(decoded?.size.width ?? 0, result.originalImageSize.width, accuracy: 1)
+        XCTAssertEqual(decoded?.size.height ?? 0, result.originalImageSize.height, accuracy: 1)
     }
 
     func testMultipleLinesComeBackInReadingOrder() async {

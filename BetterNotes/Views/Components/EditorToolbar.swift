@@ -50,11 +50,11 @@ enum DrawingTool: Hashable, CaseIterable {
 
     var label: String {
         switch self {
-        case .pen:    return "Pen"
-        case .pencil: return "Pencil"
-        case .marker: return "Highlighter"
-        case .eraser: return "Eraser"
-        case .lasso:  return "Lasso"
+        case .pen:    return AppLocalization.text("Pen")
+        case .pencil: return AppLocalization.text("Pencil")
+        case .marker: return AppLocalization.text("Highlighter")
+        case .eraser: return AppLocalization.text("Eraser")
+        case .lasso:  return AppLocalization.text("Lasso")
         }
     }
 }
@@ -65,8 +65,8 @@ enum LassoMode: String, CaseIterable, Hashable {
 
     var label: String {
         switch self {
-        case .freeform: return "Free"
-        case .rectangle: return "Rect"
+        case .freeform: return AppLocalization.text("Free")
+        case .rectangle: return AppLocalization.text("Rect")
         }
     }
 
@@ -93,8 +93,8 @@ enum EraserStyle: String, CaseIterable, Hashable {
 
     var label: String {
         switch self {
-        case .bitmap: return "Pixel Eraser"
-        case .vector: return "Stroke Eraser"
+        case .bitmap: return AppLocalization.text("Pixel Eraser")
+        case .vector: return AppLocalization.text("Stroke Eraser")
         }
     }
 
@@ -107,8 +107,6 @@ enum EraserStyle: String, CaseIterable, Hashable {
 }
 
 // MARK: - Adaptive editor toolbar
-
-enum EditorZoomAction { case fitPage, fitWidth, actualSize, zoomIn, zoomOut }
 
 enum ToolbarDock: String { case top, bottom, left, right }
 
@@ -172,18 +170,31 @@ struct EditorToolbar: View {
     @Binding var lassoMode: LassoMode
     @ObservedObject var toolSettings: ToolSettings
     let availableWidth: CGFloat
+    var preferredLayout: EditorToolbarLayout? = nil
+    /// Where the toolbar currently sits, so its popovers open away from the
+    /// screen edge it's docked against instead of always trying to appear
+    /// below it — which clips or pushes them off-screen entirely once the
+    /// toolbar is docked at the bottom.
+    var dock: ToolbarDock = .top
     let isReadOnly: Bool
     let canUndo: Bool
     let canRedo: Bool
-    let zoomPercentage: Int
     var onUndo: () -> Void
     var onRedo: () -> Void
     var onInsert: (InsertKind) -> Void
     var onInsertShape: () -> Void
-    var onZoom: (EditorZoomAction) -> Void
 
     @State private var showingColorPopover = false
     @State private var showingSizePopover = false
+
+    private var popoverArrowEdge: Edge {
+        switch dock {
+        case .top: return .top
+        case .bottom: return .bottom
+        case .left: return .leading
+        case .right: return .trailing
+        }
+    }
 
     private let swatches = [
         InkSwatch(name: "Black", hex: "000000"), InkSwatch(name: "Graphite", hex: "444444"),
@@ -195,9 +206,11 @@ struct EditorToolbar: View {
     ]
 
     var body: some View {
-        let layout = EditorToolbarLayout.select(for: availableWidth)
+        let layout = preferredLayout ?? EditorToolbarLayout.select(for: availableWidth)
         Group {
-            if layout == .expanded {
+            if dock == .left || dock == .right {
+                verticalLayout
+            } else if layout == .expanded {
                 expandedLayout
             } else if layout == .compact {
                 compactLayout
@@ -205,8 +218,22 @@ struct EditorToolbar: View {
                 narrowLayout
             }
         }
-        .padding(.horizontal, layout == .narrow ? 0 : 6)
+        .padding(.horizontal, dock == .left || dock == .right || layout == .narrow ? 0 : 6)
         .padding(.vertical, 4)
+    }
+
+    private var verticalLayout: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                ForEach(DrawingTool.allCases, id: \.self) { drawingTool in
+                    drawingToolButton(drawingTool)
+                }
+            }
+            Divider().frame(width: 30)
+            VStack(spacing: 0) { activeToolControls }
+            Divider().frame(width: 30)
+            VStack(spacing: 0) { commandButtons }
+        }
     }
 
     private var expandedLayout: some View {
@@ -242,21 +269,25 @@ struct EditorToolbar: View {
     private var drawingTools: some View {
         HStack(spacing: 0) {
             ForEach(DrawingTool.allCases, id: \.self) { drawingTool in
-                Button { tool = drawingTool } label: {
-                    Image(systemName: drawingTool.icon)
-                        .font(.system(size: 17, weight: .medium))
-                        .frame(width: 44, height: 44)
-                        .foregroundStyle(tool == drawingTool ? .white : .primary)
-                        .background(tool == drawingTool ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 7))
-                        .accessibilityHidden(true)
-                }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
-                .accessibilityLabel(drawingTool.label)
-                .accessibilityAddTraits(tool == drawingTool ? .isSelected : [])
-                .disabled(isReadOnly)
+                drawingToolButton(drawingTool)
             }
         }
+    }
+
+    private func drawingToolButton(_ drawingTool: DrawingTool) -> some View {
+        Button { tool = drawingTool } label: {
+            Image(systemName: drawingTool.icon)
+                .font(.system(size: 17, weight: .medium))
+                .frame(width: 44, height: 44)
+                .foregroundStyle(tool == drawingTool ? .white : .primary)
+                .background(tool == drawingTool ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 7))
+                .accessibilityHidden(true)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .accessibilityLabel(drawingTool.label)
+        .accessibilityAddTraits(tool == drawingTool ? .isSelected : [])
+        .disabled(isReadOnly)
     }
 
     @ViewBuilder private var activeToolControls: some View {
@@ -276,29 +307,22 @@ struct EditorToolbar: View {
 
     private var commandControls: some View {
         HStack(spacing: 0) {
-            Menu {
+            commandButtons
+        }
+    }
+
+    @ViewBuilder private var commandButtons: some View {
+        Menu {
                 Button("Shape", systemImage: "square.grid.2x2", action: onInsertShape)
                 ForEach(InsertKind.allCases, id: \.label) { kind in
                     Button(kind.label, systemImage: kind.icon) { onInsert(kind) }
                 }
-            } label: { toolbarImage("plus") }
-            .accessibilityLabel("Insert")
-            .disabled(isReadOnly)
+        } label: { toolbarImage("plus") }
+        .accessibilityLabel("Insert")
+        .disabled(isReadOnly)
 
-            Menu {
-                Text("Zoom \(zoomPercentage)%")
-                Button("Fit Page", systemImage: "arrow.up.left.and.arrow.down.right") { onZoom(.fitPage) }
-                Button("Fit Width", systemImage: "arrow.left.and.right") { onZoom(.fitWidth) }
-                Button("100%", systemImage: "1.magnifyingglass") { onZoom(.actualSize) }
-                Divider()
-                Button("Zoom In", systemImage: "plus.magnifyingglass") { onZoom(.zoomIn) }
-                Button("Zoom Out", systemImage: "minus.magnifyingglass") { onZoom(.zoomOut) }
-            } label: { toolbarImage("magnifyingglass") }
-            .accessibilityLabel("Zoom, \(zoomPercentage) percent")
-
-            commandButton("arrow.uturn.backward", label: "Undo", enabled: canUndo, action: onUndo)
-            commandButton("arrow.uturn.forward", label: "Redo", enabled: canRedo, action: onRedo)
-        }
+        commandButton("arrow.uturn.backward", label: "Undo", enabled: canUndo, action: onUndo)
+        commandButton("arrow.uturn.forward", label: "Redo", enabled: canRedo, action: onRedo)
     }
 
     private var colorButton: some View {
@@ -310,7 +334,7 @@ struct EditorToolbar: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Ink Color")
         .disabled(isReadOnly)
-        .popover(isPresented: $showingColorPopover, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+        .popover(isPresented: $showingColorPopover, attachmentAnchor: .rect(.bounds), arrowEdge: popoverArrowEdge) {
             colorPanel
                 .frame(idealWidth: 330, idealHeight: 350)
                 .presentationCompactAdaptation(.sheet)
@@ -372,7 +396,7 @@ struct EditorToolbar: View {
         .buttonStyle(.plain)
         .accessibilityLabel(tool == .eraser ? "Eraser Size" : "Stroke Thickness")
         .disabled(isReadOnly)
-        .popover(isPresented: $showingSizePopover, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+        .popover(isPresented: $showingSizePopover, attachmentAnchor: .rect(.bounds), arrowEdge: popoverArrowEdge) {
             sizePanel.frame(idealWidth: 330, idealHeight: 230).presentationCompactAdaptation(.sheet)
         }
     }
@@ -443,11 +467,11 @@ enum InsertKind: CaseIterable, Equatable {
 
     var label: String {
         switch self {
-        case .textBox:        return "Text Box"
-        case .stickyNote:     return "Sticky Note"
-        case .image:          return "Image"
-        case .audioRecording: return "Recording"
-        case .tape:           return "Tape"
+        case .textBox:        return AppLocalization.text("Text Box")
+        case .stickyNote:     return AppLocalization.text("Sticky Note")
+        case .image:          return AppLocalization.text("Image")
+        case .audioRecording: return AppLocalization.text("Recording")
+        case .tape:           return AppLocalization.text("Tape")
         }
     }
 }

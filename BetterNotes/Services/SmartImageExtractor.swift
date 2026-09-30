@@ -5,8 +5,8 @@ import Vision
 enum SmartImageExtractor {
     struct Extraction {
         let extractedText: String
-        let croppedImageData: Data?
-        let croppedImageSize: CGSize
+        let originalImageData: Data
+        let originalImageSize: CGSize
 
         var hasExtractedText: Bool {
             !extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -23,41 +23,21 @@ enum SmartImageExtractor {
         guard let image = UIImage(data: imageData),
               let normalized = normalizedImage(image),
               let cgImage = normalized.cgImage else {
-            return Extraction(extractedText: "", croppedImageData: imageData, croppedImageSize: .zero)
+            return Extraction(extractedText: "", originalImageData: imageData, originalImageSize: .zero)
         }
 
         // Vision's text recognition is markedly more accurate on handwriting
         // when the image's longest edge is at least ~2000px. Upscale small
         // source photos before recognition so short notes/captions don't get
-        // misread. The cropped output image keeps the original resolution.
+        // misread. The stored image remains the original data.
         let recognitionImage = upscaleForRecognition(cgImage)
 
         let regions = await recognizeTextRegions(in: recognitionImage)
         let extractedText = recognizedText(from: regions)
-        let cropRect = usefulCropRect(from: regions, in: recognitionImage)
-        let croppedData: Data?
-        let croppedSize: CGSize
-
-        // Map the crop rect from recognitionImage coordinates back to the
-        // original cgImage coordinates so the output keeps the original
-        // resolution instead of the upscaled (bloated) version.
-        let scale = CGFloat(cgImage.width) / CGFloat(recognitionImage.width)
-        let originalCropRect = cropRect?.applying(CGAffineTransform(scaleX: scale, y: scale))
-
-        if let originalCropRect,
-           let cropped = cgImage.cropping(to: originalCropRect) {
-            let croppedImage = UIImage(cgImage: cropped, scale: 1, orientation: .up)
-            croppedData = croppedImage.jpegData(compressionQuality: 0.92) ?? croppedImage.pngData()
-            croppedSize = CGSize(width: cropped.width, height: cropped.height)
-        } else {
-            croppedData = normalized.jpegData(compressionQuality: 0.92) ?? normalized.pngData() ?? imageData
-            croppedSize = CGSize(width: cgImage.width, height: cgImage.height)
-        }
-
         return Extraction(
             extractedText: extractedText,
-            croppedImageData: croppedData,
-            croppedImageSize: croppedSize
+            originalImageData: imageData,
+            originalImageSize: CGSize(width: cgImage.width, height: cgImage.height)
         )
     }
 
@@ -120,39 +100,6 @@ enum SmartImageExtractor {
             .joined(separator: "\n")
     }
 
-    private static func usefulCropRect(from regions: [TextRegion], in image: CGImage) -> CGRect? {
-        let reliableRegions = regions.filter { $0.confidence >= 0.18 }
-        guard !reliableRegions.isEmpty else { return nil }
-
-        let imageRect = CGRect(x: 0, y: 0, width: image.width, height: image.height)
-        var cropRect = reliableRegions
-            .map { pixelRect(from: $0.boundingBox, imageSize: imageRect.size) }
-            .reduce(CGRect.null) { $0.union($1) }
-
-        guard !cropRect.isNull, cropRect.width > 2, cropRect.height > 2 else { return nil }
-
-        let margin = max(24, min(imageRect.width, imageRect.height) * 0.035)
-        cropRect = cropRect.insetBy(dx: -margin, dy: -margin)
-            .intersection(imageRect)
-            .integral
-
-        let cropArea = cropRect.width * cropRect.height
-        let imageArea = imageRect.width * imageRect.height
-        guard imageArea > 0, cropArea < imageArea * 0.96 else {
-            return imageRect
-        }
-        return cropRect
-    }
-
-    private static func pixelRect(from normalizedRect: CGRect, imageSize: CGSize) -> CGRect {
-        CGRect(
-            x: normalizedRect.minX * imageSize.width,
-            y: (1 - normalizedRect.maxY) * imageSize.height,
-            width: normalizedRect.width * imageSize.width,
-            height: normalizedRect.height * imageSize.height
-        )
-    }
-
     private static func normalizedImage(_ image: UIImage) -> UIImage? {
         guard image.size.width > 0, image.size.height > 0 else { return nil }
 
@@ -176,8 +123,7 @@ enum SmartImageExtractor {
     /// handing them to Vision. Vision's handwriting model is trained on
     /// reasonably high-resolution input; phone photos of small notes are often
     /// 600–1200px on the long edge, which produces weak or empty recognition.
-    /// Upscaling dramatically improves accuracy on handwriting while leaving
-    /// the final cropped image untouched.
+    /// Upscaling improves recognition without changing the stored image.
     private static func upscaleForRecognition(_ cgImage: CGImage) -> CGImage {
         let longestEdge = max(cgImage.width, cgImage.height)
         let target: CGFloat = 2200

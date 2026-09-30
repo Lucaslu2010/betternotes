@@ -18,6 +18,15 @@ private struct ElementDraftFrame: Equatable {
     }
 }
 
+struct FingerElementDraft {
+    let id: PersistentIdentifier
+    let posX: Double
+    let posY: Double
+    let width: Double
+    let height: Double
+    let rotation: Double
+}
+
 /// Floating overlay layer for text boxes, sticky notes, images, shapes, and audio.
 /// Each element can be dragged and resized. Selection persists until background tap.
 ///
@@ -28,6 +37,7 @@ private struct ElementDraftFrame: Equatable {
 ///   (and the full-screen background captures taps). Set false for lasso mode
 ///   so empty-area touches pass through to the PKCanvasView beneath.
 struct ElementOverlay: View {
+    private static let dragSpace = "page-element-drag-space"
     @Binding var elements: [PageElement]
     @Binding var selectedID: PersistentIdentifier?
     var isInteractive: Bool
@@ -40,10 +50,13 @@ struct ElementOverlay: View {
     var onAudioToggle: (PageElement) -> Void
     var onAudioSeek: ((PageElement, Double) -> Void)?
     var onAudioTranscribe: ((PageElement) -> Void)?
+    var onTapeEdit: ((PageElement) -> Void)?
     var onDelete: ((PageElement) -> Void)?
     var onDuplicate: ((PageElement) -> Void)?
     var onMutationBegan: (() -> Void)?
     var onMutationEnded: (() -> Void)?
+    var onAssistantEdit: ((PageElement) -> Void)?
+    var fingerDraft: FingerElementDraft?
     @State private var draftFrames: [PersistentIdentifier: ElementDraftFrame] = [:]
 
     var body: some View {
@@ -59,7 +72,19 @@ struct ElementOverlay: View {
                 Group {
                     if allowsDirectManipulation(for: element) {
                         elementView(for: element, frame: frame)
-                            .highPriorityGesture(dragGesture(for: element))
+                            // `.simultaneousGesture`, not `.gesture` or
+                            // `.highPriorityGesture`: this view's own overlays
+                            // include the resize and rotation handles, and
+                            // plain SwiftUI gesture exclusivity does not
+                            // reliably favor a nested handle's gesture over
+                            // this one just because it's a descendant --
+                            // `canStartDrag` already no-ops this gesture's own
+                            // onChanged for the handle regions, so letting it
+                            // recognize non-exclusively (instead of racing the
+                            // handle's gesture for exclusive ownership of the
+                            // touch) is what actually lets the handle's own
+                            // gesture fire there.
+                            .simultaneousGesture(dragGesture(for: element))
                             .simultaneousGesture(imageMagnificationGesture(for: element))
                             .simultaneousGesture(imageRotationGesture(for: element))
                             .onTapGesture {
@@ -72,7 +97,7 @@ struct ElementOverlay: View {
                             }
                     } else if isInteractive && !element.isLocked {
                         elementView(for: element, frame: frame)
-                            .highPriorityGesture(dragGesture(for: element))
+                            .simultaneousGesture(dragGesture(for: element))
                             .onTapGesture {
                                 DispatchQueue.main.async {
                                     selectedID = element.id
@@ -115,6 +140,14 @@ struct ElementOverlay: View {
                         }
                         .disabled(element.isLocked)
                     }
+                    if isInteractive, element.type == .tape, let onTapeEdit {
+                        Button {
+                            onTapeEdit(element)
+                        } label: {
+                            Label("Tape Options", systemImage: "slider.horizontal.3")
+                        }
+                        .disabled(element.isLocked)
+                    }
                     if isInteractive {
                         Divider()
                         Button(role: .destructive) {
@@ -128,6 +161,7 @@ struct ElementOverlay: View {
                 .zIndex(element.type == .tape ? 999 : 0)
             }
         }
+        .coordinateSpace(name: Self.dragSpace)
     }
 
     private func elementView(for element: PageElement, frame: ElementDraftFrame) -> some View {
@@ -138,7 +172,9 @@ struct ElementOverlay: View {
             isCurrentAudio: playingAudioElementID == element.id,
             isPlayingAudio: audioIsPlaying && playingAudioElementID == element.id,
             playbackProgress: playingAudioElementID == element.id ? audioPlaybackProgress : 0,
+            canEditAssistant: isInteractive && !element.isLocked,
             onTextEdit: { onTextEdit(element) },
+            onAssistantEdit: { onAssistantEdit?(element) },
             onAudioToggle: { onAudioToggle(element) },
             onAudioSeek: { progress in onAudioSeek?(element, progress) },
             onTapeToggle: {
@@ -159,8 +195,11 @@ struct ElementOverlay: View {
         // Control either. An image, note or recording on the page was simply
         // absent from the accessibility tree.
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("page-element")
+        // An assistant answer gets its own identifier so a test can wait for
+        // the reply specifically, rather than for any element at all.
+        .accessibilityIdentifier(element.type == .assistantNote ? "assistant-note" : "page-element")
         .accessibilityLabel(accessibilityLabel(for: element))
+        .accessibilityValue(element.type.isRotatable ? "\(Int(frame.rotation.rounded()))°" : "")
     }
 
     /// A spoken description of one element. Falls back to the type alone when
@@ -174,6 +213,7 @@ struct ElementOverlay: View {
         case .image:          kind = "Image"
         case .audioRecording: kind = "Recording"
         case .tape:           kind = "Tape"
+        case .assistantNote:  kind = "Assistant answer"
         }
         let text = (element.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? kind : "\(kind), \(text)"
@@ -184,8 +224,6 @@ struct ElementOverlay: View {
     /// Drag and resize preview locally, then commit to SwiftData on gesture end.
     @State private var draggingElementID: PersistentIdentifier?
     @State private var dragBaseFrame: ElementDraftFrame?
-    @State private var imageSizeOrigin: CGSize?
-    @State private var imageRotationOrigin: Double?
     @State private var activeControlElementID: PersistentIdentifier?
     @State private var activeControlBaseFrame: ElementDraftFrame?
 
@@ -194,18 +232,29 @@ struct ElementOverlay: View {
     }
 
     private func displayFrame(for element: PageElement) -> ElementDraftFrame {
-        draftFrames[element.id] ?? ElementDraftFrame(element: element)
+        var frame = draftFrames[element.id] ?? ElementDraftFrame(element: element)
+        if let fingerDraft, fingerDraft.id == element.id {
+            frame.posX = fingerDraft.posX
+            frame.posY = fingerDraft.posY
+            frame.width = fingerDraft.width
+            frame.height = fingerDraft.height
+            frame.rotation = fingerDraft.rotation
+        }
+        return frame
     }
 
     private func dragGesture(for element: PageElement) -> some Gesture {
-        DragGesture(minimumDistance: 2)
+        // Measure translation in the fixed page layer. A gesture measured in
+        // its moving element's local space feeds its own position changes
+        // back into the next delta, making objects visibly jump back and forth.
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(Self.dragSpace))
             .onChanged { value in
                 guard !element.isLocked else { return }
                 guard activeControlElementID != element.id else { return }
-                guard canStartDrag(at: value.startLocation, element: element) else { return }
                 guard let idx = elements.firstIndex(where: { $0.id == element.id }) else { return }
-                DispatchQueue.main.async { selectedID = element.id }
                 if draggingElementID != element.id {
+                    let base = ElementDraftFrame(element: elements[idx])
+                    guard canStartDrag(at: value.startLocation, element: element, frame: base) else { return }
                     // Force-reset any stale drag state from a previously
                     // cancelled gesture (system interruption, etc.) that
                     // never reached onEnded.
@@ -221,8 +270,9 @@ struct ElementOverlay: View {
                     // not from displayFrame (which may read a stale draft
                     // left behind by an aborted resize). Reading from the
                     // model prevents jitter where draft and model disagree.
-                    dragBaseFrame = ElementDraftFrame(element: elements[idx])
+                    dragBaseFrame = base
                     draggingElementID = element.id
+                    DispatchQueue.main.async { selectedID = element.id }
                 }
                 guard var frame = dragBaseFrame else { return }
                 frame.posX += Double(value.translation.width)
@@ -239,17 +289,21 @@ struct ElementOverlay: View {
             }
     }
 
-    private func canStartDrag(at location: CGPoint, element: PageElement) -> Bool {
+    private func canStartDrag(at pageLocation: CGPoint, element: PageElement, frame: ElementDraftFrame) -> Bool {
+        let location = CGPoint(
+            x: pageLocation.x - CGFloat(frame.posX - frame.width / 2),
+            y: pageLocation.y - CGFloat(frame.posY - frame.height / 2)
+        )
         if element.type == .audioRecording {
             return location.x <= 44
         }
 
-        let controlSize: CGFloat = 36
-        let isBottomHandle = location.y >= element.height - controlSize
-            && (location.x <= controlSize || location.x >= element.width - controlSize)
+        let controlSize: CGFloat = 44
+        let isBottomHandle = location.y >= CGFloat(frame.height) - controlSize
+            && (location.x <= controlSize || location.x >= CGFloat(frame.width) - controlSize)
         let isRotationHandle = element.type.isRotatable
             && location.y <= 24
-            && abs(location.x - element.width / 2) <= controlSize
+            && abs(location.x - CGFloat(frame.width) / 2) <= controlSize
         return !isBottomHandle && !isRotationHandle
     }
 
@@ -281,25 +335,37 @@ struct ElementOverlay: View {
         onMutationEnded?()
     }
 
+    // Pinch-to-resize and twist-to-rotate route through the same
+    // activeControlElementID/draftFrames pipeline as the corner handles.
+    // They used to write straight into the live model on every single
+    // gesture frame while a position drag (a *different* pipeline, built on
+    // a draft frame captured once at drag-start) could be recognized at the
+    // same time — each one clobbered the other's idea of the current frame
+    // every render, which is what the visible twitching along the drag path
+    // was. Funneling both through setDraftFrame/commitDraftFrame, and
+    // refusing to start while the element is already being dragged, makes
+    // them agree on one frame instead of fighting over it.
     private func imageMagnificationGesture(for element: PageElement) -> some Gesture {
         MagnificationGesture()
             .onChanged { scale in
                 guard allowsDirectManipulation(for: element) else { return }
-                guard let idx = elements.firstIndex(where: { $0.id == element.id }) else { return }
+                guard draggingElementID != element.id else { return }
                 DispatchQueue.main.async { selectedID = element.id }
+                beginControlMutation(for: element)
+                guard let base = activeControlBaseFrame else { return }
 
-                if imageSizeOrigin == nil {
-                    onMutationBegan?()
-                    imageSizeOrigin = CGSize(width: CGFloat(elements[idx].width), height: CGFloat(elements[idx].height))
-                }
-                let origin = imageSizeOrigin ?? CGSize(width: CGFloat(elements[idx].width), height: CGFloat(elements[idx].height))
                 let clampedScale = min(max(scale, 0.2), 6)
-                elements[idx].width = Double(max(40, origin.width * clampedScale))
-                elements[idx].height = Double(max(40, origin.height * clampedScale))
+                // Start from the current draft (not `base`) so a concurrent
+                // twist gesture's rotation isn't reset back to its starting
+                // value every time a pinch frame arrives.
+                var frame = draftFrames[element.id] ?? base
+                frame.width = Double(max(40, CGFloat(base.width) * clampedScale))
+                frame.height = Double(max(40, CGFloat(base.height) * clampedScale))
+                setDraftFrame(frame, for: element.id)
             }
             .onEnded { _ in
-                imageSizeOrigin = nil
-                onMutationEnded?()
+                guard activeControlElementID == element.id else { return }
+                finishControlMutation(for: element)
             }
     }
 
@@ -307,18 +373,20 @@ struct ElementOverlay: View {
         RotationGesture()
             .onChanged { angle in
                 guard allowsDirectManipulation(for: element) else { return }
-                guard let idx = elements.firstIndex(where: { $0.id == element.id }) else { return }
+                guard draggingElementID != element.id else { return }
                 DispatchQueue.main.async { selectedID = element.id }
+                beginControlMutation(for: element)
+                guard let base = activeControlBaseFrame else { return }
 
-                if imageRotationOrigin == nil {
-                    onMutationBegan?()
-                    imageRotationOrigin = elements[idx].rotation
-                }
-                elements[idx].rotation = (imageRotationOrigin ?? elements[idx].rotation) + angle.degrees
+                // Same reasoning as above, mirrored: preserve a concurrent
+                // pinch's width/height instead of resetting to `base`.
+                var frame = draftFrames[element.id] ?? base
+                frame.rotation = base.rotation + angle.degrees
+                setDraftFrame(frame, for: element.id)
             }
             .onEnded { _ in
-                imageRotationOrigin = nil
-                onMutationEnded?()
+                guard activeControlElementID == element.id else { return }
+                finishControlMutation(for: element)
             }
     }
 
@@ -393,13 +461,16 @@ struct ElementOverlay: View {
 }
 
 private struct ElementView: View {
+    @Environment(\.legibilityWeight) private var legibilityWeight
     let element: PageElement
     let displayFrame: ElementDraftFrame
     let isSelected: Bool
     var isCurrentAudio: Bool = false
     var isPlayingAudio: Bool = false
     var playbackProgress: Double = 0
+    var canEditAssistant: Bool = false
     var onTextEdit: () -> Void
+    var onAssistantEdit: () -> Void
     var onAudioToggle: () -> Void
     var onAudioSeek: ((Double) -> Void)?
     var onTapeToggle: () -> Void
@@ -419,6 +490,7 @@ private struct ElementView: View {
             case .image:         imageView
             case .audioRecording: audioView
             case .tape:          tapeView
+            case .assistantNote: assistantNoteView
             }
         }
         .frame(width: CGFloat(displayFrame.width), height: CGFloat(displayFrame.height))
@@ -426,12 +498,16 @@ private struct ElementView: View {
         .overlay(selectionBorder)
         .overlay(alignment: .bottomTrailing) {
             if isSelected && element.type.isResizable && !element.isLocked {
-                ResizeHandle(onBegan: onResizeBegan, onResize: onResize, onEnded: onResizeEnded).padding(2)
+                ResizeHandle(onBegan: onResizeBegan, onResize: onResize, onEnded: onResizeEnded)
+                    .padding(2)
+                    .accessibilityIdentifier("element-resize-handle-br")
             }
         }
         .overlay(alignment: .bottomLeading) {
             if isSelected && element.type.isResizable && !element.isLocked {
-                ResizeHandle(isLeading: true, onBegan: onResizeBegan, onResize: onResize, onEnded: onResizeEnded).padding(2)
+                ResizeHandle(isLeading: true, onBegan: onResizeBegan, onResize: onResize, onEnded: onResizeEnded)
+                    .padding(2)
+                    .accessibilityIdentifier("element-resize-handle-bl")
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -449,6 +525,7 @@ private struct ElementView: View {
             if isSelected && element.type.isRotatable && !element.isLocked, let onRotate {
                 RotationHandle(onBegan: onRotateBegan, onRotate: onRotate, onEnded: onRotateEnded)
                     .offset(y: -24)
+                    .accessibilityIdentifier("element-rotate-handle")
             }
         }
     }
@@ -466,9 +543,7 @@ private struct ElementView: View {
             if element.text?.isEmpty == false {
                 RichTextElementText(attributedText: element.resolvedRichText)
             } else {
-                Text("Tap to edit")
-                    .font(styledFont)
-                    .foregroundStyle(.secondary)
+                Color.clear
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: element.alignment.frameAlignment)
@@ -482,6 +557,81 @@ private struct ElementView: View {
                 onTextEdit()
             }
         }
+    }
+
+    /// The assistant's reply, written onto the page.
+    ///
+    /// Deliberately not a text box: the whole point of asking in ink is that
+    /// the answer reads as something written back to you, so it gets its own
+    /// face, its own tint and a pencil mark, and it does not open the text
+    /// editor on tap the way `textBoxView` does.
+    private var assistantNoteView: some View {
+        let payload = element.assistantPayload
+        let answer = element.text ?? ""
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "pencil.and.scribble")
+                    .font(.system(size: 11))
+                if payload?.isStreaming == true {
+                    Text("writing…")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(assistantTint.opacity(0.75))
+
+            if answer.isEmpty {
+                Text(payload?.isStreaming == true ? "" : "No answer yet")
+                    .font(assistantFont)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(answer)
+                    .font(assistantFont)
+                    .foregroundStyle(assistantTint)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let notice = payload?.notice, !notice.isEmpty {
+                Text(AppLocalization.text(notice))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            if canEditAssistant && payload?.isStreaming != true {
+                Button("Edit question and retry", action: onAssistantEdit)
+                    .font(.system(size: 11, weight: .semibold))
+                    .accessibilityIdentifier("assistant-answer-retry")
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(assistantTint.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(assistantTint.opacity(0.28), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        // VoiceOver reads the answer, never the handwriting face -- the whole
+        // element is one label so a script font never becomes a barrier.
+        .accessibilityElement(children: .contain)
+    }
+
+    private var assistantTint: Color {
+        Color(hex: element.colorHex ?? "3C4A6B") ?? .accentColor
+    }
+
+    /// A handwriting face when one is installed, and something legible when it
+    /// is not.
+    ///
+    /// `Font.custom` silently falls back to the system face if the name is
+    /// missing, which is fine, but a bold-legibility setting means the reader
+    /// has asked for clarity over character -- honour that over the effect.
+    private var assistantFont: Font {
+        let size = max(13, CGFloat(element.fontSize))
+        if legibilityWeight == .bold {
+            return .system(size: size)
+        }
+        return .custom("Bradley Hand", size: size, relativeTo: .body)
     }
 
     private var stickyView: some View {
@@ -642,14 +792,9 @@ private struct ElementView: View {
                             .foregroundStyle(.secondary)
                     )
             } else {
-                // Opaque tape covering.
+                // Match the opaque display layer above ink.
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.gray.opacity(0.85), Color.gray.opacity(0.7)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
+                    .fill(Color(hex: TapeStyle.colorHex(for: element)) ?? .gray)
                     .overlay(
                         VStack(spacing: 4) {
                             Image(systemName: "bandage.fill")
@@ -657,7 +802,7 @@ private struct ElementView: View {
                             Text("Tap to reveal")
                                 .font(.caption2)
                         }
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(TapeStyle.usesDarkForeground(TapeStyle.colorHex(for: element)) ? .black : .white)
                     )
             }
         }
@@ -704,11 +849,16 @@ private struct ResizeHandle: View {
     var onEnded: () -> Void
 
     var body: some View {
-        Circle()
-            .fill(Color.white)
-            .overlay(Circle().stroke(Color.accentColor, lineWidth: 1.5))
-            .frame(width: 16, height: 16)
-            .offset(x: isLeading ? -2 : 2, y: 2)
+        Color.clear
+            .frame(width: 44, height: 44)
+            .overlay(alignment: isLeading ? .bottomLeading : .bottomTrailing) {
+                Circle()
+                    .fill(Color.white)
+                    .overlay(Circle().stroke(Color.accentColor, lineWidth: 1.5))
+                    .frame(width: 16, height: 16)
+                    .padding(2)
+            }
+            .contentShape(Rectangle())
             .highPriorityGesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
@@ -779,7 +929,7 @@ private struct RotationHandle: View {
 extension ElementType {
     var isResizable: Bool {
         switch self {
-        case .image, .textBox, .stickyNote, .shape, .tape:
+        case .image, .textBox, .stickyNote, .shape, .tape, .assistantNote:
             return true
         case .audioRecording:
             return false
@@ -790,65 +940,8 @@ extension ElementType {
         switch self {
         case .image, .shape:
             return true
-        case .textBox, .stickyNote, .audioRecording, .tape:
+        case .textBox, .stickyNote, .audioRecording, .tape, .assistantNote:
             return false
-        }
-    }
-}
-
-// MARK: - Text Alignment
-
-enum TextAlign: String, CaseIterable, Codable {
-    case leading, center, trailing
-
-    var swiftUITextAlignment: TextAlignment {
-        switch self {
-        case .leading:  return .leading
-        case .center:   return .center
-        case .trailing: return .trailing
-        }
-    }
-
-    var nsTextAlignment: NSTextAlignment {
-        switch self {
-        case .leading:  return .left
-        case .center:   return .center
-        case .trailing: return .right
-        }
-    }
-
-    init(nsTextAlignment: NSTextAlignment) {
-        switch nsTextAlignment {
-        case .center:
-            self = .center
-        case .right:
-            self = .trailing
-        default:
-            self = .leading
-        }
-    }
-
-    var frameAlignment: Alignment {
-        switch self {
-        case .leading:  return .topLeading
-        case .center:   return .center
-        case .trailing: return .topTrailing
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .leading:  return "Left"
-        case .center:   return "Center"
-        case .trailing: return "Right"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .leading:  return "text.alignleft"
-        case .center:   return "text.aligncenter"
-        case .trailing: return "text.alignright"
         }
     }
 }

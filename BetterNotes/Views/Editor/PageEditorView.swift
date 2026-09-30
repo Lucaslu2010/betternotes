@@ -6,9 +6,24 @@ import AVFAudio
 import VisionKit
 import UIKit
 
-private enum EditorSaveStatus: Equatable {
-    case saving
-    case failed(String)
+private enum FingerElementControl: Equatable {
+    case move
+    case resizeLeading
+    case resizeTrailing
+    case rotate
+}
+
+private struct FingerDragSession {
+    let pageID: PersistentIdentifier
+    let elementID: PersistentIdentifier
+    let control: FingerElementControl
+    let start: CGPoint
+    let baseX: Double
+    let baseY: Double
+    let baseWidth: Double
+    let baseHeight: Double
+    let baseRotation: Double
+    var didRecordMutation = false
 }
 
 struct PageEditorView: View {
@@ -16,6 +31,7 @@ struct PageEditorView: View {
     private static let selectionPasteboardName = UIPasteboard.Name("com.betternotes.selection")
 
     @Bindable var page: Page
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let pageNumber: Int
     let pageCount: Int
     let isReadOnly: Bool
@@ -31,6 +47,8 @@ struct PageEditorView: View {
     @Binding var command: EditorCommand?
     let pageTurnDirection: PageTurnDirection
     var onPageSwipe: (PageSwipeDirection) -> Void = { _ in }
+    var canPullToAddPage = false
+    var onPullToAddPage: () -> Void = {}
     // Vertical scroll mode zooms the whole multi-page document as one unit
     // (see NotebookView.verticalScrollContent) instead of letting each page
     // run its own independent pinch-to-zoom UIScrollView -- that per-page
@@ -43,6 +61,7 @@ struct PageEditorView: View {
 
     @Environment(\.modelContext) private var context
     @EnvironmentObject private var inkAnswers: InkAnswerCoordinator
+    @EnvironmentObject private var aiSettings: AISettingsStore
     @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = false
     @AppStorage(AppPreferenceKey.assistantEnabled) private var assistantEnabled = true
     @AppStorage(AppPreferenceKey.inkQuestionsEnabled) private var inkQuestionsEnabled = true
@@ -50,6 +69,8 @@ struct PageEditorView: View {
     @State private var canvas: PKCanvasView = PencilInputCanvasView()
 
     @State private var selectedElementID: PersistentIdentifier?
+    @State private var fingerDragSession: FingerDragSession?
+    @State private var fingerElementDraft: FingerElementDraft?
     @StateObject private var history = PageHistory()
 
     /// Shared selection for ink strokes and page elements.
@@ -61,6 +82,8 @@ struct PageEditorView: View {
     @State private var isPreparingInkQuestion = false
     /// A handwritten question the OCR pass spotted, waiting to be accepted.
     @State private var detectedInkQuestion: InkQuestion?
+    @State private var editingAssistantQuestion: PageElement?
+    @State private var assistantQuestionDraft = ""
     /// Questions already offered or answered, so the 1 s OCR debounce cannot
     /// keep re-offering the same sentence every time a stroke lands near it.
     @State private var handledQuestionFingerprints: Set<Int> = []
@@ -69,6 +92,7 @@ struct PageEditorView: View {
     @State private var showingDocumentScanner = false
     @State private var photoItem: PhotosPickerItem?
     @State private var editingTextElement: PageElement?
+    @State private var editingTapeElement: PageElement?
     @State private var isImportingImage = false
     @State private var imageImportError: String?
 
@@ -84,12 +108,11 @@ struct PageEditorView: View {
     @State private var lastRecordedStrokeCount: Int = 0
     @State private var editorNotice: String?
     @State private var showingSourceText = false
-    @State private var isRecognizingHandwriting = false
     @State private var handwritingOCRTask: Task<Void, Never>?
+    @State private var lastRecognizedInkData: Data?
     @State private var loadedPage: Page?
     @State private var saveError: String?
-    @State private var saveStatus: EditorSaveStatus?
-    @State private var saveStatusTask: Task<Void, Never>?
+    @State private var hasSaveFailure = false
     @State private var noticeTask: Task<Void, Never>?
     @State private var isSwitchingPages = false
     /// Guards against re-entry into onDrawingChanged when we programmatically
@@ -150,8 +173,9 @@ struct PageEditorView: View {
         zoomRatio > 1.15 && !isUsingInkTool && heldShapePreview == nil
     }
 
-    /// Finger touches inside these regions go to the SwiftUI elements beneath
-    /// PencilKit. Apple Pencil input still reaches the canvas everywhere.
+    /// Known finger touches inside these regions go to the SwiftUI elements
+    /// beneath PencilKit. A canvas-level finger pan handles touches for which
+    /// UIKit did not supply a touch type during hit testing.
     private var elementInteractionRects: [CGRect] {
         page.elements.map { element in
             let angle = CGFloat(element.rotation * .pi / 180)
@@ -177,6 +201,10 @@ struct PageEditorView: View {
     }
 
     var body: some View {
+        editorAlerts
+    }
+
+    private var editorSurface: some View {
         VStack(spacing: 0) {
             ZStack {
                 Group {
@@ -189,6 +217,8 @@ struct PageEditorView: View {
                             // reserved for page panning.
                             panRequiresTwoFingers: pagePanRequiresTwoFingers,
                             onPageSwipe: onPageSwipe,
+                            canPullToAddPage: canPullToAddPage,
+                            onPullToAddPage: onPullToAddPage,
                             zoomCommand: $zoomCommand,
                             zoomScale: $zoomScale,
                             zoomRatio: $zoomRatio,
@@ -219,12 +249,16 @@ struct PageEditorView: View {
                 if audio.isRecording {
                     VStack {
                         Spacer()
-                        RecordingBar(
-                            elapsed: audio.elapsed,
-                            onStop: { finishRecording(save: true) },
-                            onCancel: { finishRecording(save: false) }
-                        )
-                        .padding(.bottom, 12)
+                        HStack {
+                            RecordingBar(
+                                elapsed: audio.elapsed,
+                                onStop: { finishRecording(save: true) },
+                                onCancel: { finishRecording(save: false) }
+                            )
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.leading, 16)
+                        .padding(.bottom, recordingBottomInset)
                     }
                     .allowsHitTesting(true)
                     .zIndex(50)
@@ -247,32 +281,11 @@ struct PageEditorView: View {
                     .zIndex(70)
                 }
 
-                if isRecognizingHandwriting {
-                    VStack {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text("Recognizing handwriting")
-                                .font(.caption.weight(.medium))
-                        }
-                        .padding(.horizontal, 12)
-                        .frame(minHeight: 44)
-                        .background(.regularMaterial, in: Capsule())
-                        .accessibilityElement(children: .combine)
-                        .accessibilityIdentifier("handwriting-recognition-progress")
-                        Spacer()
-                    }
-                    .padding(12)
-                    .zIndex(73)
-                }
-
-                if let displayedSaveStatus {
+                if hasSaveFailure {
                     VStack {
                         HStack {
                             Spacer()
-                            AutosaveStatusView(
-                                status: displayedSaveStatus,
-                                onRetry: saveChanges
-                            )
+                            SaveFailureView(onRetry: { _ = saveChanges() })
                         }
                         Spacer()
                     }
@@ -281,7 +294,6 @@ struct PageEditorView: View {
                 }
 
             }
-            .clipped()
             .background(Color(.systemGroupedBackground))
             .ignoresSafeArea(.container, edges: .bottom)
         }
@@ -294,6 +306,7 @@ struct PageEditorView: View {
                     canLock: !selectionState.elementIDs.isEmpty,
                     canBringForward: canMoveSelectionElements(forward: true),
                     canSendBackward: canMoveSelectionElements(forward: false),
+                    canCustomizeTape: customizableSelectedTape != nil,
                     onCut: cutSelection,
                     onCopy: copySelection,
                     onPaste: pasteSelection,
@@ -301,7 +314,8 @@ struct PageEditorView: View {
                     onDelete: deleteSelection,
                     onLock: lockSelection,
                     onBringForward: { moveSelectionElements(forward: true) },
-                    onSendBackward: { moveSelectionElements(forward: false) }
+                    onSendBackward: { moveSelectionElements(forward: false) },
+                    onCustomizeTape: { editingTapeElement = customizableSelectedTape }
                 )
                 .padding(.bottom, 16 + toolbarObstruction.bottomClearance)
                 .zIndex(61)
@@ -314,6 +328,7 @@ struct PageEditorView: View {
                     onEdit: { openTextEditor(selectedElement) },
                     onDuplicate: { duplicateElement(selectedElement) },
                     onTranscribe: { transcribeAudio(selectedElement) },
+                    onCustomizeTape: { editingTapeElement = selectedElement },
                     isTranscribing: transcribingAudioElementID == selectedElement.id,
                     onToggleLock: toggleSelectedElementLock,
                     onSendBackward: { moveSelectedElement(by: -1) },
@@ -324,16 +339,25 @@ struct PageEditorView: View {
                 .zIndex(60)
             }
         }
+    }
+
+    private var editorLifecycle: some View {
+        editorSurface
         .onAppear {
             canUndo = history.canUndo
             canRedo = history.canRedo
             // The array's order is the canvas stacking order, and SwiftData
             // does not preserve it. Restore it before anything reads it.
             page.restoreElementOrder()
+            #if DEBUG
+            seedImageForControlTestIfRequested()
+            #endif
+            settleInterruptedAnswers()
             if canvas.drawing.strokes.isEmpty {
                 loadInk(from: page)
             }
             loadedPage = page
+            lastRecognizedInkData = page.ocrUpdatedAt == nil ? nil : page.inkData
             visiblePageCenter = CGPoint(x: page.pageOrientation.size.width / 2, y: page.pageOrientation.size.height / 2)
             lastRecordedStrokeCount = canvas.drawing.strokes.count
             if !canvas.drawing.strokes.isEmpty && page.ocrText.isEmpty {
@@ -363,13 +387,7 @@ struct PageEditorView: View {
         }
         .onChange(of: isReadOnly) { _, readOnly in if readOnly { clearSelection() } }
         .onChange(of: selectedElementID) { _, id in
-            canReplaceSelectedText = id.flatMap { selectedID in
-                page.elements.first(where: { $0.id == selectedID })
-            }.map { $0.modelContext != nil && ($0.type == .textBox || $0.type == .stickyNote) } ?? false
-            guard let id, tool == .lasso, !selectionState.elementIDs.contains(id),
-                  let element = page.elements.first(where: { $0.id == id }),
-                  element.modelContext != nil, !element.isLocked else { return }
-            selectionState = SelectionState(strokeIndices: [], elementIDs: [id], bounds: elementSelectionBounds(element))
+            updateSelectedElement(id)
         }
         .onChange(of: command) { _, newCommand in
             execute(newCommand)
@@ -379,6 +397,8 @@ struct PageEditorView: View {
             canRedo = history.canRedo
         }
         .onDisappear {
+            fingerDragSession = nil
+            fingerElementDraft = nil
             canReplaceSelectedText = false
             commitLiftedInk()
             canvasCoordinator.coordinator?.cancelShapeRecognition()
@@ -394,16 +414,25 @@ struct PageEditorView: View {
             }
             audio.stopPlayback()
             persistInk()
-            // Cancel any pending save-status clear task and reset so the
-            // "Saving..." indicator doesn't persist after leaving the page.
-            saveStatusTask?.cancel()
-            saveStatus = nil
+            hasSaveFailure = false
         }
+    }
+
+    private var editorSheets: some View {
+        editorLifecycle
         .sheet(item: $editingTextElement) { elem in
             TextEditSheet(element: elem) {
                 selectedElementID = elem.id
                 markPageModified()
                 saveChanges()
+            }
+        }
+        .sheet(item: $editingTapeElement) { element in
+            TapeSettingsSheet(
+                element: element,
+                maxLength: min(600, page.pageOrientation.size.width - 48)
+            ) { colorHex, length, height in
+                saveTapeSettings(element, colorHex: colorHex, length: length, height: height)
             }
         }
         .sheet(isPresented: $showingPageStyle) {
@@ -438,6 +467,13 @@ struct PageEditorView: View {
         .sheet(isPresented: $showingSourceText) {
             SourceTextSheet(sources: pageTextSources(), ocrUpdatedAt: page.ocrUpdatedAt)
         }
+        .sheet(item: $editingAssistantQuestion) { element in
+            assistantQuestionSheet(for: element)
+        }
+    }
+
+    private var editorAlerts: some View {
+        editorSheets
         .alert("Audio Error", isPresented: Binding(
             get: { audio.lastError != nil },
             set: { if !$0 { audio.lastError = nil } }
@@ -471,9 +507,11 @@ struct PageEditorView: View {
             PageBackground(
                 backgroundHex: page.backgroundHex,
                 lineStyle: page.lines,
-                orientation: page.pageOrientation
+                orientation: page.pageOrientation,
+                lineThickness: page.effectiveLineThickness,
+                lineOpacity: page.effectiveLineOpacity
             )
-            .id(page.backgroundHex + page.lineStyle + page.orientation)
+            .id("\(page.backgroundHex)-\(page.lineStyle)-\(page.orientation)-\(page.lineThickness)-\(page.lineOpacity)")
             .contentShape(Rectangle())
             .onTapGesture {
                 // Tapping blank page must dismiss a lasso
@@ -516,6 +554,7 @@ struct PageEditorView: View {
                     audio.seek(to: progress)
                 },
                 onAudioTranscribe: transcribeAudio,
+                onTapeEdit: { editingTapeElement = $0 },
                 onDelete: { element in
                     deleteElement(element)
                 },
@@ -523,7 +562,12 @@ struct PageEditorView: View {
                     duplicateElement(element)
                 },
                 onMutationBegan: beginElementMutation,
-                onMutationEnded: finishElementMutation
+                onMutationEnded: finishElementMutation,
+                onAssistantEdit: { element in
+                    assistantQuestionDraft = element.assistantPayload?.question ?? ""
+                    editingAssistantQuestion = element
+                },
+                fingerDraft: fingerElementDraft
             )
 
             PaperCanvas(
@@ -542,8 +586,11 @@ struct PageEditorView: View {
                 isReadOnly: isReadOnly,
                 allowsFingerDrawing: allowsFingerDrawing,
                 elementInteractionRects: elementInteractionRects,
+                canBeginFingerElementDrag: { point in
+                    fingerControl(at: point) != nil
+                },
+                onFingerElementDrag: handleFingerElementDrag,
                 inkData: page.inkData,
-                beautifiesHandwriting: toolSettings.beautifyHandwriting,
                 canvasInkOpacity: heldShapePreview == nil ? 1 : 0.22,
                 onDrawingChange: { _ in onDrawingChanged() },
                 onToolUseChange: { isUsing in
@@ -551,7 +598,7 @@ struct PageEditorView: View {
                     // Starting to draw/erase clears element
                     // selection so resize handles disappear.
                     if isUsing {
-                        clearSelection()
+                        if fingerDragSession == nil { clearSelection() }
                     } else {
                         persistInk()
                     }
@@ -669,7 +716,49 @@ struct PageEditorView: View {
         )
     }
 
-    private var displayedSaveStatus: EditorSaveStatus? { saveStatus }
+    private var recordingBottomInset: CGFloat {
+        if horizontalSizeClass == .compact { return 108 }
+        let spaceBesideToolbar = max((pageAreaWidth - toolbarObstruction.size.width) / 2, 0)
+        return spaceBesideToolbar >= 290 ? 12 : 24 + toolbarObstruction.bottomClearance
+    }
+
+    private func updateSelectedElement(_ id: PersistentIdentifier?) {
+        guard let id, let element = page.elements.first(where: { $0.id == id }) else {
+            canReplaceSelectedText = false
+            return
+        }
+        canReplaceSelectedText = element.modelContext != nil
+            && (element.type == .textBox || element.type == .stickyNote)
+        guard tool == .lasso, !selectionState.elementIDs.contains(id),
+              element.modelContext != nil, !element.isLocked else { return }
+        selectionState = SelectionState(strokeIndices: [], elementIDs: [id], bounds: elementSelectionBounds(element))
+    }
+
+    private func assistantQuestionSheet(for element: PageElement) -> some View {
+        NavigationStack {
+            Form {
+                TextField("Question", text: $assistantQuestionDraft, axis: .vertical)
+                    .lineLimit(2...5)
+                Text("Check the recognized question before sending it again.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .navigationTitle("Retry answer")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { editingAssistantQuestion = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Retry") {
+                        retryInkAnswer(element, question: assistantQuestionDraft)
+                        editingAssistantQuestion = nil
+                    }
+                    .disabled(assistantQuestionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
 
     private func execute(_ command: EditorCommand?) {
         guard let command, command.targetPageID == page.persistentModelID else { return }
@@ -682,8 +771,6 @@ struct PageEditorView: View {
             handleInsert(kind)
         case .insertShape(let kind):
             insertShape(kind)
-        case .beautifyInk:
-            beautifyCurrentPageInk()
         case .copy:
             copySelection()
         case .cut:
@@ -706,10 +793,6 @@ struct PageEditorView: View {
             if VNDocumentCameraViewController.isSupported, !isReadOnly {
                 showingDocumentScanner = true
             }
-        case .recognizeHandwriting:
-            recognizeCurrentHandwriting()
-        case .resetLearnedHandwriting:
-            HandwritingBeautifier.resetProfile()
         }
         self.command = nil
     }
@@ -731,24 +814,19 @@ struct PageEditorView: View {
         page.notebook?.modifiedAt = .now
     }
 
-    private func saveChanges() {
+    @discardableResult
+    private func saveChanges() -> Bool {
         do {
             page.stampElementOrder()
             try context.save()
             NotificationCenter.default.post(name: .noteCorpusDidChange, object: nil)
             saveError = nil
-            // Set .saving AFTER the save succeeds, so a blocking save()
-            // doesn't leave a stale .saving indicator.
-            saveStatus = .saving
-            saveStatusTask?.cancel()
-            saveStatusTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(700))
-                guard !Task.isCancelled else { return }
-                if saveStatus == .saving { saveStatus = nil }
-            }
+            hasSaveFailure = false
+            return true
         } catch {
             saveError = error.localizedDescription
-            saveStatus = .failed(error.localizedDescription)
+            hasSaveFailure = true
+            return false
         }
     }
 
@@ -771,6 +849,8 @@ struct PageEditorView: View {
     }
 
     private func switchLoadedPage() {
+        fingerDragSession = nil
+        fingerElementDraft = nil
         // `page` is already the incoming page by the time this runs, and the
         // saveChanges() below stamps its array order into zIndex. Restore that
         // order from the store first, or the save would overwrite the user's
@@ -819,6 +899,8 @@ struct PageEditorView: View {
         // it here forces the fault now, on the main thread, synchronously.
         let incomingInk = page.inkData
         loadedPage = page
+        settleInterruptedAnswers()
+        lastRecognizedInkData = page.ocrUpdatedAt == nil ? nil : incomingInk
         // Prevent onDrawingChanged from firing while we swap the canvas content.
         // Without this, setting canvas.drawing below triggers
         // canvasViewDrawingDidChange → onDrawingChanged, which writes the NEW
@@ -855,7 +937,7 @@ struct PageEditorView: View {
 
     private func exportCurrentPage() {
         if !isReadOnly { saveInk() }
-        saveChanges()
+        guard saveChanges() else { return }
         let data = PDFExport.renderPage(page)
         pdfURL = PDFExport.writePDF(data, name: "Page-\(pageNumber)")
         showingPageShare = true
@@ -881,12 +963,12 @@ struct PageEditorView: View {
                 sources.append(NoteTextSource(title: "Sticky Note \(stickyCount)", text: text))
             case .audioRecording:
                 if let transcript = element.transcript?.trimmingCharacters(in: .whitespacesAndNewlines), !transcript.isEmpty {
-                    sources.append(NoteTextSource(title: "Audio Transcript", text: transcript))
+                    sources.append(NoteTextSource(title: AppLocalization.text("Audio Transcript"), text: transcript))
                 }
             case .image:
                 // Smart-imported images carry OCR-extracted text in `element.text`
                 // so the page stays searchable without a visible text box.
-                sources.append(NoteTextSource(title: "Image Text", text: text))
+                sources.append(NoteTextSource(title: AppLocalization.text("Image Text"), text: text))
             default:
                 break
             }
@@ -894,7 +976,7 @@ struct PageEditorView: View {
 
         let extractedText = page.ocrText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !extractedText.isEmpty {
-            sources.append(NoteTextSource(title: "OCR and PDF Text", text: extractedText))
+            sources.append(NoteTextSource(title: AppLocalization.text("OCR and PDF Text"), text: extractedText))
         }
         return sources
     }
@@ -918,7 +1000,7 @@ struct PageEditorView: View {
         selectedElementID = element.id
         markPageModified()
         saveChanges()
-        showNotice("AI result added to the page")
+        showNotice(AppLocalization.text("AI result added to the page"))
     }
 
     // MARK: Ask on the page
@@ -968,7 +1050,7 @@ struct PageEditorView: View {
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n")
             guard !question.isEmpty else {
-                showNotice("Nothing readable in that selection")
+                showNotice(AppLocalization.text("Nothing readable in that selection"))
                 return
             }
             beginInkAnswer(to: InkQuestion(text: question, bounds: bounds))
@@ -1023,22 +1105,38 @@ struct PageEditorView: View {
         // ids that no longer describe what is on the page.
         refreshSelectionBounds()
         markPageModified()
-        saveChanges()
+        guard saveChanges() else {
+            var payload = element.assistantPayload ?? AssistantNotePayload(question: question.text)
+            payload.isStreaming = false
+            payload.notice = "Couldn’t save this question. Retry after resolving the save error."
+            payload.didFail = true
+            element.assistantPayload = payload
+            answeringElementID = nil
+            return
+        }
 
         let elementID = element.id
+        // SwiftData can replace a newly inserted element's temporary ID when
+        // save() assigns its permanent ID. The response callback and the
+        // active-card guard must both use the post-save ID.
+        selectedElementID = elementID
+        answeringElementID = elementID
         inkAnswers.answer(
             question: question.text,
             notebookID: page.notebook?.stableID,
             pageID: page.stableID,
-            pageContext: pageContextText(excluding: elementID)
+            pageContext: pageContextText(excluding: elementID),
+            history: pageAnswerHistory(excluding: elementID),
+            pageImage: aiSettings.sendsPageImages ? PDFExport.renderPageImage(page) : nil
         ) { update in
-            applyInkAnswer(update, to: elementID)
+            applyInkAnswer(update, to: element)
         }
     }
 
-    private func applyInkAnswer(_ update: InkAnswerCoordinator.Update, to elementID: PersistentIdentifier) {
-        guard let element = page.elements.first(where: { $0.id == elementID }),
-              element.modelContext != nil else { return }
+    private func applyInkAnswer(_ update: InkAnswerCoordinator.Update, to element: PageElement) {
+        guard answeringElementID == element.id else { return }
+        let answerPage = loadedPage ?? page
+        guard element.modelContext != nil, element.page?.id == answerPage.id else { return }
         element.text = update.text
         // Saving per token would hammer SwiftData for every few characters,
         // and re-encoding the payload per token would re-serialise JSON just
@@ -1048,11 +1146,13 @@ struct PageEditorView: View {
         var payload = element.assistantPayload ?? AssistantNotePayload(question: "")
         payload.isStreaming = false
         payload.citations = update.citations
-        payload.notice = update.notice
+        payload.notice = update.error ?? update.notice
+        payload.didFail = update.error != nil
         element.assistantPayload = payload
         answeringElementID = nil
         growInkAnswer(element)
-        markPageModified()
+        answerPage.modifiedAt = .now
+        answerPage.notebook?.modifiedAt = .now
         saveChanges()
         if let error = update.error, update.text.isEmpty {
             showNotice(error)
@@ -1068,22 +1168,70 @@ struct PageEditorView: View {
         inkAnswers.cancel()
         guard let elementID = answeringElementID else { return }
         answeringElementID = nil
-        guard let element = page.elements.first(where: { $0.id == elementID }),
+        let answerPage = loadedPage ?? page
+        guard let element = answerPage.elements.first(where: { $0.id == elementID }),
               element.modelContext != nil else { return }
-        if (element.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            // Nothing was ever written into it; an empty card is just litter.
-            context.delete(element)
-            page.elements.removeAll { $0.id == elementID }
-            refreshSelectionBounds()
-        } else {
-            var payload = element.assistantPayload ?? AssistantNotePayload(question: "")
-            payload.isStreaming = false
-            payload.notice = "Stopped before the answer finished."
-            element.assistantPayload = payload
-            growInkAnswer(element)
-        }
-        markPageModified()
+        var payload = element.assistantPayload ?? AssistantNotePayload(question: "")
+        payload.isStreaming = false
+        payload.notice = "Stopped before the answer finished."
+        payload.didFail = true
+        element.assistantPayload = payload
+        growInkAnswer(element)
+        answerPage.modifiedAt = .now
+        answerPage.notebook?.modifiedAt = .now
         saveChanges()
+    }
+
+    /// A force-close can leave the persisted card marked as streaming even
+    /// though its task no longer exists. Make the saved card retryable on the
+    /// next open instead of leaving “writing…” on the page indefinitely.
+    private func settleInterruptedAnswers() {
+        var changed = false
+        for element in page.elements where element.id != answeringElementID {
+            guard var payload = element.assistantPayload, payload.isStreaming else { continue }
+            payload.isStreaming = false
+            payload.notice = "The answer was interrupted. Tap Retry to try again."
+            payload.didFail = true
+            element.assistantPayload = payload
+            changed = true
+        }
+        if changed { saveChanges() }
+    }
+
+    private func retryInkAnswer(_ element: PageElement, question rawQuestion: String) {
+        let question = rawQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty, !isReadOnly, element.modelContext != nil,
+              page.elements.contains(where: { $0.id == element.id }) else { return }
+        inkAnswers.cancel()
+        var payload = element.assistantPayload ?? AssistantNotePayload(question: question)
+        payload.question = question
+        payload.isStreaming = true
+        payload.notice = nil
+        payload.didFail = nil
+        payload.citations = []
+        element.assistantPayload = payload
+        element.text = ""
+        answeringElementID = element.id
+        markPageModified()
+        guard saveChanges() else {
+            payload.isStreaming = false
+            payload.notice = "Couldn’t save this question. Retry after resolving the save error."
+            payload.didFail = true
+            element.assistantPayload = payload
+            answeringElementID = nil
+            return
+        }
+        let elementID = element.id
+        inkAnswers.answer(
+            question: question,
+            notebookID: page.notebook?.stableID,
+            pageID: page.stableID,
+            pageContext: pageContextText(excluding: elementID),
+            history: pageAnswerHistory(excluding: elementID),
+            pageImage: aiSettings.sendsPageImages ? PDFExport.renderPageImage(page) : nil
+        ) { update in
+            applyInkAnswer(update, to: element)
+        }
     }
 
     /// Size the card to the answer it ended up holding.
@@ -1100,7 +1248,7 @@ struct PageEditorView: View {
             context: nil
         )
         let pageSize = page.pageOrientation.size
-        let height = min(max(ceil(bounding.height) + 52, 100), pageSize.height - AnswerPlacement.margin * 2)
+        let height = min(max(ceil(bounding.height) + 100, 150), pageSize.height - AnswerPlacement.margin * 2)
         element.height = Double(height)
         let centre = AnswerPlacement.clampedCentre(
             CGPoint(x: element.posX, y: element.posY),
@@ -1140,6 +1288,29 @@ struct PageEditorView: View {
         return parts.joined(separator: "\n")
     }
 
+    /// Completed answer cards on this page provide conversational continuity
+    /// for another handwritten question. They never enter the note evidence
+    /// list or receive a source citation.
+    private func pageAnswerHistory(excluding elementID: PersistentIdentifier?) -> [AIConversationMessage] {
+        page.elements
+            .filter { $0.id != elementID && $0.type == .assistantNote }
+            .sorted { $0.createdAt < $1.createdAt }
+            .compactMap { element -> [AIConversationMessage]? in
+                guard let payload = element.assistantPayload,
+                      !payload.isStreaming,
+                      payload.didFail != true,
+                      let answer = element.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !answer.isEmpty,
+                      !answer.hasPrefix("The request failed:") else { return nil }
+                return [
+                    AIConversationMessage(role: .user, content: payload.question),
+                    AIConversationMessage(role: .assistant, content: answer)
+                ]
+            }
+            .suffix(3)
+            .flatMap { $0 }
+    }
+
     private func replaceSelectedText(with text: String) {
         guard !isReadOnly, !text.isEmpty,
               let selectedElementID,
@@ -1148,20 +1319,14 @@ struct PageEditorView: View {
               element.type == .textBox || element.type == .stickyNote else { return }
         recordBeforeMutation()
         let original = element.resolvedRichText
-        let suggestion = WritingSuggestion(
-            id: UUID(),
-            sourceRange: NSRange(location: 0, length: original.length),
-            originalText: original.string,
-            replacementText: text,
-            mode: .improveClarity,
-            requestRevision: 0
-        )
-        let replacement = WritingSuggestionCoordinator.replacingText(in: original, with: suggestion)
+        let attributes: [NSAttributedString.Key: Any] = original.length > 0
+            ? original.attributes(at: 0, effectiveRange: nil) : [:]
+        let replacement = NSAttributedString(string: text, attributes: attributes)
         element.text = replacement.string
         element.richTextData = PageElement.encodeRichText(replacement)
         markPageModified()
         saveChanges()
-        showNotice("Selected text replaced")
+        showNotice(AppLocalization.text("Selected text replaced"))
     }
 
     // MARK: - Undo / Redo
@@ -1284,45 +1449,6 @@ struct PageEditorView: View {
         }
     }
 
-    private func recognizeCurrentHandwriting() {
-        let data = canvas.drawing.dataRepresentation()
-        if !isReadOnly {
-            page.inkData = data
-        }
-        let targetPageID = page.persistentModelID
-        handwritingOCRTask?.cancel()
-        handwritingOCRTask = Task { @MainActor in
-            await updateHandwritingOCR(
-                from: data,
-                pageSize: page.pageOrientation.size,
-                showProgress: true,
-                targetPageID: targetPageID
-            )
-        }
-    }
-
-    private func beautifyCurrentPageInk() {
-        guard !isReadOnly else { return }
-        let strokes = canvas.drawing.strokes
-        guard !strokes.isEmpty else {
-            showNotice("No ink on this page")
-            return
-        }
-
-        let before = canvas.drawing.dataRepresentation()
-        recordBeforeMutation()
-        HandwritingBeautifier.learn(from: strokes)
-        setCanvasDrawing(HandwritingBeautifier.beautified(drawing: canvas.drawing))
-        let after = canvas.drawing.dataRepresentation()
-        page.inkData = after
-        lastRecordedStrokeCount = canvas.drawing.strokes.count
-        history.clearRedoStack()
-        scheduleHandwritingOCR()
-        markPageModified()
-        saveChanges()
-        showNotice(before == after ? "These strokes are already smooth" : "Handwriting smoothed")
-    }
-
     private func showNotice(_ message: String) {
         withAnimation(.snappy(duration: 0.2)) { editorNotice = message }
         // Use a single cancellable task to prevent unbounded Task creation.
@@ -1341,6 +1467,7 @@ struct PageEditorView: View {
     /// page is turned to is nagging, not help.
     private func scheduleHandwritingOCR(offersQuestions: Bool = true) {
         let data = canvas.drawing.dataRepresentation()
+        guard data != lastRecognizedInkData else { return }
         let pageSize = page.pageOrientation.size
         // Capture the page id so a late OCR result that completes AFTER a
         // page swipe can detect it's stale and bail out, instead of writing
@@ -1354,55 +1481,36 @@ struct PageEditorView: View {
             await updateHandwritingOCR(
                 from: data,
                 pageSize: pageSize,
-                showProgress: false,
                 targetPageID: targetPageID,
                 offersQuestions: offersQuestions
             )
         }
     }
 
+    /// Runs silently, the same way autosave does — there is no manual
+    /// "Recognize Handwriting" trigger to give this a user-visible moment;
+    /// anyone who wants to confirm it ran can open "Show Source Text".
     @MainActor
     private func updateHandwritingOCR(
         from data: Data?,
         pageSize: CGSize,
-        showProgress: Bool,
         targetPageID: PersistentIdentifier? = nil,
         offersQuestions: Bool = true
     ) async {
-        if showProgress {
-            isRecognizingHandwriting = true
-        }
         let lines = await HandwritingOCR.recognizeLines(from: data, pageSize: pageSize)
         let recognized = lines.map(\.text).joined(separator: "\n")
-        guard !Task.isCancelled else {
-            if showProgress { isRecognizingHandwriting = false }
-            return
-        }
+        guard !Task.isCancelled else { return }
         // Reject stale results from a previous page. Without this, a slow
         // Vision call started on page N can finish after the user has swiped
         // to page N+1; writing `recognized` onto the new page corrupts its
         // ocrText, and the `context.save()` below can refault the new page's
         // inkData — visibly blanking the page for up to ~30s.
-        if let targetPageID, page.persistentModelID != targetPageID {
-            if showProgress { isRecognizingHandwriting = false }
-            return
-        }
+        if let targetPageID, page.persistentModelID != targetPageID { return }
+        guard canvas.drawing.dataRepresentation() == data else { return }
         page.ocrText = recognized
         page.ocrUpdatedAt = .now
-        saveChanges()
+        if saveChanges() { lastRecognizedInkData = data }
         if offersQuestions { detectInkQuestion(in: lines) }
-        if showProgress {
-            isRecognizingHandwriting = false
-            // Explicit user-triggered recognition previously gave no feedback
-            // at all — it looked like nothing had happened.
-            let trimmed = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                showNotice("No handwriting recognized on this page")
-            } else {
-                let words = trimmed.split(whereSeparator: \.isWhitespace).count
-                showNotice("Recognized \(words) word\(words == 1 ? "" : "s")")
-            }
-        }
     }
 
     /// Spot a handwritten question and offer to answer it.
@@ -1519,20 +1627,167 @@ struct PageEditorView: View {
         saveChanges()
     }
 
+    private func fingerControl(at point: CGPoint) -> (PageElement, FingerElementControl)? {
+        guard !isReadOnly else { return nil }
+        let topFirst = page.elements.reversed().filter { $0.type == .tape }
+            + page.elements.reversed().filter { $0.type != .tape }
+        // PencilKit may clear selectedElementID on touch-down before the
+        // finger observer runs. Check the actual handle geometry even then;
+        // otherwise the visible control silently turns into a move gesture.
+        let selected = page.elements.first(where: { $0.id == selectedElementID })
+        let handleTargets = selected.map { [$0] } ?? topFirst
+        for element in handleTargets where !element.isLocked {
+            let width = CGFloat(element.width)
+            let height = CGFloat(element.height)
+            let left = CGFloat(element.posX) - width / 2
+            let top = CGFloat(element.posY) - height / 2
+            if element.type.isRotatable {
+                let rotationHandle = CGRect(x: CGFloat(element.posX) - 22, y: top - 46, width: 44, height: 44)
+                if rotationHandle.contains(point) { return (element, .rotate) }
+            }
+            if element.type.isResizable {
+                let leadingHandle = CGRect(x: left, y: top + height - 44, width: 44, height: 44)
+                let trailingHandle = CGRect(x: left + width - 44, y: top + height - 44, width: 44, height: 44)
+                if leadingHandle.contains(point) { return (element, .resizeLeading) }
+                if trailingHandle.contains(point) { return (element, .resizeTrailing) }
+            }
+        }
+        for element in topFirst where !element.isLocked {
+            let angle = CGFloat(element.rotation * .pi / 180)
+            let width = CGFloat(element.width)
+            let height = CGFloat(element.height)
+            let hitWidth = abs(cos(angle)) * width + abs(sin(angle)) * height
+            let hitHeight = abs(sin(angle)) * width + abs(cos(angle)) * height
+            let rect = CGRect(
+                x: CGFloat(element.posX) - hitWidth / 2,
+                y: CGFloat(element.posY) - hitHeight / 2,
+                width: hitWidth,
+                height: hitHeight
+            )
+            guard rect.contains(point) else { continue }
+            let localX = point.x - CGFloat(element.posX) + width / 2
+            if element.type == .audioRecording && localX > 44 { continue }
+            return (element, .move)
+        }
+        return nil
+    }
+
+    private func handleFingerElementDrag(_ event: FingerElementDragEvent) {
+        switch event {
+        case .began(let point):
+            guard let (element, control) = fingerControl(at: point) else { return }
+            fingerDragSession = FingerDragSession(
+                pageID: page.id,
+                elementID: element.id,
+                control: control,
+                start: point,
+                baseX: element.posX,
+                baseY: element.posY,
+                baseWidth: element.width,
+                baseHeight: element.height,
+                baseRotation: element.rotation
+            )
+            selectedElementID = element.id
+        case .changed(let point):
+            guard var session = fingerDragSession, session.pageID == page.id else { return }
+            let deltaX = Double(point.x - session.start.x)
+            let deltaY = Double(point.y - session.start.y)
+            if !session.didRecordMutation && abs(deltaX) + abs(deltaY) > 1 {
+                beginElementMutation()
+                session.didRecordMutation = true
+                fingerDragSession = session
+            }
+            var posX = session.baseX
+            var posY = session.baseY
+            var width = session.baseWidth
+            var height = session.baseHeight
+            var rotation = session.baseRotation
+            switch session.control {
+            case .move:
+                posX += deltaX
+                posY += deltaY
+            case .resizeLeading, .resizeTrailing:
+                let widthDelta = session.control == .resizeLeading ? -deltaX : deltaX
+                width = max(40, session.baseWidth + widthDelta)
+                height = max(40, session.baseHeight + deltaY)
+                let widthGrowth = width - session.baseWidth
+                let heightGrowth = height - session.baseHeight
+                posX += (session.control == .resizeLeading ? -1 : 1) * widthGrowth / 2
+                posY += heightGrowth / 2
+            case .rotate:
+                let startAngle = atan2(
+                    Double(session.start.y) - session.baseY,
+                    Double(session.start.x) - session.baseX
+                )
+                let currentAngle = atan2(
+                    Double(point.y) - session.baseY,
+                    Double(point.x) - session.baseX
+                )
+                var angleDelta = currentAngle - startAngle
+                if angleDelta > .pi { angleDelta -= 2 * .pi }
+                if angleDelta < -.pi { angleDelta += 2 * .pi }
+                rotation += angleDelta * 180 / .pi
+            }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                fingerElementDraft = FingerElementDraft(
+                    id: session.elementID,
+                    posX: posX,
+                    posY: posY,
+                    width: width,
+                    height: height,
+                    rotation: rotation
+                )
+            }
+        case .ended(let point):
+            handleFingerElementDrag(.changed(point))
+            guard let session = fingerDragSession,
+                  session.pageID == page.id,
+                  session.didRecordMutation,
+                  let element = page.elements.first(where: { $0.id == session.elementID }),
+                  let draft = fingerElementDraft else {
+                fingerDragSession = nil
+                fingerElementDraft = nil
+                return
+            }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                element.posX = draft.posX
+                element.posY = draft.posY
+                element.width = draft.width
+                element.height = draft.height
+                element.rotation = draft.rotation
+                fingerElementDraft = nil
+                fingerDragSession = nil
+            }
+            finishElementMutation()
+        case .cancelled:
+            fingerElementDraft = nil
+            fingerDragSession = nil
+        }
+    }
+
     private func insertElement(_ type: ElementType, size: CGSize = CGSize(width: 200, height: 120)) {
         guard !isReadOnly else { return }
         recordBeforeMutation()
         let centre = insertionCentre(for: size)
         let elem = PageElement(type: type, x: centre.x, y: centre.y, width: size.width, height: size.height)
         if type == .stickyNote { elem.colorHex = "FFE066" }
+        if type == .tape { elem.colorHex = TapeStyle.defaultColorHex }
         elem.page = page
         context.insert(elem)
         page.appendElement(elem)
         selectedElementID = elem.id
         markPageModified()
-        saveChanges()
+        guard saveChanges() else { return }
+        // The first save replaces the temporary SwiftData identifier.
+        selectedElementID = elem.id
         if type == .textBox || type == .stickyNote {
             editingTextElement = elem
+        } else if type == .tape {
+            editingTapeElement = elem
         }
     }
 
@@ -1688,6 +1943,51 @@ struct PageEditorView: View {
     private var selectedElement: PageElement? {
         guard let idx = selectedElementIndex else { return nil }
         return page.elements[idx]
+    }
+
+    private var customizableSelectedTape: PageElement? {
+        guard let selectedElement, selectedElement.type == .tape, !selectedElement.isLocked else { return nil }
+        if !selectionState.isEmpty {
+            guard selectionState.elementIDs.count == 1,
+                  selectionState.elementIDs.contains(selectedElement.id) else { return nil }
+        }
+        return selectedElement
+    }
+
+    private func saveTapeSettings(_ element: PageElement, colorHex: String, length: Double, height: Double) -> String? {
+        guard !isReadOnly, element.modelContext != nil, !element.isLocked else {
+            return AppLocalization.text("This tape is no longer available for editing.")
+        }
+        let oldColor = element.colorHex
+        let oldWidth = element.width
+        let oldHeight = element.height
+        if TapeStyle.colorHex(for: element) == colorHex && oldWidth == length && oldHeight == height {
+            selectedElementID = element.id
+            return nil
+        }
+        let oldPageModified = page.modifiedAt
+        let oldNotebookModified = page.notebook?.modifiedAt
+        recordBeforeMutation()
+        element.colorHex = colorHex
+        element.width = length
+        element.height = height
+        markPageModified()
+        if !selectionState.isEmpty { refreshSelectionBounds() }
+        if saveChanges() {
+            selectedElementID = element.id
+            return nil
+        }
+
+        element.colorHex = oldColor
+        element.width = oldWidth
+        element.height = oldHeight
+        page.modifiedAt = oldPageModified
+        page.notebook?.modifiedAt = oldNotebookModified ?? oldPageModified
+        if !selectionState.isEmpty { refreshSelectionBounds() }
+        let message = saveError ?? AppLocalization.text("Couldn’t save tape changes.")
+        saveError = nil
+        hasSaveFailure = false
+        return message
     }
 
     private var canSendSelectedElementBackward: Bool {
@@ -1891,7 +2191,7 @@ struct PageEditorView: View {
         cachedSelectionPayload = payload
         UIPasteboard(name: Self.selectionPasteboardName, create: true)?
             .setData(data, forPasteboardType: Self.selectionPasteboardType)
-        showNotice("Selection copied")
+        showNotice(AppLocalization.text("Selection copied"))
     }
 
     private func cutSelection() {
@@ -1950,7 +2250,7 @@ struct PageEditorView: View {
         lastRecordedStrokeCount = strokes.count
         markPageModified()
         saveChanges()
-        showNotice("Selection pasted")
+        showNotice(AppLocalization.text("Selection pasted"))
     }
 
     private func canShowBlankCanvasPasteMenu(at point: CGPoint) -> Bool {
@@ -2140,14 +2440,14 @@ struct PageEditorView: View {
         } else if let data = element.audioData {
             audio.play(data: data, elementID: element.id)
         } else {
-            audio.lastError = "This recording does not contain playable audio."
+            audio.lastError = AppLocalization.text("This recording does not contain playable audio.")
         }
     }
 
     private func transcribeAudio(_ element: PageElement) {
         guard !isReadOnly, element.modelContext != nil, !element.isLocked else { return }
         guard let data = element.audioData, !data.isEmpty else {
-            audio.lastError = "This recording does not contain audio to transcribe."
+            audio.lastError = AppLocalization.text("This recording does not contain audio to transcribe.")
             return
         }
         transcriptionTask?.cancel()
@@ -2226,9 +2526,9 @@ struct PageEditorView: View {
             let extraction = await SmartImageExtractor.extract(from: data)
 
             recordBeforeMutation()
-            insertSmartImageImport(extraction, fallbackImageData: data)
+            let imageElement = insertSmartImageImport(extraction)
             markPageModified()
-            saveChanges()
+            if saveChanges() { selectedElementID = imageElement.id }
         } catch {
             imageImportError = error.localizedDescription
         }
@@ -2241,30 +2541,32 @@ struct PageEditorView: View {
             defer { isImportingImage = false }
             recordBeforeMutation()
             let pageSize = page.pageOrientation.size
+            var lastInsertedImage: PageElement?
             for (index, image) in images.prefix(4).enumerated() {
                 guard let data = image.jpegData(compressionQuality: 0.9) else { continue }
                 let extraction = await SmartImageExtractor.extract(from: data)
-                insertSmartImageImport(extraction, fallbackImageData: data)
-                if let selectedElementID,
-                   let element = page.elements.first(where: { $0.id == selectedElementID }),
-                   element.modelContext != nil {
+                let element = insertSmartImageImport(extraction)
+                lastInsertedImage = element
+                if element.modelContext != nil {
                     element.posY = min(220 + Double(index) * 220, pageSize.height - element.height / 2 - 24)
                 }
             }
             markPageModified()
-            saveChanges()
+            if saveChanges(), let lastInsertedImage { selectedElementID = lastInsertedImage.id }
             showNotice(images.count > 4 ? "Added the first 4 scanned pages" : "Scan added")
         }
     }
 
-    private func insertSmartImageImport(_ extraction: SmartImageExtractor.Extraction, fallbackImageData: Data) {
+    @discardableResult
+    private func insertSmartImageImport(_ extraction: SmartImageExtractor.Extraction) -> PageElement {
         let pageSize = page.pageOrientation.size
         let pageCenterX = pageSize.width / 2
 
-        let imageData = extraction.croppedImageData ?? fallbackImageData
-        let sourceImageSize = extraction.croppedImageSize == .zero
-            ? imageSize(from: fallbackImageData)
-            : extraction.croppedImageSize
+        // The whole source frame is part of the note. Vision may focus on a
+        // text region for recognition, but must never replace the image.
+        let imageData = extraction.originalImageData
+        let sourceImageSize = extraction.originalImageSize == .zero
+            ? imageSize(from: imageData) : extraction.originalImageSize
         let fittedSize = fittedElementSize(
             for: sourceImageSize,
             maxSize: CGSize(
@@ -2293,7 +2595,32 @@ struct PageEditorView: View {
         page.appendElement(imageElement)
 
         selectedElementID = imageElement.id
+        return imageElement
     }
+
+    #if DEBUG
+    private func seedImageForControlTestIfRequested() {
+        guard ProcessInfo.processInfo.arguments.contains("-ui-testing-seed-image"),
+              page.elements.isEmpty else { return }
+        let imageSize = CGSize(width: 160, height: 100)
+        let data = UIGraphicsImageRenderer(size: imageSize).pngData { context in
+            UIColor.systemOrange.setFill()
+            context.fill(CGRect(origin: .zero, size: imageSize))
+        }
+        let element = PageElement(
+            type: .image,
+            x: page.pageOrientation.size.width / 2,
+            y: 240,
+            width: imageSize.width,
+            height: imageSize.height
+        )
+        element.imageData = data
+        element.page = page
+        context.insert(element)
+        page.appendElement(element)
+        if saveChanges() { selectedElementID = element.id }
+    }
+    #endif
 
     private func fittedElementSize(for sourceSize: CGSize, maxSize: CGSize) -> CGSize {
         guard sourceSize.width > 0, sourceSize.height > 0 else {
@@ -2314,9 +2641,6 @@ struct PageEditorView: View {
 
 // MARK: - Audio Recording Controls
 
-/// A Voice-Memos-style centered recording popup. Stays on screen above the
-/// toolbar until the user taps Stop or Cancel, so the recording state is always
-/// visible (the previous top-pinned pill was hidden behind the floating toolbar).
 /// A compact, non-blocking recording bar pinned to the bottom of the screen.
 /// Unlike a full-screen popup, this lets the user continue writing while
 /// recording. Shows elapsed time, a pulsing indicator, and Stop/Cancel buttons.
@@ -2328,7 +2652,7 @@ private struct RecordingBar: View {
     @State private var pulse = false
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 8) {
             // Pulsing red dot
             Circle()
                 .fill(Color.red)
@@ -2345,8 +2669,6 @@ private struct RecordingBar: View {
                 .font(.subheadline.monospacedDigit().weight(.semibold))
                 .foregroundStyle(.primary)
                 .frame(minWidth: 44, alignment: .leading)
-
-            Spacer(minLength: 0)
 
             Button(action: onCancel) {
                 Image(systemName: "trash.fill")
@@ -2368,14 +2690,10 @@ private struct RecordingBar: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Stop Recording")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(
-            Capsule()
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.15), radius: 10, y: 4)
-        )
-        .padding(.horizontal, 40)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(color: .black.opacity(0.15), radius: 10, y: 4)
         .onAppear { pulse = true }
     }
 
@@ -2395,6 +2713,7 @@ private struct SelectedElementControls: View {
     var onEdit: () -> Void
     var onDuplicate: () -> Void
     var onTranscribe: () -> Void
+    var onCustomizeTape: () -> Void
     let isTranscribing: Bool
     var onToggleLock: () -> Void
     var onSendBackward: () -> Void
@@ -2405,6 +2724,10 @@ private struct SelectedElementControls: View {
         HStack(spacing: 4) {
             if elementType == .textBox || elementType == .stickyNote {
                 iconButton("pencil", "Edit Text", action: onEdit)
+                    .disabled(isLocked)
+            }
+            if elementType == .tape {
+                iconButton("slider.horizontal.3", "Tape Options", action: onCustomizeTape)
                     .disabled(isLocked)
             }
             iconButton("plus.square.on.square", "Duplicate", action: onDuplicate)
@@ -2484,21 +2807,14 @@ private struct SmartImportProgressOverlay: View {
     }
 }
 
-private struct AutosaveStatusView: View {
-    let status: EditorSaveStatus
+private struct SaveFailureView: View {
     var onRetry: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            switch status {
-            case .saving:
-                ProgressView().controlSize(.small)
-                Text("Saving")
-            case .failed:
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-                Text("Save failed")
-                Button("Retry", action: onRetry).bold()
-            }
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            Text("Save failed")
+            Button("Retry", action: onRetry).bold()
         }
         .font(.caption.weight(.medium))
         .padding(.horizontal, 12)
@@ -2864,16 +3180,120 @@ private struct TapeVisual: View {
                     .stroke(Color.gray.opacity(0.2), style: StrokeStyle(lineWidth: 1, dash: [4]))
             } else {
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.gray.opacity(0.85), Color.gray.opacity(0.7)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
+                    .fill(Color(hex: TapeStyle.colorHex(for: element)) ?? .gray)
+                    .overlay {
+                        VStack(spacing: 4) {
+                            Image(systemName: "bandage.fill")
+                                .font(.title3)
+                            Text("Tap to reveal")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(TapeStyle.usesDarkForeground(TapeStyle.colorHex(for: element)) ? .black : .white)
+                    }
             }
         }
         .frame(width: element.width, height: element.height)
         .rotationEffect(.degrees(element.rotation))
+    }
+}
+
+private struct TapeSettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let maxLength: Double
+    let onSave: (String, Double, Double) -> String?
+    @State private var colorHex: String
+    @State private var length: Double
+    @State private var height: Double
+    @State private var saveError: String?
+
+    init(element: PageElement, maxLength: Double,
+         onSave: @escaping (String, Double, Double) -> String?) {
+        self.maxLength = max(80, max(maxLength, element.width))
+        self.onSave = onSave
+        _colorHex = State(initialValue: TapeStyle.colorHex(for: element))
+        _length = State(initialValue: element.width)
+        _height = State(initialValue: element.height)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Color") {
+                    ZStack {
+                        Color.white
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color(hex: colorHex) ?? .gray)
+                            .overlay {
+                                Image(systemName: "bandage.fill")
+                                    .foregroundStyle(TapeStyle.usesDarkForeground(colorHex) ? .black : .white)
+                            }
+                            .frame(width: min(length, 300), height: min(height, 44))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 8) {
+                        ForEach(TapeStyle.palette, id: \.self) { hex in
+                            Button {
+                                colorHex = hex
+                            } label: {
+                                Circle()
+                                    .fill(Color(hex: hex) ?? .gray)
+                                    .frame(width: 36, height: 36)
+                                    .overlay(Circle().stroke(colorHex == hex ? Color.accentColor : .clear, lineWidth: 3))
+                                    .frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Tape color \(hex)")
+                            .accessibilityIdentifier("tape-color-\(hex)")
+                            .accessibilityAddTraits(colorHex == hex ? .isSelected : [])
+                        }
+                    }
+                    ColorPicker("Custom Color", selection: Binding(
+                        get: { Color(hex: colorHex) ?? .gray },
+                        set: { colorHex = $0.hexString }
+                    ), supportsOpacity: false)
+                }
+
+                Section("Size") {
+                    VStack(alignment: .leading) {
+                        LabeledContent("Length", value: "\(Int(length)) pt")
+                        Slider(value: $length, in: 40...maxLength, step: 10)
+                            .accessibilityIdentifier("tape-length-slider")
+                    }
+                    VStack(alignment: .leading) {
+                        LabeledContent("Height", value: "\(Int(height)) pt")
+                        Slider(value: $height, in: 20...max(160, height), step: 4)
+                            .accessibilityIdentifier("tape-height-slider")
+                    }
+                }
+            }
+            .navigationTitle("Tape Options")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") {
+                        if let error = onSave(colorHex, length, height) {
+                            saveError = error
+                        } else {
+                            dismiss()
+                        }
+                    }
+                    .bold()
+                }
+            }
+            .alert("Couldn’t Save Tape", isPresented: Binding(
+                get: { saveError != nil },
+                set: { if !$0 { saveError = nil } }
+            )) {
+                Button("OK", role: .cancel) { saveError = nil }
+            } message: {
+                Text(saveError ?? "")
+            }
+        }
     }
 }
 
@@ -2971,27 +3391,31 @@ private struct InkQuestionPrompt: View {
     var onAccept: () -> Void
     var onDismiss: () -> Void
 
-    private static let size = CGSize(width: 168, height: 44)
+    private static let size = CGSize(width: 242, height: 72)
 
     var body: some View {
         HStack(spacing: 0) {
             Button(action: onAccept) {
-                HStack(spacing: 5) {
-                    Image(systemName: "sparkles")
-                    Text("Answer this?")
-                        .font(.system(size: 13, weight: .medium))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(question.text)
+                        .font(.system(size: 12))
+                        .lineLimit(2)
+                        .accessibilityIdentifier("ink-question-recognized-text")
+                    Label("Answer this?", systemImage: "sparkles")
+                        .font(.system(size: 12, weight: .semibold))
                 }
-                .frame(maxWidth: .infinity, minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+                .padding(.leading, 10)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Answer this question")
 
-            Divider().frame(height: 22)
+            Divider().frame(height: 44)
 
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 44, height: 44)
+                    .frame(width: 44, height: 72)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Dismiss question prompt")
@@ -3011,8 +3435,17 @@ private struct InkQuestionPrompt: View {
         let anchor = question.bounds.isNull || question.bounds.isEmpty
             ? CGRect(x: pageSize.width / 2, y: pageSize.height / 3, width: 0, height: 0)
             : question.bounds
+        let rightX = anchor.maxX + 12 + Self.size.width / 2
+        let proposed: CGPoint
+        if rightX + Self.size.width / 2 <= pageSize.width - AnswerPlacement.margin {
+            proposed = CGPoint(x: rightX, y: anchor.midY)
+        } else if anchor.maxY + 12 + Self.size.height <= pageSize.height - AnswerPlacement.margin {
+            proposed = CGPoint(x: anchor.midX, y: anchor.maxY + 12 + Self.size.height / 2)
+        } else {
+            proposed = CGPoint(x: anchor.midX, y: anchor.minY - 12 - Self.size.height / 2)
+        }
         return AnswerPlacement.clampedCentre(
-            CGPoint(x: anchor.maxX + 12 + Self.size.width / 2, y: anchor.midY),
+            proposed,
             size: Self.size,
             pageSize: pageSize
         )
@@ -3026,6 +3459,7 @@ private struct SelectionContextBar: View {
     let canLock: Bool
     let canBringForward: Bool
     let canSendBackward: Bool
+    let canCustomizeTape: Bool
     var onCut: () -> Void
     var onCopy: () -> Void
     var onPaste: () -> Void
@@ -3034,6 +3468,7 @@ private struct SelectionContextBar: View {
     var onLock: () -> Void
     var onBringForward: () -> Void
     var onSendBackward: () -> Void
+    var onCustomizeTape: () -> Void
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -3077,6 +3512,9 @@ private struct SelectionContextBar: View {
 
     private var selectionActions: some View {
         HStack(spacing: 0) {
+            if canCustomizeTape {
+                action("slider.horizontal.3", "Tape Options", onCustomizeTape)
+            }
             action("trash", "Delete", onDelete)
             action("lock", "Lock", onLock).disabled(!canLock)
             action("arrow.up", "Bring Forward", onBringForward).disabled(!canBringForward)
@@ -3128,14 +3566,9 @@ private struct TextEditSheet: View {
     @Bindable var element: PageElement
     var onDone: () -> Void
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var aiSettings: AISettingsStore
-    @EnvironmentObject private var suggestionCoordinator: WritingSuggestionCoordinator
     @StateObject private var editorController = RichTextEditingController()
     @State private var editorAttributedText: NSAttributedString
     @State private var didFinish = false
-    @State private var showingSuggestionReview = false
-    @State private var opensReviewWhenReady = false
-    @State private var undoAttributedText: NSAttributedString?
 
     init(element: PageElement, onDone: @escaping () -> Void) {
         self.element = element
@@ -3154,7 +3587,7 @@ private struct TextEditSheet: View {
                     defaultAttributes: element.defaultTextAttributes,
                     fallbackAlignment: element.alignment,
                     autoFocus: true,
-                    onActivity: handleEditorActivity
+                    onActivity: { _, _, _ in }
                 )
                 .frame(maxHeight: .infinity)
                 .background(Color(.secondarySystemBackground))
@@ -3170,46 +3603,19 @@ private struct TextEditSheet: View {
                 }
             }
             .onAppear {
-                suggestionCoordinator.dismiss()
-                editorController.configure(
-                    defaultAttributes: element.defaultTextAttributes,
-                    fallbackAlignment: element.alignment
-                )
+                // UITextView can finish laying out after this sheet appears.
+                // Refresh formatting state on the next run loop, outside
+                // UIViewRepresentable's make/update cycle.
+                DispatchQueue.main.async {
+                    editorController.configure(
+                        defaultAttributes: element.defaultTextAttributes,
+                        fallbackAlignment: element.alignment
+                    )
+                    editorController.refreshSelectionState()
+                }
             }
             .onDisappear {
-                suggestionCoordinator.dismiss()
                 finish()
-            }
-            .onChange(of: suggestionCoordinator.suggestion) { _, suggestion in
-                if suggestion != nil, opensReviewWhenReady {
-                    showingSuggestionReview = true
-                    opensReviewWhenReady = false
-                }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if suggestionCoordinator.isLoading || suggestionCoordinator.suggestion != nil || undoAttributedText != nil {
-                    Button {
-                        showingSuggestionReview = suggestionCoordinator.suggestion != nil || undoAttributedText != nil
-                    } label: {
-                        if suggestionCoordinator.isLoading {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: suggestionCoordinator.suggestion == nil ? "arrow.uturn.backward" : "sparkles")
-                                .foregroundStyle(.white)
-                        }
-                    }
-                    .frame(width: 38, height: 38)
-                    .background(Color.accentColor, in: Circle())
-                    .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
-                    .padding(16)
-                    .accessibilityLabel(suggestionCoordinator.isLoading ? "Checking writing" : "Review writing suggestion")
-                }
-            }
-            .popover(isPresented: $showingSuggestionReview) {
-                suggestionReview
-                    .frame(idealWidth: 380)
-                    .presentationCompactAdaptation(.sheet)
-                    .presentationDetents([.medium, .large])
             }
         }
     }
@@ -3245,20 +3651,6 @@ private struct TextEditSheet: View {
                     }
                 }
 
-                Divider().frame(height: 24)
-
-                Menu {
-                    ForEach(WritingSuggestionMode.allCases, id: \.self) { mode in
-                        Button(mode.label, systemImage: writingModeIcon(mode)) {
-                            requestSuggestion(mode: mode, automatic: false)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "sparkles")
-                        .frame(width: 30, height: 30)
-                }
-                .accessibilityLabel("Writing actions")
-
                 if element.type == .stickyNote {
                     Divider().frame(height: 24)
                     ForEach(["FFE066", "FF9999", "99FF99", "9999FF", "FF99FF", "FFFFFF"], id: \.self) { hex in
@@ -3292,139 +3684,6 @@ private struct TextEditSheet: View {
                 )
         }
         .buttonStyle(.plain)
-    }
-
-    private var suggestionReview: some View {
-        NavigationStack {
-            ScrollView {
-                if let suggestion = suggestionCoordinator.suggestion {
-                    VStack(alignment: .leading, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Original").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Text(suggestion.originalText)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        Divider()
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Proposed").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Text(suggestion.replacementText)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        if let notice = suggestionCoordinator.notice {
-                            Label(notice, systemImage: "iphone")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(16)
-                }
-            }
-            .navigationTitle(suggestionCoordinator.suggestion?.mode.label ?? "Writing Suggestion")
-            .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .bottom) {
-                VStack(spacing: 8) {
-                    Button("Replace Paragraph", systemImage: "arrow.triangle.2.circlepath") {
-                        applySuggestion(insertBelow: false)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .frame(maxWidth: .infinity)
-                    Button("Insert Below", systemImage: "arrow.down.to.line") {
-                        applySuggestion(insertBelow: true)
-                    }
-                    .buttonStyle(.bordered)
-                    HStack {
-                        Button("Dismiss") {
-                            suggestionCoordinator.dismiss()
-                            showingSuggestionReview = false
-                        }
-                        Spacer()
-                        Button("Undo", systemImage: "arrow.uturn.backward") { undoSuggestion() }
-                            .disabled(undoAttributedText == nil)
-                    }
-                }
-                .padding(12)
-                .background(.bar)
-            }
-        }
-    }
-
-    private func handleEditorActivity(_ text: NSAttributedString, _ selectedRange: NSRange, _ hasMarkedText: Bool) {
-        guard aiSettings.automaticWritingSuggestions, !hasMarkedText else {
-            if hasMarkedText { suggestionCoordinator.dismiss() }
-            return
-        }
-        guard let paragraph = paragraph(in: text, around: selectedRange), paragraph.text.count >= 40 else {
-            suggestionCoordinator.dismiss()
-            return
-        }
-        suggestionCoordinator.request(
-            text: paragraph.text,
-            range: paragraph.range,
-            mode: .improveClarity,
-            automatic: true
-        )
-    }
-
-    private func requestSuggestion(mode: WritingSuggestionMode, automatic: Bool) {
-        let current = editorController.currentAttributedText ?? editorAttributedText
-        guard let paragraph = paragraph(in: current, around: editorController.selectedRange) else { return }
-        opensReviewWhenReady = !automatic
-        suggestionCoordinator.request(
-            text: paragraph.text,
-            range: paragraph.range,
-            mode: mode,
-            automatic: automatic,
-            debounce: automatic ? .seconds(1.5) : .zero
-        )
-    }
-
-    private func paragraph(in text: NSAttributedString, around selectedRange: NSRange) -> (range: NSRange, text: String)? {
-        let string = text.string as NSString
-        guard string.length > 0 else { return nil }
-        let location = min(max(selectedRange.location, 0), string.length - 1)
-        let paragraphRange = string.paragraphRange(for: NSRange(location: location, length: min(selectedRange.length, string.length - location)))
-        let raw = string.substring(with: paragraphRange) as NSString
-        let value = (raw as String).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return nil }
-        let contentRange = raw.range(of: value)
-        let range = NSRange(location: paragraphRange.location + contentRange.location, length: contentRange.length)
-        return (range, value)
-    }
-
-    private func applySuggestion(insertBelow: Bool) {
-        guard let suggestion = suggestionCoordinator.suggestion else { return }
-        let current = editorController.currentAttributedText ?? editorAttributedText
-        undoAttributedText = current
-        if insertBelow {
-            let mutable = NSMutableAttributedString(attributedString: current)
-            let insertionLocation = min(NSMaxRange(suggestion.sourceRange), mutable.length)
-            let attributes = mutable.length > 0
-                ? mutable.attributes(at: min(max(0, insertionLocation - 1), mutable.length - 1), effectiveRange: nil)
-                : element.defaultTextAttributes
-            mutable.insert(NSAttributedString(string: "\n\(suggestion.replacementText)", attributes: attributes), at: insertionLocation)
-            editorAttributedText = mutable
-        } else {
-            editorAttributedText = WritingSuggestionCoordinator.replacingText(in: current, with: suggestion)
-        }
-        suggestionCoordinator.dismiss()
-        showingSuggestionReview = false
-    }
-
-    private func undoSuggestion() {
-        guard let undoAttributedText else { return }
-        editorAttributedText = undoAttributedText
-        self.undoAttributedText = nil
-        showingSuggestionReview = false
-    }
-
-    private func writingModeIcon(_ mode: WritingSuggestionMode) -> String {
-        switch mode {
-        case .improveClarity: return "text.badge.checkmark"
-        case .makeConcise: return "text.redaction"
-        case .explain: return "lightbulb"
-        case .outline: return "list.bullet.indent"
-        case .continueWriting: return "text.append"
-        }
     }
 
     private func finish() {
@@ -3503,11 +3762,11 @@ private final class RichTextEditingController: ObservableObject {
     }
 
     func attach(_ textView: UITextView) {
+        guard self.textView !== textView else { return }
         self.textView = textView
         if textView.typingAttributes.isEmpty {
             textView.typingAttributes = defaultAttributes
         }
-        refreshSelectionState(from: textView)
     }
 
     func refreshSelectionState(from textView: UITextView? = nil) {
@@ -3750,7 +4009,6 @@ private struct RichTextEditorView: UIViewRepresentable {
         textView.textContainer.lineFragmentPadding = 0
         textView.attributedText = attributedText
         textView.typingAttributes = defaultAttributes
-        controller.configure(defaultAttributes: defaultAttributes, fallbackAlignment: fallbackAlignment)
         controller.attach(textView)
         installControllerCallback(context.coordinator)
         focusIfNeeded(textView, coordinator: context.coordinator)
@@ -3759,14 +4017,12 @@ private struct RichTextEditorView: UIViewRepresentable {
 
     func updateUIView(_ uiView: UITextView, context: Context) {
         context.coordinator.parent = self
-        controller.configure(defaultAttributes: defaultAttributes, fallbackAlignment: fallbackAlignment)
         controller.attach(uiView)
         installControllerCallback(context.coordinator)
-        if !uiView.attributedText.isEqual(attributedText) {
-            let selected = uiView.selectedRange
-            uiView.attributedText = attributedText
-            uiView.selectedRange = clampedRange(selected, length: attributedText.length)
-        }
+        // UITextView owns the live edit. Echoing the SwiftUI binding back into
+        // it during a render replaces its text storage while the keyboard is
+        // typing, which resets or moves the insertion point (especially with
+        // marked text). This binding is only a snapshot for saving the sheet.
         focusIfNeeded(uiView, coordinator: context.coordinator)
     }
 
@@ -3785,12 +4041,6 @@ private struct RichTextEditorView: UIViewRepresentable {
         }
     }
 
-    private func clampedRange(_ range: NSRange, length: Int) -> NSRange {
-        let location = min(max(range.location, 0), length)
-        let availableLength = max(0, length - location)
-        return NSRange(location: location, length: min(max(range.length, 0), availableLength))
-    }
-
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: RichTextEditorView
         var didFocus = false
@@ -3800,17 +4050,22 @@ private struct RichTextEditorView: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            parent.attributedText = textView.attributedText ?? NSAttributedString()
-            parent.controller.refreshSelectionState(from: textView)
-            parent.onActivity(
-                textView.attributedText ?? NSAttributedString(),
-                textView.selectedRange,
-                textView.markedTextRange != nil
-            )
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                let text = textView.attributedText ?? NSAttributedString()
+                let selection = textView.selectedRange
+                let isComposing = textView.markedTextRange != nil
+                self.parent.attributedText = text
+                self.parent.controller.refreshSelectionState(from: textView)
+                self.parent.onActivity(text, selection, isComposing)
+            }
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
-            parent.controller.refreshSelectionState(from: textView)
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                self.parent.controller.refreshSelectionState(from: textView)
+            }
         }
 
         func applyControllerChange(_ attributedText: NSAttributedString) {
@@ -3834,6 +4089,17 @@ struct PageStyleSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Orientation") {
+                    Picker("Orientation", selection: Binding(
+                        get: { page.pageOrientation },
+                        set: { page.orientation = $0.rawValue }
+                    )) {
+                        ForEach(PageOrientation.allCases, id: \.self) { orientation in
+                            Label(orientation.label, systemImage: orientation.icon).tag(orientation)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
                 Section("Background Color") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 12) {
                         ForEach(bgColors, id: \.self) { hex in
@@ -3876,28 +4142,24 @@ struct PageStyleSheet: View {
                             set: { page.lineStyle = $0.rawValue }
                         ),
                         backgroundHex: page.backgroundHex,
-                        orientation: page.pageOrientation
+                        orientation: page.pageOrientation,
+                        lineThickness: page.effectiveLineThickness,
+                        lineOpacity: page.effectiveLineOpacity
                     )
+                }
+                Section("Line Appearance") {
+                    LineAppearanceControls(thickness: $page.lineThickness, opacity: $page.lineOpacity)
                 }
                 if let notebook = page.notebook {
                     Section("Notebook Default") {
                         Button("Use \(page.lines.label) as notebook default", systemImage: "bookmark") {
                             notebook.defaultLineStyle = page.lineStyle
+                            notebook.defaultLineThickness = page.effectiveLineThickness
+                            notebook.defaultLineOpacity = page.effectiveLineOpacity
                             notebook.defaultBackgroundHex = page.backgroundHex
                             notebook.defaultOrientation = page.orientation
                         }
                     }
-                }
-                Section("Orientation") {
-                    Picker("Orientation", selection: Binding(
-                        get: { page.pageOrientation },
-                        set: { page.orientation = $0.rawValue }
-                    )) {
-                        ForEach(PageOrientation.allCases, id: \.self) { o in
-                            Label(o.label, systemImage: o.icon).tag(o)
-                        }
-                    }
-                    .pickerStyle(.segmented)
                 }
             }
             .navigationTitle("Page Style")
@@ -4015,10 +4277,27 @@ struct AIProviderSettingsSheet: View {
                     .disabled(isTestingConnection)
                 }
 
+                if service.isRemoteConfigured {
+                    Section {
+                        Toggle(isOn: Binding(
+                            get: { service.sendsPageImages },
+                            set: { service.setSendsPageImages($0) }
+                        )) {
+                            Label("Send Page Images (Vision)", systemImage: "photo")
+                        }
+                    } footer: {
+                        Text("Only for models that accept image input (e.g. GPT-4o, Claude 3+, Gemini). Increases request size and cost.")
+                    }
+                }
+
                 Section {
                     Label(
-                        service.isRemoteConfigured ? "Remote AI enabled" : "On-device assistance enabled",
-                        systemImage: service.isRemoteConfigured ? "checkmark.shield" : "iphone"
+                        service.isRemoteConfigured
+                            ? "Remote AI enabled"
+                            : (OnDeviceModelService.isAvailable ? "On-device assistance enabled" : "No AI provider configured"),
+                        systemImage: service.isRemoteConfigured
+                            ? "checkmark.shield"
+                            : (OnDeviceModelService.isAvailable ? "iphone" : "exclamationmark.triangle")
                     )
                     if let errorMessage {
                         Text(errorMessage).foregroundStyle(.red)
@@ -4027,7 +4306,7 @@ struct AIProviderSettingsSheet: View {
                         Text(connectionStatus).foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("Only passages selected for an explicit assistant or search request are sent. Automatic suggestions send only the active paragraph after you opt in. The key is stored in this device's Keychain.")
+                    Text("Only passages selected for an explicit assistant or search request are sent (plus page images, when Send Page Images is on). The key is stored in this device's Keychain.")
                 }
 
                 if service.isRemoteConfigured {
@@ -4052,8 +4331,33 @@ struct AIProviderSettingsSheet: View {
             .onAppear {
                 baseURL = service.configuredBaseURL
                 model = service.configuredModel
+                prefillFromLocalDevConfigIfNeeded()
             }
         }
+    }
+
+    /// Fills empty fields from `Local.xcconfig`-provided Info.plist values
+    /// (see `Config/Dev.xcconfig`), so testing on a fresh install doesn't
+    /// require retyping a real API key. Never overwrites an already-saved
+    /// provider, and never auto-saves -- Kenny still taps "Save" once.
+    private func prefillFromLocalDevConfigIfNeeded() {
+        #if DEBUG
+        guard !service.isRemoteConfigured else { return }
+        func infoValue(_ key: String) -> String? {
+            guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+                  !value.isEmpty else { return nil }
+            return value
+        }
+        if baseURL.isEmpty, let devBaseURL = infoValue("BNDevBaseURL") {
+            baseURL = devBaseURL
+        }
+        if model.isEmpty, let devModel = infoValue("BNDevModel") {
+            model = devModel
+        }
+        if apiKey.isEmpty, let devAPIKey = infoValue("BNDevAPIKey") {
+            apiKey = devAPIKey
+        }
+        #endif
     }
 
     private func save() {
@@ -4098,4 +4402,3 @@ struct AIProviderSettingsSheet: View {
         }
     }
 }
-

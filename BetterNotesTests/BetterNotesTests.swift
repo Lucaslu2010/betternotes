@@ -6,6 +6,45 @@ import UIKit
 
 @MainActor
 final class BetterNotesTests: XCTestCase {
+    func testNestedFolderPathsKeepParentsAndDescendantsDistinct() {
+        XCTAssertEqual(LibraryFolderPath.normalized("  School / Math / Algebra  "), "School/Math/Algebra")
+        XCTAssertEqual(LibraryFolderPath.ancestors(of: "School/Math/Algebra"),
+                       ["School", "School/Math", "School/Math/Algebra"])
+        XCTAssertTrue(LibraryFolderPath.contains("School/Math/Algebra", in: "School"))
+        XCTAssertFalse(LibraryFolderPath.contains("Schoolhouse/Math", in: "School"))
+        XCTAssertEqual(LibraryFolderPath.replacing("School/Math/Algebra", folder: "School", with: "Classes"),
+                       "Classes/Math/Algebra")
+        XCTAssertEqual(LibraryFolderPath.replacing("School/Math/Algebra", folder: "School/Math", with: "School"),
+                       "School/Algebra")
+    }
+
+    func testSavedNearbyActivityFollowsSelectedLanguage() {
+        let defaults = UserDefaults.standard
+        let original = defaults.string(forKey: AppPreferenceKey.language)
+        defer {
+            if let original {
+                defaults.set(original, forKey: AppPreferenceKey.language)
+            } else {
+                defaults.removeObject(forKey: AppPreferenceKey.language)
+            }
+        }
+
+        let status = "Synced with iPad at Sep 24, 2026 at 22:11 · 0 new, 1 updated, 0 conflict copies"
+        defaults.set(AppLanguage.simplifiedChinese.rawValue, forKey: AppPreferenceKey.language)
+        let simplified = AppLocalization.nearbyStatus(status)
+        XCTAssertTrue(simplified.contains("已与 iPad 同步"))
+        XCTAssertTrue(simplified.contains("更新 1 本"))
+        XCTAssertTrue(simplified.contains("冲突副本 0 本"))
+
+        defaults.set(AppLanguage.traditionalChinese.rawValue, forKey: AppPreferenceKey.language)
+        let traditional = AppLocalization.nearbyStatus(status)
+        XCTAssertTrue(traditional.contains("已與 iPad 同步"))
+        XCTAssertTrue(traditional.contains("衝突副本 0 本"))
+
+        defaults.set(AppLanguage.english.rawValue, forKey: AppPreferenceKey.language)
+        XCTAssertEqual(AppLocalization.nearbyStatus(status), status)
+    }
+
     func testEditorActionStateKeepsNavigationAndPresentationTogether() {
         let state = EditorActionState(currentPageIndex: 2)
 
@@ -75,33 +114,6 @@ final class BetterNotesTests: XCTestCase {
         XCTAssertEqual(snapshot?.ink, originalInk)
         XCTAssertEqual(snapshot?.elements.first?.text, "Before")
         XCTAssertTrue(history.canRedo)
-    }
-
-    func testLocalAIFallbacksProduceUsefulOutput() {
-        let notes = """
-        The project deadline is Friday because the client review is Monday.
-        We need to send the revised draft before the deadline.
-        Photosynthesis converts light energy into chemical energy.
-        """
-
-        let summary = AIService.localSummary(notes)
-        let actions = AIService.localActionItems(notes)
-        let answer = AIService.localAnswer(question: "When is the deadline?", context: notes)
-        let quiz = AIService.localQuiz(notes)
-
-        XCTAssertTrue(summary.contains("deadline"))
-        XCTAssertTrue(actions.contains("[ ]"))
-        XCTAssertTrue(answer.localizedCaseInsensitiveContains("Friday"))
-        XCTAssertTrue(quiz.contains("Q1:"))
-    }
-
-    func testLocalAIFallbackDoesNotInventAnAnswer() {
-        let answer = AIService.localAnswer(
-            question: "What is the room number?",
-            context: "The meeting starts at nine in the morning."
-        )
-
-        XCTAssertTrue(answer.localizedCaseInsensitiveContains("could not find"))
     }
 
     func testSelectionTransformUsesIndependentAxesAndRecoversInsidePage() {
@@ -610,39 +622,41 @@ final class BetterNotesTests: XCTestCase {
             systemInstructions: "Answer only from evidence.",
             conversationMessages: [AIConversationMessage(role: .user, content: "What does this say?")],
             retrievedSources: [chunk],
+            imageAttachments: [],
             outputLimit: 100,
             featureOrigin: .assistant
         )
 
         let messages = AIClient.providerMessages(for: request)
 
-        XCTAssertEqual(messages.first?["role"], "system")
-        XCTAssertTrue(messages[1]["content"]?.contains("untrusted note content") == true)
-        XCTAssertTrue(messages[1]["content"]?.contains("<untrusted_note>") == true)
-        XCTAssertEqual(messages.last?["role"], "user")
+        XCTAssertEqual(messages.first?["role"] as? String, "system")
+        let contextContent = messages[1]["content"] as? String
+        XCTAssertTrue(contextContent?.contains("untrusted note content") == true)
+        XCTAssertTrue(contextContent?.contains("<untrusted_note>") == true)
+        XCTAssertEqual(messages.last?["role"] as? String, "user")
+        XCTAssertTrue(messages.last?["content"] is String, "no images were attached, so content should stay a plain string")
     }
 
-    func testWritingReplacementPreservesRichTextAttributes() {
-        let font = UIFont.systemFont(ofSize: 21, weight: .bold)
-        let source = NSAttributedString(
-            string: "Original paragraph",
-            attributes: [.font: font, .foregroundColor: UIColor.systemRed]
-        )
-        let suggestion = WritingSuggestion(
-            id: UUID(),
-            sourceRange: NSRange(location: 0, length: source.length),
-            originalText: source.string,
-            replacementText: "Clear revision",
-            mode: .improveClarity,
-            requestRevision: 1
+    func testProviderMessagesAttachImagesAsMultiPartContent() {
+        let request = AIRequest(
+            systemInstructions: "Answer only from evidence.",
+            conversationMessages: [AIConversationMessage(role: .user, content: "What is on this page?")],
+            retrievedSources: [],
+            imageAttachments: [AIImageAttachment(pageID: UUID(), label: "Page image for [S1]", jpegData: Data([0xFF, 0xD8]))],
+            outputLimit: 100,
+            featureOrigin: .assistant
         )
 
-        let result = WritingSuggestionCoordinator.replacingText(in: source, with: suggestion)
-        let attributes = result.attributes(at: 0, effectiveRange: nil)
+        let messages = AIClient.providerMessages(for: request)
 
-        XCTAssertEqual(result.string, "Clear revision")
-        XCTAssertEqual((attributes[.font] as? UIFont)?.pointSize, 21)
-        XCTAssertEqual(attributes[.foregroundColor] as? UIColor, UIColor.systemRed)
+        guard let parts = messages.last?["content"] as? [[String: Any]] else {
+            return XCTFail("expected the last message's content to be a multi-part array when images are attached")
+        }
+        XCTAssertTrue(parts.contains { $0["type"] as? String == "text" && $0["text"] as? String == "What is on this page?" })
+        XCTAssertTrue(parts.contains { $0["type"] as? String == "image_url" })
+        let imagePart = parts.first { $0["type"] as? String == "image_url" }
+        let imageURL = (imagePart?["image_url"] as? [String: String])?["url"]
+        XCTAssertTrue(imageURL?.hasPrefix("data:image/jpeg;base64,") == true)
     }
 
     func testAssistantThreadsPersistAndCascadeMessages() throws {
@@ -678,7 +692,7 @@ final class BetterNotesTests: XCTestCase {
         let archiveData = try CloudTranslator.archiveData(for: notebook)
         let archive = try XCTUnwrap(JSONSerialization.jsonObject(with: archiveData) as? [String: Any])
 
-        XCTAssertEqual(archive["version"] as? Int, 2)
+        XCTAssertEqual(archive["version"] as? Int, 3)
         XCTAssertEqual(archive["stableID"] as? String, notebook.stableID.uuidString)
         XCTAssertEqual((archive["blocks"] as? [[String: Any]])?.first?["stableID"] as? String, page.stableID.uuidString)
 
@@ -816,6 +830,74 @@ final class BetterNotesTests: XCTestCase {
         ])
     }
 
+    func testAIClientUsesReasoningBudgetForGPT6() async throws {
+        let client = makeMockAIClient(stubs: [
+            .init(statusCode: 200, body: #"{"choices":[{"message":{"content":"OK"}}]}"#)
+        ])
+        let configuration = AIProviderConfiguration(
+            apiKey: "test-key", baseURL: "https://example.com/v1",
+            model: "gpt-6-astra", sendsPageImages: false
+        )
+
+        _ = try await client.complete(aiProviderRequest(), configuration: configuration)
+
+        let recorded = try XCTUnwrap(MockAIURLProtocol.recordedRequests().first)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(recorded.httpBody)) as? [String: Any])
+        XCTAssertEqual(json["max_completion_tokens"] as? Int, 4_096)
+        XCTAssertEqual(json["reasoning_effort"] as? String, "low")
+        XCTAssertNil(json["max_tokens"])
+        XCTAssertNil(json["temperature"])
+    }
+
+    func testAIClientExplainsReasoningBudgetExhaustion() async {
+        let body = """
+        data: {"choices":[{"delta":{"content":null},"finish_reason":"length"}]}
+
+        data: [DONE]
+
+        """
+        let client = makeMockAIClient(stubs: [.init(statusCode: 200, body: body)])
+
+        do {
+            for try await _ in client.stream(aiProviderRequest(), configuration: providerConfiguration) {}
+            XCTFail("Expected output limit failure")
+        } catch let error as AIClientError {
+            guard case .outputLimitReached = error else { return XCTFail("Unexpected error: \(error)") }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testAIClientReadsNonStreamingReplyInStreamEnvelope() async throws {
+        let body = """
+        data: {"choices":[{"message":{"content":"Recovered"},"finish_reason":"stop"}]}
+
+        data: [DONE]
+
+        """
+        let client = makeMockAIClient(stubs: [.init(statusCode: 200, body: body)])
+        var events: [AIStreamEvent] = []
+
+        for try await event in client.stream(aiProviderRequest(), configuration: providerConfiguration) {
+            events.append(event)
+        }
+
+        XCTAssertEqual(events, [.responseDelta("Recovered"), .completed("Recovered")])
+    }
+
+    func testAIClientReadsJSONWhenGatewayIgnoresStreaming() async throws {
+        let client = makeMockAIClient(stubs: [
+            .init(statusCode: 200, body: #"{"choices":[{"message":{"content":"Plain JSON"},"finish_reason":"stop"}]}"#)
+        ])
+        var events: [AIStreamEvent] = []
+
+        for try await event in client.stream(aiProviderRequest(), configuration: providerConfiguration) {
+            events.append(event)
+        }
+
+        XCTAssertEqual(events, [.responseDelta("Plain JSON"), .completed("Plain JSON")])
+    }
+
     func testAIClientMapsOfflineTimeoutAndCancellation() async {
         let offlineClient = makeMockAIClient(stubs: [.init(error: URLError(.notConnectedToInternet))])
         do {
@@ -856,7 +938,7 @@ final class BetterNotesTests: XCTestCase {
     }
 
     private var providerConfiguration: AIProviderConfiguration {
-        AIProviderConfiguration(apiKey: "test-key", baseURL: "https://example.com/v1", model: "test-model")
+        AIProviderConfiguration(apiKey: "test-key", baseURL: "https://example.com/v1", model: "test-model", sendsPageImages: false)
     }
 
     private func aiProviderRequest() -> AIRequest {
@@ -864,6 +946,7 @@ final class BetterNotesTests: XCTestCase {
             systemInstructions: "Answer briefly.",
             conversationMessages: [AIConversationMessage(role: .user, content: "Question")],
             retrievedSources: [],
+            imageAttachments: [],
             outputLimit: 64,
             featureOrigin: .assistant
         )
