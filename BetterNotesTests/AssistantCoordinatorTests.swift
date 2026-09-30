@@ -1,3 +1,4 @@
+import SwiftData
 import XCTest
 @testable import BetterNotes
 
@@ -406,5 +407,34 @@ final class AssistantCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.currentCitations.isEmpty)
         XCTAssertNil(coordinator.notice)
         XCTAssertNil(coordinator.errorMessage)
+    }
+
+    // MARK: - Assistant history
+
+    func testDeleteAllRemovesThreadsAndMessagesButLeavesNotes() throws {
+        let schema = Schema([Notebook.self, Page.self, PageElement.self, AssistantThread.self, AssistantMessage.self])
+        let container = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
+        )
+        let context = ModelContext(container)
+
+        let notebook = Notebook(title: "Keep me")
+        context.insert(notebook)
+        for name in ["one", "two"] {
+            let thread = AssistantThread(title: name)
+            context.insert(thread)
+            let message = AssistantMessage(role: .user, content: "quoted excerpt \(name)")
+            message.thread = thread
+            thread.messages.append(message)
+        }
+        try context.save()
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<AssistantThread>()), 2)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<AssistantMessage>()), 2)
+
+        try AssistantThread.deleteAll(in: context)
+
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<AssistantThread>()), 0)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<AssistantMessage>()), 0, "messages outlived their threads")
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Notebook>()), 1)
     }
 }

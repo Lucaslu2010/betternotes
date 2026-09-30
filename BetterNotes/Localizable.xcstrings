@@ -7960,6 +7960,86 @@
           }
         }
       }
+    },
+    "When you use AI, BetterNotes sends your question and excerpts of the notes it searched to the AI provider you set up. Ink questions also send the page's recognized text, and page images are sent only if you turn on Send Page Images. Nothing goes to BetterNotes; your provider's privacy policy applies.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 AI 时，BetterNotes 会把你的问题和检索到的笔记摘录发送给你设置的 AI 服务商。墨迹提问还会发送该页面识别出的文字；只有在你开启“发送页面图像”后才会发送页面图像。不会向 BetterNotes 发送任何内容，适用你的服务商的隐私政策。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用 AI 時，BetterNotes 會把你的問題和檢索到的筆記摘錄傳送給你設定的 AI 服務商。墨跡提問還會傳送該頁面辨識出的文字；只有在你開啟「傳送頁面影像」後才會傳送頁面影像。不會向 BetterNotes 傳送任何內容，適用你的服務商的隱私權政策。"
+          }
+        }
+      }
+    },
+    "Delete Assistant History": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除助手历史记录"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "刪除助理歷史記錄"
+          }
+        }
+      }
+    },
+    "Delete all Assistant conversations?": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要删除所有助手对话吗？"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "要刪除所有助理對話嗎？"
+          }
+        }
+      }
+    },
+    "This permanently deletes every Assistant conversation on this iPad, including the note excerpts they quote. Your notes are not changed.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这会永久删除此 iPad 上的所有助手对话，包括其中引用的笔记摘录。你的笔记不会改变。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "這會永久刪除此 iPad 上的所有助理對話，包括其中引用的筆記摘錄。你的筆記不會改變。"
+          }
+        }
+      }
+    },
+    "Privacy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隐私"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隱私權"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

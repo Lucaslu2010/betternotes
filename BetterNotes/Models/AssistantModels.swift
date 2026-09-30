@@ -33,6 +33,16 @@ final class AssistantThread {
     var orderedMessages: [AssistantMessage] {
         messages.sorted { $0.createdAt < $1.createdAt }
     }
+
+    /// Erases every conversation, and through the cascade rule every message
+    /// (and the note excerpts they quote). Page answer cards are page
+    /// elements, not threads, so notes are untouched.
+    static func deleteAll(in context: ModelContext) throws {
+        for thread in try context.fetch(FetchDescriptor<AssistantThread>()) {
+            context.delete(thread)
+        }
+        try context.save()
+    }
 }
 
 @Model

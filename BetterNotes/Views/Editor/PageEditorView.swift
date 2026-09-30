@@ -4327,33 +4327,8 @@ struct AIProviderSettingsSheet: View {
             .onAppear {
                 baseURL = service.configuredBaseURL
                 model = service.configuredModel
-                prefillFromLocalDevConfigIfNeeded()
             }
         }
-    }
-
-    /// Fills empty fields from `Local.xcconfig`-provided Info.plist values
-    /// (see `Config/Dev.xcconfig`), so testing on a fresh install doesn't
-    /// require retyping a real API key. Never overwrites an already-saved
-    /// provider, and never auto-saves -- Kenny still taps "Save" once.
-    private func prefillFromLocalDevConfigIfNeeded() {
-        #if DEBUG
-        guard !service.isRemoteConfigured else { return }
-        func infoValue(_ key: String) -> String? {
-            guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,
-                  !value.isEmpty else { return nil }
-            return value
-        }
-        if baseURL.isEmpty, let devBaseURL = infoValue("BNDevBaseURL") {
-            baseURL = devBaseURL
-        }
-        if model.isEmpty, let devModel = infoValue("BNDevModel") {
-            model = devModel
-        }
-        if apiKey.isEmpty, let devAPIKey = infoValue("BNDevAPIKey") {
-            apiKey = devAPIKey
-        }
-        #endif
     }
 
     private func save() {

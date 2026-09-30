@@ -73,6 +73,7 @@
 		CCF3DD11BDEDBC5543514143 /* ElementLayerOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 643FF339D6F3269076E50A47 /* ElementLayerOrderTests.swift */; };
 		CF695A9D56F0880E592647F8 /* CoverCustomizationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56368ED9EA30DB68183F25B5 /* CoverCustomizationSheet.swift */; };
 		D0AC178F35CFE7CFB53F8D88 /* HandwritingOCRTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72F55E1B438E6BACD4468156 /* HandwritingOCRTests.swift */; };
+		D0E928BD0AA3EE9D630B93F6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C32F92FDC0BDC9B4656A7455 /* PrivacyInfo.xcprivacy */; };
 		D1B33FBA368782042E9EA46B /* UITestingAIStub.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBDCB322180D889440D7F01F /* UITestingAIStub.swift */; };
 		D31343C2C59985766CB3C94D /* MacLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99F7BFA05085A1C6079AF31D /* MacLibraryView.swift */; };
 		D4134A0F842788FE2A6F41F5 /* InkQuestionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E9FEE2D912FAA612B6D332A /* InkQuestionTests.swift */; };
@@ -122,7 +123,6 @@
 		01AF38A79B5366DCACF56ACD /* SelectionDragTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionDragTests.swift; sourceTree = "<group>"; };
 		0C360D63E1308ED129819F87 /* CloudTranslator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudTranslator.swift; sourceTree = "<group>"; };
 		0E4DDA00C3E975F5E0D7E6F5 /* PaperCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperCanvas.swift; sourceTree = "<group>"; };
-		11EF87330F23AA0971F9F891 /* Dev.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Dev.xcconfig; sourceTree = "<group>"; };
 		133EFA490882782DF2154975 /* BetterNotesUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BetterNotesUITests.swift; sourceTree = "<group>"; };
 		14FF4F5AE01163C9843A79C5 /* MacPageEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacPageEditor.swift; sourceTree = "<group>"; };
 		1867CF35EE8B173CCDFC863A /* InterruptedAnswerRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InterruptedAnswerRecovery.swift; sourceTree = "<group>"; };
@@ -185,6 +185,7 @@
 		BF03EEC0715CC804E4BDE771 /* BetterNotesUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BetterNotesUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BFF8A603D6FB89AB4A4F2CB3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C123572A38F6C31E4880C86C /* EditorToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorToolbar.swift; sourceTree = "<group>"; };
+		C32F92FDC0BDC9B4656A7455 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C45F8AFD04B897523D202E60 /* AssistantCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantCoordinator.swift; sourceTree = "<group>"; };
 		C830D7073F7B9C3BFCCA1BDB /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		CE41783670623346F60EA9ED /* AIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIService.swift; sourceTree = "<group>"; };
@@ -221,6 +222,7 @@
 				99F7BFA05085A1C6079AF31D /* MacLibraryView.swift */,
 				14FF4F5AE01163C9843A79C5 /* MacPageEditor.swift */,
 				B4B5D6AD6D5CD94146B28D95 /* MacPageSnapshot.swift */,
+				C32F92FDC0BDC9B4656A7455 /* PrivacyInfo.xcprivacy */,
 			);
 			path = BetterNotesMac;
 			sourceTree = "<group>";
@@ -248,7 +250,6 @@
 				FFC73892DB3EED9585932563 /* Localizable.xcstrings */,
 				5DD98C9407E250E3325D54ED /* PrivacyInfo.xcprivacy */,
 				23C730BE34BB577E4E3F86D7 /* App */,
-				8966476DF525AAD65E95180E /* Config */,
 				3377BC71B89CDB1003A06CBF /* Models */,
 				C4311FE5D5CBAFC25A0CD2F9 /* Services */,
 				2292D8B5BE42CD2A1F8DA2C8 /* Views */,
@@ -328,15 +329,6 @@
 			path = Support;
 			sourceTree = "<group>";
 		};
-		8966476DF525AAD65E95180E /* Config */ = {
-			isa = PBXGroup;
-			children = (
-				11EF87330F23AA0971F9F891 /* Dev.xcconfig */,
-			);
-			name = Config;
-			path = BetterNotes/Config;
-			sourceTree = "<group>";
-		};
 		8AB23C427A94CE1342FF4739 = {
 			isa = PBXGroup;
 			children = (
@@ -345,7 +337,6 @@
 				11F0832FA72AEC9E96F58FAB /* BetterNotesMacTests */,
 				6011C17F1DF8449217F14C4A /* BetterNotesTests */,
 				AD6F374EA24DBDC3DEACD5CE /* BetterNotesUITests */,
-				8966476DF525AAD65E95180E /* Config */,
 				C47EFD0CEBC08ABA7DA4CF9C /* Products */,
 			);
 			sourceTree = "<group>";
@@ -500,6 +491,7 @@
 			buildConfigurationList = C514C4444BC6F2A3F6E5D966 /* Build configuration list for PBXNativeTarget "BetterNotesMac" */;
 			buildPhases = (
 				B9303A6EA22055A9BB6EDC36 /* Sources */,
+				6610635F44F70775D2648C05 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -575,6 +567,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				287BB88399A7DCEA55B6BBC0 /* legacy-v1.store in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6610635F44F70775D2648C05 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D0E928BD0AA3EE9D630B93F6 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -784,7 +784,6 @@
 		};
 		392BCAFEF586DBF3E1B84B0D /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 11EF87330F23AA0971F9F891 /* Dev.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -833,7 +832,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -846,7 +845,6 @@
 		};
 		3CB49502DD4E7E196BCED664 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 11EF87330F23AA0971F9F891 /* Dev.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -901,7 +899,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -959,9 +957,6 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = BetterNotes/Info.plist;
-				INFOPLIST_KEY_BNDevAPIKey = "$(BN_DEV_API_KEY)";
-				INFOPLIST_KEY_BNDevBaseURL = "$(BN_DEV_BASE_URL)";
-				INFOPLIST_KEY_BNDevModel = "$(BN_DEV_MODEL)";
 				INFOPLIST_KEY_NSCameraUsageDescription = "BetterNotes uses the camera when you choose to scan a document into a note.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "BetterNotes uses the microphone to record audio memos in your notes.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "BetterNotes needs access to your photo library to insert images into notes.";
@@ -1040,9 +1035,6 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				INFOPLIST_FILE = BetterNotes/Info.plist;
-				INFOPLIST_KEY_BNDevAPIKey = "$(BN_DEV_API_KEY)";
-				INFOPLIST_KEY_BNDevBaseURL = "$(BN_DEV_BASE_URL)";
-				INFOPLIST_KEY_BNDevModel = "$(BN_DEV_MODEL)";
 				INFOPLIST_KEY_NSCameraUsageDescription = "BetterNotes uses the camera when you choose to scan a document into a note.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "BetterNotes uses the microphone to record audio memos in your notes.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "BetterNotes needs access to your photo library to insert images into notes.";

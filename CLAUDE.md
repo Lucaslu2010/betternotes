@@ -26,9 +26,10 @@ by hand.
 
 The Mac target shares model, archive, corpus, and AI source files with iOS;
 keep these platform-neutral. The three to-many SwiftData relationships have
-optional persisted backing properties with computed array facades because
-The previous CloudKit model required optional relationships. Keep their `originalName` mappings
-when changing the model: the legacy-store migration tests exercise old notes.
+optional persisted backing properties with computed array facades, because
+the previous CloudKit model required optional relationships. Keep their
+`originalName` mappings when changing the model: the legacy-store migration
+tests exercise old notes.
 
 Use **XcodeGen**, not the old `generate_project.py`, which was removed on
 2 Sep 2026. That script only ever emitted the app target: running it dropped

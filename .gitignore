@@ -2,9 +2,6 @@
 # Removed 24 Aug 2026 — the app is BYOK and reads its key from the
 # Keychain. Rule kept so a stray copy can never be committed.
 BetterNotes/Config/secrets.json
-# Local-only dev prefill for AI Provider Settings (base URL/model/API key).
-# Never commit real credentials here — see project.yml's optional include.
-Local.xcconfig
 *.xcuserstate
 DerivedData/
 .build/

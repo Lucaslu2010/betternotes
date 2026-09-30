@@ -2209,8 +2209,11 @@ struct BetterNotesSettingsSheet: View {
     @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = false
     @EnvironmentObject private var ai: AIService
     @EnvironmentObject private var aiSettings: AISettingsStore
+    @Environment(\.modelContext) private var context
     @State private var showingAIProviderSettings = false
     @State private var showingNearbySync = false
+    @State private var confirmingAssistantHistoryDeletion = false
+    @State private var assistantHistoryError: String?
     @State private var selectedPage: SettingsPage? = .language
     @AppStorage(AppPreferenceKey.assistantEnabled) private var assistantEnabled = true
     @AppStorage(AppPreferenceKey.searchAnswersEnabled) private var searchAnswersEnabled = true
@@ -2317,6 +2320,29 @@ struct BetterNotesSettingsSheet: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                Section("Privacy") {
+                    Text("When you use AI, BetterNotes sends your question and excerpts of the notes it searched to the AI provider you set up. Ink questions also send the page's recognized text, and page images are sent only if you turn on Send Page Images. Nothing goes to BetterNotes; your provider's privacy policy applies.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Delete Assistant History", systemImage: "trash", role: .destructive) {
+                        confirmingAssistantHistoryDeletion = true
+                    }
+                    .accessibilityIdentifier("delete-assistant-history")
+                    if let assistantHistoryError {
+                        Text(assistantHistoryError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+                .confirmationDialog(
+                    "Delete all Assistant conversations?",
+                    isPresented: $confirmingAssistantHistoryDeletion,
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete Assistant History", role: .destructive) { deleteAssistantHistory() }
+                } message: {
+                    Text("This permanently deletes every Assistant conversation on this iPad, including the note excerpts they quote. Your notes are not changed.")
+                }
             case .about:
                 Section("About") {
                     LabeledContent("Version", value: appVersion)
@@ -2325,6 +2351,16 @@ struct BetterNotesSettingsSheet: View {
             }
         }
         .accessibilityIdentifier("settings-detail-\((selectedPage ?? .language).rawValue)")
+    }
+
+    private func deleteAssistantHistory() {
+        do {
+            try AssistantThread.deleteAll(in: context)
+            assistantHistoryError = nil
+        } catch {
+            context.rollback()
+            assistantHistoryError = error.localizedDescription
+        }
     }
 
     private var appVersion: String {
