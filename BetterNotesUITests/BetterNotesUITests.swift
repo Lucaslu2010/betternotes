@@ -814,7 +814,7 @@ final class BetterNotesUITests: XCTestCase {
         drawStroke(from: CGVector(dx: 0.2, dy: 0.25), to: CGVector(dx: 0.5, dy: 0.25))
         drawStroke(from: CGVector(dx: 0.2, dy: 0.45), to: CGVector(dx: 0.5, dy: 0.45))
 
-        app.buttons["Undo"].firstMatch.tap()
+        hittableButton("Undo").tap()
 
         drawStroke(from: CGVector(dx: 0.2, dy: 0.65), to: CGVector(dx: 0.5, dy: 0.65))
 
@@ -847,7 +847,7 @@ final class BetterNotesUITests: XCTestCase {
         drawStroke(from: CGVector(dx: 0.2, dy: 0.40), to: CGVector(dx: 0.5, dy: 0.40))
         drawStroke(from: CGVector(dx: 0.2, dy: 0.60), to: CGVector(dx: 0.5, dy: 0.60))
 
-        let undo = app.buttons["Undo"].firstMatch
+        let undo = hittableButton("Undo")
         undo.tap()
         undo.tap()
 
@@ -883,7 +883,7 @@ final class BetterNotesUITests: XCTestCase {
         app.buttons["Pen"].tap()
         drawStroke(from: CGVector(dx: 0.2, dy: 0.30), to: CGVector(dx: 0.5, dy: 0.30))
 
-        app.buttons["Undo"].firstMatch.tap()
+        hittableButton("Undo").tap()
 
         drawStroke(from: CGVector(dx: 0.2, dy: 0.60), to: CGVector(dx: 0.5, dy: 0.60))
 
@@ -1004,6 +1004,70 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertNotEqual(
             before.size, after.size,
             "dragging the resize handle did not resize the element -- the whole-element drag gesture is stealing the touch"
+        )
+    }
+
+    /// Reported on a real iPad: draw, lasso, move, Undo, Redo -- and the page
+    /// went blank. Ink is built from real strokes here, not the Insert menu,
+    /// and "ink survived" is proved by the lasso finding a selection.
+    func testRedoOfALassoMoveKeepsTheInk() {
+        openNotebook(named: uniqueTitle("Redo Lasso Move"))
+
+        app.buttons["Pen"].tap()
+        // Diagonal on purpose: a flat stroke has a selection box only a few
+        // points tall, and its 44pt top/bottom resize handles overlap the
+        // centre, so a drag from the centre resizes instead of moving.
+        drawStroke(from: CGVector(dx: 0.2, dy: 0.25), to: CGVector(dx: 0.5, dy: 0.45))
+
+        app.buttons["Lasso"].tap()
+        let canvas = app.scrollViews["page-canvas"]
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.47))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.23)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.2
+            )
+        let outline = app.descendants(matching: .any)["selection-outline"]
+        XCTAssertTrue(outline.waitForExistence(timeout: 5), "lasso did not select the drawn stroke")
+        let originalBounds = outline.value as? String
+
+        outline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: outline.coordinate(withNormalizedOffset: CGVector(dx: 0.72, dy: 0.5)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.2
+            )
+        let moved = app.descendants(matching: .any)["selection-outline"]
+        XCTAssertTrue(moved.waitForExistence(timeout: 3))
+        XCTAssertNotEqual(moved.value as? String, originalBounds, "the drag did not move the selection")
+
+        // `buttons["Undo"].firstMatch` is a hidden 1pt keyboard-shortcut
+        // button that is never hittable; the toolbar button is the hittable one.
+        let undo = hittableButton("Undo")
+        let redo = hittableButton("Redo")
+        XCTAssertTrue(undo.isEnabled, "no usable Undo button")
+        XCTAssertFalse(redo.isEnabled, "Redo should be unavailable before anything is undone")
+        undo.tap()
+        let redoEnabled = NSPredicate(format: "isEnabled == true")
+        expectation(for: redoEnabled, evaluatedWith: redo)
+        waitForExpectations(timeout: 4)
+        XCTAssertTrue(redo.isEnabled, "nothing to redo after undoing the move")
+        redo.tap()
+
+        // Clear any selection, then cross the whole band the stroke can be in.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.80)).tap()
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.55))
+            .press(
+                forDuration: 0.2,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.15)),
+                withVelocity: .slow,
+                thenHoldForDuration: 0.2
+            )
+        XCTAssertTrue(
+            app.descendants(matching: .any)["selection-outline"].waitForExistence(timeout: 5),
+            "the page is blank after redoing a lasso move: the ink was lost"
         )
     }
 

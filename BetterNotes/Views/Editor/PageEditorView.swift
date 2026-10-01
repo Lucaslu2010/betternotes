@@ -26,6 +26,13 @@ private struct FingerDragSession {
     var didRecordMutation = false
 }
 
+/// Reference box for the drawing `setCanvasDrawing` has queued but not yet
+/// applied. A class so recording it never invalidates the view.
+private final class PendingCanvasDrawing {
+    var drawing: PKDrawing?
+    var generation = 0
+}
+
 struct PageEditorView: View {
     private static let selectionPasteboardType = "com.betternotes.selection.v1"
     private static let selectionPasteboardName = UIPasteboard.Name("com.betternotes.selection")
@@ -121,6 +128,7 @@ struct PageEditorView: View {
     /// → onDrawingChanged, causing double history entries, redundant OCR, and
     /// selection flicker.
     @State private var isApplyingProgrammaticChange = false
+    @State private var pendingCanvasDrawing = PendingCanvasDrawing()
     @State private var pageSlideOffset: CGFloat = 0
     @State private var pageAreaWidth: CGFloat = 0
     @State private var isUsingInkTool = false
@@ -836,7 +844,7 @@ struct PageEditorView: View {
         // Accessing any property on a deleted SwiftData model can crash,
         // so check modelContext first (it becomes nil when deleted).
         guard let targetPage, targetPage.modelContext != nil else { return }
-        targetPage.inkData = canvas.drawing.dataRepresentation()
+        targetPage.inkData = currentDrawing.dataRepresentation()
     }
 
     private func loadInk(from sourcePage: Page) {
@@ -1388,8 +1396,23 @@ struct PageEditorView: View {
     /// is what a touch immediately after undo actually lands on. Its internal
     /// state was never touched, so this reintroduced the exact bug it was
     /// meant to fix.
+    /// The drawing the canvas holds, or is about to hold.
+    ///
+    /// `setCanvasDrawing` parks a placeholder on `canvas.drawing` straight
+    /// away and only assigns the real drawing on the next run-loop turn, so
+    /// reading `canvas.drawing` in between returns the placeholder: a single
+    /// invisible stroke off the page. Anything that persists ink or reads
+    /// strokes right after a programmatic change must read this instead --
+    /// reading the canvas there saved a blank page after every lasso move, and
+    /// Undo then Redo restored it.
+    private var currentDrawing: PKDrawing { pendingCanvasDrawing.drawing ?? canvas.drawing }
+
     private func setCanvasDrawing(_ drawing: PKDrawing) {
         isApplyingProgrammaticChange = true
+        let pending = pendingCanvasDrawing
+        pending.generation &+= 1
+        let generation = pending.generation
+        pending.drawing = drawing
         let gesture = canvas.drawingGestureRecognizer
         gesture.isEnabled = false
         canvas.drawing = Self.transientResetDrawing
@@ -1402,6 +1425,8 @@ struct PageEditorView: View {
             gesture.isEnabled = true
             self.isApplyingProgrammaticChange = false
             self.lastRecordedStrokeCount = canvas.drawing.strokes.count
+            // A later call in the same turn has its own drawing queued.
+            if pending.generation == generation { pending.drawing = nil }
         }
     }
 
@@ -2053,7 +2078,7 @@ struct PageEditorView: View {
     }
 
     private func refreshSelectionBounds() {
-        selectionState.strokeIndices = Set(selectionState.strokeIndices.filter { canvas.drawing.strokes.indices.contains($0) })
+        selectionState.strokeIndices = Set(selectionState.strokeIndices.filter { currentDrawing.strokes.indices.contains($0) })
         let validElementIDs = Set(page.elements.filter { !$0.isLocked }.map(\.id))
         selectionState.elementIDs.formIntersection(validElementIDs)
         selectionState.bounds = combinedBounds(
@@ -2092,7 +2117,8 @@ struct PageEditorView: View {
 
     private func combinedBounds(strokes: Set<Int>, elements: Set<PersistentIdentifier>) -> CGRect {
         var result = CGRect.null
-        for index in strokes where canvas.drawing.strokes.indices.contains(index) { result = result.union(canvas.drawing.strokes[index].renderBounds) }
+        let drawing = currentDrawing
+        for index in strokes where drawing.strokes.indices.contains(index) { result = result.union(drawing.strokes[index].renderBounds) }
         for element in page.elements where elements.contains(element.id) { result = result.union(elementSelectionBounds(element)) }
         // Guard against NaN/Infinity from corrupt element data — NaN
         // comparisons always return false, so .isNull wouldn't catch it.
@@ -2112,7 +2138,7 @@ struct PageEditorView: View {
             // accumulate. commitLiftedInk() applies this to the real strokes.
             liftedInk?.transform = liftedInk!.transform.concatenating(transform)
         } else {
-            var strokes = canvas.drawing.strokes
+            var strokes = currentDrawing.strokes
             for index in selectionState.strokeIndices where strokes.indices.contains(index) {
                 let stroke = strokes[index]
                 let combined = stroke.transform.concatenating(transform)
@@ -2135,7 +2161,7 @@ struct PageEditorView: View {
             if liftedInk != nil {
                 liftedInk?.transform = liftedInk!.transform.concatenating(correction)
             } else {
-                var strokes = canvas.drawing.strokes
+                var strokes = currentDrawing.strokes
                 for index in selectionState.strokeIndices where strokes.indices.contains(index) {
                     let stroke = strokes[index]
                     strokes[index] = PKStroke(ink: stroke.ink, path: stroke.path, transform: stroke.transform.concatenating(correction), mask: stroke.mask, randomSeed: stroke.randomSeed)
@@ -2213,7 +2239,7 @@ struct PageEditorView: View {
             translationX: pasteOrigin.x - payload.bounds.minX,
             y: pasteOrigin.y - payload.bounds.minY
         )
-        var strokes = canvas.drawing.strokes
+        var strokes = currentDrawing.strokes
         let firstNewStroke = strokes.count
         for data in payload.strokes {
             guard let drawing = try? PKDrawing(data: data) else { continue }
@@ -2246,7 +2272,7 @@ struct PageEditorView: View {
             transformSelection(translation: recovery)
             isTransformingInkSelection = false
         }
-        page.inkData = canvas.drawing.dataRepresentation()
+        page.inkData = currentDrawing.dataRepresentation()
         lastRecordedStrokeCount = strokes.count
         markPageModified()
         saveChanges()
@@ -2279,12 +2305,12 @@ struct PageEditorView: View {
     private func deleteSelection() {
         guard !isReadOnly, !selectionState.isEmpty else { return }
         recordBeforeMutation()
-        let retainedStrokes = canvas.drawing.strokes.enumerated().compactMap { selectionState.strokeIndices.contains($0.offset) ? nil : $0.element }
+        let retainedStrokes = currentDrawing.strokes.enumerated().compactMap { selectionState.strokeIndices.contains($0.offset) ? nil : $0.element }
         setCanvasDrawing(PKDrawing(strokes: retainedStrokes))
         let removed = page.elements.filter { selectionState.elementIDs.contains($0.id) && !$0.isLocked }
         page.elements.removeAll { element in removed.contains(where: { $0.id == element.id }) }
         removed.forEach(context.delete)
-        page.inkData = canvas.drawing.dataRepresentation()
+        page.inkData = currentDrawing.dataRepresentation()
         lastRecordedStrokeCount = retainedStrokes.count
         clearSelection()
         markPageModified()
@@ -2334,7 +2360,7 @@ struct PageEditorView: View {
     /// Moves the selected strokes out of the canvas and into `liftedInk`.
     private func liftSelectedInk() {
         let indices = selectionState.strokeIndices.sorted()
-        let all = canvas.drawing.strokes
+        let all = currentDrawing.strokes
         guard !indices.isEmpty, indices.allSatisfy({ all.indices.contains($0) }) else { return }
         liftedInkGeneration += 1
         liftedInk = LiftedInk(
@@ -2356,7 +2382,7 @@ struct PageEditorView: View {
     private func commitLiftedInk() {
         guard let lifted = liftedInk else { return }
         liftedInk = nil
-        var strokes = canvas.drawing.strokes
+        var strokes = currentDrawing.strokes
         let transformed = lifted.drawing.strokes.map {
             PKStroke(ink: $0.ink, path: $0.path,
                      transform: $0.transform.concatenating(lifted.transform),
@@ -2379,8 +2405,8 @@ struct PageEditorView: View {
         guard isTransformingInkSelection else { return }
         commitLiftedInk()
         isTransformingInkSelection = false
-        page.inkData = canvas.drawing.dataRepresentation()
-        lastRecordedStrokeCount = canvas.drawing.strokes.count
+        page.inkData = currentDrawing.dataRepresentation()
+        lastRecordedStrokeCount = currentDrawing.strokes.count
         markPageModified()
         saveChanges()
     }
