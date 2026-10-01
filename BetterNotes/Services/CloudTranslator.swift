@@ -170,6 +170,9 @@ struct CloudTranslator {
             notebook.defaultBackgroundHex = archive["defaultBackgroundHex"] as? String ?? "FFFFFF"
             notebook.defaultOrientation = archive["defaultOrientation"] as? String ?? PageOrientation.portrait.rawValue
         }
+        // A conflict copy is review material, not a notebook the user chose to
+        // keep in Notes, so it starts in Archive where it stays visible.
+        if conflictSuffix != nil { notebook.isArchived = true }
         if let created = archive["createdAt"] as? Double {
             notebook.createdAt = Date(timeIntervalSince1970: created)
         }

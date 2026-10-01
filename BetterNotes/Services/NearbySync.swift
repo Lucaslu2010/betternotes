@@ -772,7 +772,7 @@ struct NearbySyncSheet: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    Text("Keep BetterNotes open on both devices until the transfer finishes. Conflicting edits are saved as separate notebooks.")
+                    Text("Keep BetterNotes open on both devices until the transfer finishes. Conflicting edits are saved as separate notebooks in Archive.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

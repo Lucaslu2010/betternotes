@@ -431,6 +431,24 @@ final class ArchiveRoundTripTests: XCTestCase {
         XCTAssertEqual(try ipadContext.fetch(FetchDescriptor<Notebook>()).count, 2)
     }
 
+    /// Conflict copies used to land in Notes beside the notebook they came
+    /// from, which is how a library filled with "(from Mac)" duplicates.
+    func testConflictCopiesAreCreatedArchivedAndOriginalsAreNot() throws {
+        let context = try makeContext()
+        let original = populatedNotebook(in: context)
+        original.isArchived = false  // the shared fixture is archived
+        let snapshot = try CloudTranslator.syncArchiveData(for: original)
+
+        let copy = try CloudTranslator.importArchiveData(snapshot, into: context, conflictSuffix: "Mac")
+        XCTAssertTrue(copy.isArchived, "a conflict copy should start in Archive")
+        XCTAssertTrue(copy.title.hasSuffix("(from Mac)"))
+        XCTAssertFalse(original.isArchived)
+
+        let plain = try CloudTranslator.importArchiveData(snapshot, into: try makeContext())
+        XCTAssertFalse(plain.isArchived, "an ordinary import must not be archived")
+        XCTAssertTrue(copy.isInMainLibrary == false)
+    }
+
     func testNearbyCleanupTrashesOnlyIdenticalGeneratedCopies() throws {
         let context = try makeContext()
         let original = Notebook(title: "Study")
@@ -447,6 +465,9 @@ final class ArchiveRoundTripTests: XCTestCase {
             snapshot, into: context, conflictSuffix: "Mac"
         )
         editedCopy.pages[0].ocrText = "A distinct edit"
+        // Copies made by older builds were not archived on creation.
+        identicalCopy.isArchived = false
+        editedCopy.isArchived = false
 
         XCTAssertEqual(try NearbyConflictCleanup.redundantCopyIDs(in: context), [identicalCopy.stableID])
         let result = try NearbyConflictCleanup.organizeLegacyCopies(in: context)

@@ -3346,18 +3346,18 @@
         }
       }
     },
-    "Keep BetterNotes open on both devices until the transfer finishes. Conflicting edits are saved as separate notebooks.": {
+    "Keep BetterNotes open on both devices until the transfer finishes. Conflicting edits are saved as separate notebooks in Archive.": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "传输完成前，请在两台设备上保持 BetterNotes 开启。冲突的编辑会另存为独立笔记本。"
+            "value": "传输完成前，请在两台设备上保持 BetterNotes 开启。冲突的编辑会另存为独立笔记本，放在“存档”中。"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "傳輸完成前，請在兩臺裝置上保持 BetterNotes 開啟。衝突的編輯會另存為獨立筆記本。"
+            "value": "傳輸完成前，請在兩臺裝置上保持 BetterNotes 開啟。衝突的編輯會另存為獨立筆記本，放在「存檔」中。"
           }
         }
       }
