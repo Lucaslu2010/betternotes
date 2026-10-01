@@ -1252,6 +1252,33 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertFalse(app.alerts["Export Failed"].exists)
     }
 
+    /// The editor's notebook switcher listed archived notebooks (sync conflict
+    /// copies, in practice) that the library's Notes view hides.
+    func testNotebookSwitcherOmitsArchivedNotebooks() {
+        createNotebook(named: "Archive Me")
+        createNotebook(named: "Keep Me")
+
+        let archiveMe = app.buttons["Archive Me"].firstMatch
+        XCTAssertTrue(archiveMe.waitForExistence(timeout: 5))
+        let actions = app.buttons["More actions for Archive Me"].firstMatch
+        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        actions.tap()
+        let archive = app.buttons["Archive"].firstMatch
+        XCTAssertTrue(archive.waitForExistence(timeout: 4), "no Archive action in the notebook menu")
+        archive.tap()
+        XCTAssertTrue(archiveMe.waitForNonExistence(timeout: 4), "the archived notebook is still in Notes")
+
+        let keepMe = app.buttons["Keep Me"].firstMatch
+        XCTAssertTrue(keepMe.waitForExistence(timeout: 4))
+        keepMe.tap()
+        XCTAssertTrue(app.buttons["editor-add-tab"].waitForExistence(timeout: 5))
+        app.buttons["editor-add-tab"].tap()
+
+        XCTAssertTrue(app.staticTexts["All notebooks are open"].waitForExistence(timeout: 3)
+                      || app.buttons["New Notebook"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Archive Me"].exists, "the switcher offered an archived notebook")
+    }
+
     /// Inserted elements must land where the page is actually showing, and
     /// two of them must not occupy the same point. Both were broken: every
     /// image, recording, note and tape was created at a hardcoded (200, 300).

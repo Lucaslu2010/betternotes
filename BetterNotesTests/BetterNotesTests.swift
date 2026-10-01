@@ -6,6 +6,18 @@ import UIKit
 
 @MainActor
 final class BetterNotesTests: XCTestCase {
+    func testOnlyUntrashedUnarchivedNotebooksBelongToTheMainLibrary() {
+        let notebook = Notebook(title: "n")
+        XCTAssertTrue(notebook.isInMainLibrary)
+        notebook.isArchived = true
+        XCTAssertFalse(notebook.isInMainLibrary, "archived notebooks stay out of the main library")
+        notebook.isArchived = false
+        notebook.trashedAt = .now
+        XCTAssertFalse(notebook.isInMainLibrary)
+        notebook.isArchived = true
+        XCTAssertFalse(notebook.isInMainLibrary)
+    }
+
     func testNestedFolderPathsKeepParentsAndDescendantsDistinct() {
         XCTAssertEqual(LibraryFolderPath.normalized("  School / Math / Algebra  "), "School/Math/Algebra")
         XCTAssertEqual(LibraryFolderPath.ancestors(of: "School/Math/Algebra"),

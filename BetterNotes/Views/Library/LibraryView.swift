@@ -210,7 +210,7 @@ struct LibraryView: View {
             let matchesSection: Bool
             switch librarySection {
             case .notes:
-                matchesSection = notebook.trashedAt == nil && !notebook.isArchived
+                matchesSection = notebook.isInMainLibrary
             case .favorites:
                 matchesSection = notebook.trashedAt == nil && !notebook.isArchived && notebook.isFavorite
             case .bookmarks:
@@ -1535,7 +1535,7 @@ private struct NotebookWorkspaceView: View {
     }
 
     private var availableNotebooks: [Notebook] {
-        notebooks.filter { $0.trashedAt == nil && !openTabIDs.contains($0.id) }
+        notebooks.filter { $0.isInMainLibrary && !openTabIDs.contains($0.id) }
     }
 
     private func openNotebook(_ notebook: Notebook) {

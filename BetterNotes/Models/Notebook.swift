@@ -31,6 +31,10 @@ final class Notebook {
     var isFavorite: Bool = false
     var isArchived: Bool = false
     var trashedAt: Date?
+
+    /// Whether the notebook belongs in the main library (the Notes view and
+    /// the editor's notebook switcher): archived and trashed notebooks stay out.
+    var isInMainLibrary: Bool { trashedAt == nil && !isArchived }
     var defaultLineStyle: String = PageLineStyle.blank.rawValue
     var defaultLineThickness: Double = PageLineAppearance.defaultThickness
     var defaultLineOpacity: Double = PageLineAppearance.defaultOpacity
