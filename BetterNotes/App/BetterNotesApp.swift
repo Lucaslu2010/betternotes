@@ -44,6 +44,11 @@ struct BetterNotesApp: App {
             defaults.set(true, forKey: AppPreferenceKey.inkQuestionsEnabled)
             defaults.set(AppLanguage.english.rawValue, forKey: AppPreferenceKey.language)
             defaults.set(ScrollMode.singlePage.rawValue, forKey: AppPreferenceKey.scrollMode)
+            // Not pinned on every launch, because a test relaunches the app to
+            // prove the choice persists; a test that needs the default asks.
+            if arguments.contains("-ui-testing-reset-conflict-policy") {
+                defaults.removeObject(forKey: NearbyConflictPolicy.defaultsKey)
+            }
             // Pin finger drawing on. Every other preference the tests depend
             // on is pinned here, but this one was left to whatever the host
             // had stored -- so a drawing test passed in a fresh simulator

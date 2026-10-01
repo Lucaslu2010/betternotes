@@ -471,6 +471,38 @@
         }
       }
     },
+    "Always prefer Mac": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "始终以 Mac 为准"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一律以 Mac 為準"
+          }
+        }
+      }
+    },
+    "Always prefer iPad": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "始终以 iPad 为准"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一律以 iPad 為準"
+          }
+        }
+      }
+    },
     "Answer this question": {
       "localizations": {
         "zh-Hans": {
@@ -3085,6 +3117,22 @@
         }
       }
     },
+    "If both devices edited the same notebook": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如果两台设备编辑了同一本笔记本"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "如果兩臺裝置編輯了同一本筆記本"
+          }
+        }
+      }
+    },
     "Image": {
       "extractionState": "stale",
       "localizations": {
@@ -3358,6 +3406,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "傳輸完成前，請在兩臺裝置上保持 BetterNotes 開啟。衝突的編輯會另存為獨立筆記本，放在「存檔」中。"
+          }
+        }
+      }
+    },
+    "Keep both copies": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留两份"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留兩份"
+          }
+        }
+      }
+    },
+    "Keep both copies saves the other version as a notebook in Archive. The other options discard the edit that loses. Use the same setting on both devices; Newest edit wins relies on both clocks being correct.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“保留两份”会把另一个版本作为笔记本存入存档。其他选项会丢弃落败的编辑。请在两台设备上使用相同的设置；“以最新编辑为准”要求两台设备的时钟都准确。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「保留兩份」會把另一個版本作為筆記本存入存檔。其他選項會捨棄落敗的編輯。請在兩臺裝置上使用相同的設定；「以最新編輯為準」要求兩臺裝置的時鐘都準確。"
           }
         }
       }
@@ -3975,6 +4055,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "新增子資料夾"
+          }
+        }
+      }
+    },
+    "Newest edit wins": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以最新编辑为准"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以最新編輯為準"
           }
         }
       }
@@ -6974,6 +7070,22 @@
         }
       }
     },
+    "The other device uses a different conflict setting, so both copies were kept.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一台设备的冲突设置不同，因此两份都已保留。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另一臺裝置的衝突設定不同，因此兩份都已保留。"
+          }
+        }
+      }
+    },
     "The previous transcription was cancelled.": {
       "extractionState": "stale",
       "localizations": {
@@ -7780,6 +7892,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "每週計劃"
+          }
+        }
+      }
+    },
+    "When both edited": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "双方都编辑时"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "雙方都編輯時"
           }
         }
       }

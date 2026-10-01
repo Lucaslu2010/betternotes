@@ -649,6 +649,45 @@ final class BetterNotesUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
     }
 
+    /// Both devices must be set the same way, so the choice has to be easy
+    /// to find and has to stick.
+    func testConflictPolicyCanBeChosenAndIsRemembered() {
+        func openNearbySync() {
+            app.buttons["More"].tap()
+            app.buttons["Settings"].tap()
+            app.descendants(matching: .any)["settings-section-sync"].firstMatch.tap()
+            let nearby = app.buttons["Nearby Sync"]
+            XCTAssertTrue(nearby.waitForExistence(timeout: 5))
+            nearby.tap()
+        }
+        // The simulator keeps UserDefaults between runs; start from the default.
+        app.terminate()
+        app.launchArguments.append("-ui-testing-reset-conflict-policy")
+        app.launch()
+        openNearbySync()
+        let picker = app.descendants(matching: .any)["conflict-policy-picker"].firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 5), "no conflict setting in Nearby Sync")
+        XCTAssertTrue(app.staticTexts["If both devices edited the same notebook"].exists)
+        XCTAssertTrue(app.staticTexts["Keep both copies"].exists || picker.label.contains("Keep both copies")
+                      || (picker.value as? String)?.contains("Keep both copies") == true,
+                      "Keep both copies should be the default")
+        picker.tap()
+        let option = app.buttons["Always prefer Mac"].firstMatch
+        XCTAssertTrue(option.waitForExistence(timeout: 3))
+        option.tap()
+        attachScreenshot(named: "Conflict Policy")
+
+        app.terminate()
+        app.launchArguments.removeAll { $0 == "-ui-testing-reset-conflict-policy" }
+        app.launch()
+        openNearbySync()
+        let again = app.descendants(matching: .any)["conflict-policy-picker"].firstMatch
+        XCTAssertTrue(again.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Always prefer Mac"].exists || again.label.contains("Always prefer Mac")
+                      || (again.value as? String)?.contains("Always prefer Mac") == true,
+                      "the chosen conflict setting was not remembered")
+    }
+
     func testEmptyFolderSurvivesRelaunch() {
         let name = uniqueTitle("Courses")
         app.buttons["library-new-folder"].tap()

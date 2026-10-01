@@ -13,6 +13,8 @@ private struct NearbySyncEntry: Codable {
     let archive: Data
     /// Sender's last agreed version with this peer, if known.
     let sharedHash: String?
+    /// When the sender last edited the notebook, for "newest edit wins".
+    let modifiedAt: Double?
 }
 
 private struct NearbySyncPackage: Codable {
@@ -22,6 +24,8 @@ private struct NearbySyncPackage: Codable {
     let entries: [NearbySyncEntry]
     /// Hashes from the first half of the exchange that this peer accepted.
     let accepted: [NearbySyncAcknowledgement]?
+    /// The sender's conflict setting. Devices that disagree keep both copies.
+    let conflictPolicy: String?
 }
 
 private struct NearbySyncMessage: Codable {
@@ -128,6 +132,54 @@ enum NearbyConflictCleanup {
     }
 }
 
+/// What to do when both devices edited the same notebook since they last
+/// agreed. Each option is device-neutral, so two devices with the same setting
+/// reach the same winner without talking to each other.
+enum NearbyConflictPolicy: String, CaseIterable, Identifiable {
+    case keepBoth, newestWins, preferIPad, preferMac
+
+    var id: String { rawValue }
+    static let defaultsKey = "nearbySync.conflictPolicy"
+
+    static var stored: NearbyConflictPolicy {
+        UserDefaults.standard.string(forKey: defaultsKey).flatMap(NearbyConflictPolicy.init) ?? .keepBoth
+    }
+
+    /// Whether this device's version or the incoming one wins, or nil to keep
+    /// both (also when the policy cannot pick: equal or unknown edit times).
+    func winner(localModified: Date?, incomingModified: Date?, localIsMac: Bool) -> Winner? {
+        switch self {
+        case .keepBoth:
+            return nil
+        case .newestWins:
+            guard let localModified, let incomingModified, localModified != incomingModified else { return nil }
+            return localModified > incomingModified ? .local : .incoming
+        case .preferIPad:
+            return localIsMac ? .incoming : .local
+        case .preferMac:
+            return localIsMac ? .local : .incoming
+        }
+    }
+
+    enum Winner: Equatable { case local, incoming }
+
+    /// The policy to apply to an exchange. A winning policy discards an edit,
+    /// so it is used only when the peer chose the same one; any disagreement,
+    /// or a peer that does not say, keeps both copies.
+    static func effective(local: NearbyConflictPolicy, remote: String?) -> NearbyConflictPolicy {
+        remote == local.rawValue ? local : .keepBoth
+    }
+
+    var title: String {
+        switch self {
+        case .keepBoth: return AppLocalization.text("Keep both copies")
+        case .newestWins: return AppLocalization.text("Newest edit wins")
+        case .preferIPad: return AppLocalization.text("Always prefer iPad")
+        case .preferMac: return AppLocalization.text("Always prefer Mac")
+        }
+    }
+}
+
 enum NearbyMergeDecision: Equatable {
     case unchanged, importNew, replaceLocal, keepLocal
     case preserveLocalAndReplace, saveConflictCopy, alreadySavedConflict
@@ -137,7 +189,10 @@ enum NearbyMergeDecision: Equatable {
 
     static func decide(localHash: String?, incomingHash: String, lastSharedHash: String?,
                        lastConflictHash: String?, remoteSharedHash: String? = nil,
-                       receivingFirst: Bool = false) -> Self {
+                       receivingFirst: Bool = false,
+                       policy: NearbyConflictPolicy = .keepBoth,
+                       localModified: Date? = nil, incomingModified: Date? = nil,
+                       localIsMac: Bool = false) -> Self {
         guard let localHash else { return lastSharedHash == nil ? .importNew : .keepLocal }
         if localHash == incomingHash { return .unchanged }
         // The sender can prove its current version has not changed since its
@@ -146,6 +201,12 @@ enum NearbyMergeDecision: Equatable {
         if remoteSharedHash == incomingHash { return .keepLocal }
         if lastSharedHash == localHash { return .replaceLocal }
         if lastSharedHash == incomingHash { return .keepLocal }
+        // Both devices changed it. A winning policy discards the other edit;
+        // otherwise fall through and keep both.
+        if let winner = policy.winner(localModified: localModified, incomingModified: incomingModified,
+                                      localIsMac: localIsMac) {
+            return winner == .local ? .keepLocal : .replaceLocal
+        }
         // The receiver of the first snapshot keeps one copy of its own edit,
         // then adopts the sender's version under the original ID. The reply
         // therefore carries one converged original plus one conflict copy.
@@ -172,6 +233,13 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
     }
     /// Open notebooks whose replacement was postponed by the last exchange.
     @Published private(set) var deferredCount = 0
+    /// What to do when both devices edited the same notebook.
+    @Published var conflictPolicy = NearbyConflictPolicy.stored {
+        didSet { UserDefaults.standard.set(conflictPolicy.rawValue, forKey: NearbyConflictPolicy.defaultsKey) }
+    }
+    /// True when the other device's conflict setting differs from this one's,
+    /// in which case both copies are kept so nothing is lost.
+    @Published private(set) var policyMismatch = false
     /// Stable IDs of notebooks an editor currently has open. Replacing one
     /// deletes its model under the editor and discards edits made since the
     /// exchange began, so those notebooks wait until they are closed.
@@ -342,14 +410,16 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
                         "nearbySync.shared.\(id.uuidString).\(notebook.stableID.uuidString)")
                 }
                 return NearbySyncEntry(id: notebook.stableID, hash: Self.hash(archive),
-                                       archive: archive, sharedHash: sharedHash)
+                                       archive: archive, sharedHash: sharedHash,
+                                       modifiedAt: notebook.modifiedAt.timeIntervalSince1970)
             }
             lastSentHashes = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.hash) })
             lastLocalDigest = Self.hash(Data(entries.sorted { $0.id.uuidString < $1.id.uuidString }
                 .map { $0.id.uuidString + $0.hash }.joined().utf8))
-            let package = NearbySyncPackage(version: 4, deviceID: deviceID,
+            let package = NearbySyncPackage(version: 5, deviceID: deviceID,
                                             deviceName: localPeer.displayName, entries: entries,
-                                            accepted: acceptedIncoming)
+                                            accepted: acceptedIncoming,
+                                            conflictPolicy: conflictPolicy.rawValue)
             acceptedIncoming.removeAll()
             let data = try JSONEncoder().encode(package)
             let url = FileManager.default.temporaryDirectory
@@ -378,7 +448,7 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
         guard let context else { fail("The notes library is unavailable."); return }
         do {
             let package = try JSONDecoder().decode(NearbySyncPackage.self, from: data)
-            guard package.version == 4 else { throw NearbySyncError.unsupportedVersion }
+            guard package.version == 5 else { throw NearbySyncError.unsupportedVersion }
             guard package.deviceID != deviceID,
                   Set(package.entries.map(\.id)).count == package.entries.count else {
                 throw NearbySyncError.invalidPackage
@@ -399,6 +469,11 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
             var updated = 0
             var conflicts = 0
             let peerKey = package.deviceID.uuidString
+            // Winning policies discard an edit, so they apply only when both
+            // devices chose the same one.
+            let effectivePolicy = NearbyConflictPolicy.effective(local: conflictPolicy,
+                                                                 remote: package.conflictPolicy)
+            policyMismatch = package.conflictPolicy != conflictPolicy.rawValue
             var accepted: [NearbySyncAcknowledgement] = []
             var deferred: Set<UUID> = []
             for entry in package.entries {
@@ -410,7 +485,11 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
                 let decision = NearbyMergeDecision.decide(
                     localHash: localHash, incomingHash: entry.hash, lastSharedHash: baseline,
                     lastConflictHash: UserDefaults.standard.string(forKey: seenConflictKey),
-                    remoteSharedHash: entry.sharedHash, receivingFirst: initiated
+                    remoteSharedHash: entry.sharedHash, receivingFirst: initiated,
+                    policy: effectivePolicy,
+                    localModified: existing?.modifiedAt,
+                    incomingModified: entry.modifiedAt.map(Date.init(timeIntervalSince1970:)),
+                    localIsMac: Self.platform == "mac"
                 )
                 // Not acknowledged and no baseline written, so the next
                 // exchange reaches the same decision once the editor closes.
@@ -764,6 +843,23 @@ struct NearbySyncSheet: View {
                         }
                         .disabled(sync.isBusy)
                     }
+                }
+                Section {
+                    Picker("When both edited", selection: $sync.conflictPolicy) {
+                        ForEach(NearbyConflictPolicy.allCases) { policy in
+                            Text(policy.title).tag(policy)
+                        }
+                    }
+                    .accessibilityIdentifier("conflict-policy-picker")
+                    if sync.policyMismatch {
+                        Text("The other device uses a different conflict setting, so both copies were kept.")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("If both devices edited the same notebook")
+                } footer: {
+                    Text("Keep both copies saves the other version as a notebook in Archive. The other options discard the edit that loses. Use the same setting on both devices; Newest edit wins relies on both clocks being correct.")
                 }
                 Section("Activity") {
                     Text(AppLocalization.nearbyStatus(sync.status))

@@ -396,6 +396,87 @@ final class ArchiveRoundTripTests: XCTestCase {
            "an old conflict marker must not block convergence after upgrading")
     }
 
+    // MARK: Conflict policy
+
+    private func conflict(
+        _ policy: NearbyConflictPolicy, localIsMac: Bool,
+        local: TimeInterval? = 100, incoming: TimeInterval? = 200,
+        receivingFirst: Bool = false
+    ) -> NearbyMergeDecision {
+        NearbyMergeDecision.decide(
+            localHash: "local edit", incomingHash: "remote edit",
+            lastSharedHash: "shared", lastConflictHash: nil, remoteSharedHash: "shared",
+            receivingFirst: receivingFirst, policy: policy,
+            localModified: local.map(Date.init(timeIntervalSince1970:)),
+            incomingModified: incoming.map(Date.init(timeIntervalSince1970:)),
+            localIsMac: localIsMac
+        )
+    }
+
+    func testKeepBothIsTheDefaultAndKeepsEveryEdit() {
+        XCTAssertEqual(NearbyConflictPolicy.stored, .keepBoth)
+        XCTAssertEqual(conflict(.keepBoth, localIsMac: true), .saveConflictCopy)
+        XCTAssertEqual(conflict(.keepBoth, localIsMac: true, receivingFirst: true), .preserveLocalAndReplace)
+    }
+
+    func testNewestEditWinsOnBothSides() {
+        // The incoming edit is newer: this device replaces its own.
+        XCTAssertEqual(conflict(.newestWins, localIsMac: true, local: 100, incoming: 200), .replaceLocal)
+        // The local edit is newer: this device keeps it. The peer, seeing the
+        // same two times from the other side, replaces its own, so they agree.
+        XCTAssertEqual(conflict(.newestWins, localIsMac: false, local: 200, incoming: 100), .keepLocal)
+        XCTAssertEqual(conflict(.newestWins, localIsMac: true, local: 100, incoming: 200, receivingFirst: true),
+                       .replaceLocal, "the first receiver is not special once a winner exists")
+    }
+
+    func testNewestEditFallsBackToKeepBothWhenItCannotDecide() {
+        XCTAssertEqual(conflict(.newestWins, localIsMac: true, local: 100, incoming: 100), .saveConflictCopy)
+        XCTAssertEqual(conflict(.newestWins, localIsMac: true, local: nil, incoming: 100), .saveConflictCopy)
+        XCTAssertEqual(conflict(.newestWins, localIsMac: true, local: 100, incoming: nil), .saveConflictCopy)
+    }
+
+    func testPlatformPoliciesPickTheSameDeviceFromEitherSide() {
+        XCTAssertEqual(conflict(.preferMac, localIsMac: true), .keepLocal)
+        XCTAssertEqual(conflict(.preferMac, localIsMac: false), .replaceLocal)
+        XCTAssertEqual(conflict(.preferIPad, localIsMac: false), .keepLocal)
+        XCTAssertEqual(conflict(.preferIPad, localIsMac: true), .replaceLocal)
+    }
+
+    /// A winning policy only settles a real conflict. It must never turn a
+    /// one-sided edit into a replacement, or a stale device could overwrite
+    /// newer work.
+    func testPoliciesDoNotChangeOneSidedEdits() {
+        for policy in NearbyConflictPolicy.allCases {
+            for localIsMac in [true, false] {
+                XCTAssertEqual(NearbyMergeDecision.decide(
+                    localHash: "base", incomingHash: "remote edit", lastSharedHash: "base",
+                    lastConflictHash: nil, policy: policy,
+                    localModified: Date(timeIntervalSince1970: 500),
+                    incomingModified: Date(timeIntervalSince1970: 100), localIsMac: localIsMac
+                ), .replaceLocal, "\(policy) overrode an unchanged local notebook")
+                XCTAssertEqual(NearbyMergeDecision.decide(
+                    localHash: "local edit", incomingHash: "base", lastSharedHash: "base",
+                    lastConflictHash: nil, policy: policy,
+                    localModified: Date(timeIntervalSince1970: 100),
+                    incomingModified: Date(timeIntervalSince1970: 500), localIsMac: localIsMac
+                ), .keepLocal, "\(policy) overrode a newer local edit")
+            }
+        }
+    }
+
+    func testDevicesThatDisagreeOnPolicyKeepBothCopies() {
+        XCTAssertEqual(NearbyConflictPolicy.effective(local: .preferMac, remote: "preferMac"), .preferMac)
+        XCTAssertEqual(NearbyConflictPolicy.effective(local: .preferMac, remote: "preferIPad"), .keepBoth)
+        XCTAssertEqual(NearbyConflictPolicy.effective(local: .newestWins, remote: "keepBoth"), .keepBoth)
+        XCTAssertEqual(NearbyConflictPolicy.effective(local: .preferMac, remote: nil), .keepBoth)
+        XCTAssertEqual(NearbyConflictPolicy.effective(local: .preferMac, remote: "nonsense"), .keepBoth)
+    }
+
+    func testAWinningPolicyThatReplacesTheLocalNotebookCanBeDeferred() {
+        XCTAssertTrue(conflict(.preferMac, localIsMac: false).replacesLocal)
+        XCTAssertFalse(conflict(.preferMac, localIsMac: true).replacesLocal)
+    }
+
     func testNearbyConcurrentExchangeConvergesWithOneConflictCopy() throws {
         let macContext = try makeContext()
         let ipadContext = try makeContext()
