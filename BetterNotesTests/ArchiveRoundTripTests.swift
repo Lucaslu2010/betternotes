@@ -477,6 +477,153 @@ final class ArchiveRoundTripTests: XCTestCase {
         XCTAssertFalse(conflict(.preferMac, localIsMac: true).replacesLocal)
     }
 
+    // MARK: Permanent deletes
+
+    private func isolatedDefaults() -> UserDefaults {
+        let name = "nearby-deletion-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    func testOnlyNotebooksThatSyncedAreAnnouncedWhenPermanentlyDeleted() {
+        let defaults = isolatedDefaults()
+        let synced = UUID(), neverSynced = UUID()
+        defaults.set("hash", forKey: "nearbySync.shared.PEER.\(synced.uuidString)")
+
+        NearbyDeletionLog.record(id: synced, title: "Biology", defaults: defaults)
+        NearbyDeletionLog.record(id: neverSynced, title: "Private draft", defaults: defaults)
+
+        XCTAssertEqual(NearbyDeletionLog.pending(defaults: defaults).map(\.id), [synced])
+        XCTAssertEqual(NearbyDeletionLog.pending(defaults: defaults).first?.title, "Biology")
+    }
+
+    func testDeletionRecordsExpireAndClear() {
+        let defaults = isolatedDefaults()
+        let old = UUID(), fresh = UUID()
+        defaults.set("h", forKey: "nearbySync.shared.PEER.\(old.uuidString)")
+        defaults.set("h", forKey: "nearbySync.shared.PEER.\(fresh.uuidString)")
+        let longAgo = Date(timeIntervalSinceNow: -(NearbyDeletionLog.retention + 60))
+        NearbyDeletionLog.record(id: old, title: "Old", defaults: defaults, now: longAgo)
+        NearbyDeletionLog.record(id: fresh, title: "Fresh", defaults: defaults)
+
+        XCTAssertEqual(NearbyDeletionLog.pending(defaults: defaults).map(\.id), [fresh],
+                       "a deletion nobody acknowledged must stop being sent after the retention window")
+        NearbyDeletionLog.clear(ids: [fresh], defaults: defaults)
+        XCTAssertTrue(NearbyDeletionLog.pending(defaults: defaults).isEmpty)
+    }
+
+    func testDeletionDecisionTable() {
+        typealias D = NearbyDeletionDecision
+        // Already gone, in Trash, or kept: nothing to ask.
+        XCTAssertEqual(D.decide(localHash: nil, localInTrash: false, baseline: "b", alreadyKept: false), .acknowledge)
+        XCTAssertEqual(D.decide(localHash: "b", localInTrash: true, baseline: "b", alreadyKept: false), .acknowledge)
+        XCTAssertEqual(D.decide(localHash: "b", localInTrash: false, baseline: "b", alreadyKept: true), .acknowledge)
+        // Unchanged since the last sync: the user decides.
+        XCTAssertEqual(D.decide(localHash: "b", localInTrash: false, baseline: "b", alreadyKept: false), .askUser)
+        // Edited here, or no shared baseline to prove otherwise: never delete.
+        XCTAssertEqual(D.decide(localHash: "edit", localInTrash: false, baseline: "b", alreadyKept: false), .keepEdited)
+        XCTAssertEqual(D.decide(localHash: "b", localInTrash: false, baseline: nil, alreadyKept: false), .keepEdited)
+    }
+
+    @MainActor
+    private func syncedNotebook(in context: ModelContext, peerKey: String, defaults: UserDefaults) throws -> Notebook {
+        let notebook = populatedNotebook(in: context)
+        notebook.isArchived = false
+        let hash = NearbySyncCoordinator.hash(try CloudTranslator.syncArchiveData(for: notebook))
+        defaults.set(hash, forKey: "nearbySync.shared.\(peerKey).\(notebook.stableID.uuidString)")
+        return notebook
+    }
+
+    @MainActor
+    func testTheOtherDevicesDeleteIsAskedAboutNotAppliedSilently() throws {
+        let defaults = isolatedDefaults()
+        let context = try makeContext()
+        let notebook = try syncedNotebook(in: context, peerKey: "PEER", defaults: defaults)
+        let deletion = NearbySyncDeletion(id: notebook.stableID, title: notebook.title, deletedAt: 0)
+
+        let result = try NearbyDeletionHandler.classify(
+            [deletion], peerKey: "PEER", in: context, openNotebookIDs: [], alreadyQueued: [], defaults: defaults)
+
+        XCTAssertEqual(result.toAsk.map(\.id), [notebook.stableID])
+        XCTAssertTrue(result.handled.isEmpty, "an unanswered deletion must not be acknowledged")
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Notebook>()).count, 1, "nothing may be deleted before the user answers")
+    }
+
+    @MainActor
+    func testANotebookEditedHereIsKeptAndAcknowledged() throws {
+        let defaults = isolatedDefaults()
+        let context = try makeContext()
+        let notebook = try syncedNotebook(in: context, peerKey: "PEER", defaults: defaults)
+        notebook.title = "Edited after the last sync"
+        let deletion = NearbySyncDeletion(id: notebook.stableID, title: "Old title", deletedAt: 0)
+
+        let result = try NearbyDeletionHandler.classify(
+            [deletion], peerKey: "PEER", in: context, openNotebookIDs: [], alreadyQueued: [], defaults: defaults)
+
+        XCTAssertTrue(result.toAsk.isEmpty)
+        XCTAssertEqual(result.keptEdited, ["Old title"])
+        XCTAssertEqual(result.handled, [notebook.stableID])
+    }
+
+    @MainActor
+    func testAnOpenNotebookIsNotAskedAboutUntilItIsClosed() throws {
+        let defaults = isolatedDefaults()
+        let context = try makeContext()
+        let notebook = try syncedNotebook(in: context, peerKey: "PEER", defaults: defaults)
+        let deletion = NearbySyncDeletion(id: notebook.stableID, title: notebook.title, deletedAt: 0)
+
+        let result = try NearbyDeletionHandler.classify(
+            [deletion], peerKey: "PEER", in: context, openNotebookIDs: [notebook.stableID],
+            alreadyQueued: [], defaults: defaults)
+
+        XCTAssertTrue(result.toAsk.isEmpty)
+        XCTAssertTrue(result.handled.isEmpty, "it must be offered again after the editor closes")
+    }
+
+    @MainActor
+    func testConfirmingDeletesAndKeepingRemembersTheChoice() throws {
+        let defaults = isolatedDefaults()
+        let context = try makeContext()
+        let doomed = try syncedNotebook(in: context, peerKey: "PEER", defaults: defaults)
+        let kept = try syncedNotebook(in: context, peerKey: "PEER", defaults: defaults)
+
+        try NearbyDeletionHandler.apply(
+            [NearbyPendingDeletion(id: doomed.stableID, title: doomed.title)],
+            delete: true, in: context, openNotebookIDs: [], defaults: defaults)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Notebook>()).map(\.stableID), [kept.stableID])
+        XCTAssertNil(defaults.string(forKey: "nearbySync.shared.PEER.\(doomed.stableID.uuidString)"))
+
+        try NearbyDeletionHandler.apply(
+            [NearbyPendingDeletion(id: kept.stableID, title: kept.title)],
+            delete: false, in: context, openNotebookIDs: [], defaults: defaults)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Notebook>()).count, 1)
+        XCTAssertTrue(NearbyKeptDeletions.contains(kept.stableID, defaults: defaults))
+        let again = try NearbyDeletionHandler.classify(
+            [NearbySyncDeletion(id: kept.stableID, title: kept.title, deletedAt: 0)],
+            peerKey: "PEER", in: context, openNotebookIDs: [], alreadyQueued: [], defaults: defaults)
+        XCTAssertTrue(again.toAsk.isEmpty, "a kept notebook must not be asked about again")
+        XCTAssertEqual(again.handled, [kept.stableID])
+    }
+
+    /// The user may edit, or open, the notebook while the question is on
+    /// screen. Confirming must not then destroy that work.
+    @MainActor
+    func testConfirmingNeverDeletesANotebookEditedOrOpenedSinceTheQuestion() throws {
+        let defaults = isolatedDefaults()
+        let context = try makeContext()
+        let edited = try syncedNotebook(in: context, peerKey: "PEER", defaults: defaults)
+        let open = try syncedNotebook(in: context, peerKey: "PEER", defaults: defaults)
+        edited.title = "Edited while the alert was showing"
+
+        try NearbyDeletionHandler.apply(
+            [NearbyPendingDeletion(id: edited.stableID, title: "x"),
+             NearbyPendingDeletion(id: open.stableID, title: "y")],
+            delete: true, in: context, openNotebookIDs: [open.stableID], defaults: defaults)
+
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Notebook>()).count, 2)
+    }
+
     func testNearbyConcurrentExchangeConvergesWithOneConflictCopy() throws {
         let macContext = try makeContext()
         let ipadContext = try makeContext()

@@ -36,6 +36,7 @@ struct BetterNotesMacApp: App {
     var body: some Scene {
         WindowGroup {
             MacLibraryView(startupError: startupError)
+                .nearbyDeletionPrompt()
                 .environmentObject(aiSettings)
                 .environmentObject(corpus)
                 .environmentObject(nearbySync)

@@ -9,6 +9,12 @@ The first nearby connection requires approval on both devices; subsequent
 connections start automatically while both apps are open. An editable archive
 is still available for recovery. Nearby sync uses Multipeer Connectivity,
 Bonjour service `_better-notes._tcp`, and required session encryption.
+When both devices edited a notebook, a Nearby Sync setting decides (default:
+keep both, the copy going to Archive); a winning choice applies only when both
+devices use the same one. Moving to Trash syncs as an edit. A permanent delete
+is sent to the peer (protocol v5), which asks its user before deleting and never
+deletes a notebook edited since the last sync. Design:
+`docs/superpowers/specs/2026-10-01-sync-conflict-and-delete-policy-design.md`.
 
 Deadlines: **feature-complete 30 Sep 2026, App Store 31 Oct 2026.**
 

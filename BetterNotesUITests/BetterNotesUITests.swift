@@ -688,6 +688,23 @@ final class BetterNotesUITests: XCTestCase {
                       "the chosen conflict setting was not remembered")
     }
 
+    /// A permanent delete made on the other device is never applied silently:
+    /// the user is asked, can keep the notebook, and is not asked again.
+    func testOtherDevicesPermanentDeleteAsksBeforeDeleting() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-pending-deletion")
+        app.launch()
+
+        let alert = app.alerts["Deleted on your other device"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 8), "no confirmation for the other device's permanent delete")
+        XCTAssertTrue(alert.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Seeded Notebook'"))
+            .firstMatch.exists, "the prompt should name the notebook")
+        XCTAssertTrue(alert.buttons["Delete Here Too"].exists)
+        attachScreenshot(named: "Permanent Delete Prompt")
+        alert.buttons["Keep"].tap()
+        XCTAssertTrue(alert.waitForNonExistence(timeout: 4), "the prompt stayed after answering")
+    }
+
     func testEmptyFolderSurvivesRelaunch() {
         let name = uniqueTitle("Courses")
         app.buttons["library-new-folder"].tap()

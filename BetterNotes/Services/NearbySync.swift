@@ -26,11 +26,170 @@ private struct NearbySyncPackage: Codable {
     let accepted: [NearbySyncAcknowledgement]?
     /// The sender's conflict setting. Devices that disagree keep both copies.
     let conflictPolicy: String?
+    /// Notebooks the sender permanently deleted. The receiver asks its user.
+    let deletions: [NearbySyncDeletion]?
+    /// Deletions from the peer's last package that this device has dealt with.
+    let deletionsHandled: [UUID]?
 }
 
 private struct NearbySyncMessage: Codable {
     let kind: String
     let accepted: [NearbySyncAcknowledgement]?
+    var deletionsHandled: [UUID]? = nil
+}
+
+/// A notebook the user permanently deleted, kept until the peer has dealt
+/// with it. The title is stored because the notebook itself is gone.
+struct NearbySyncDeletion: Codable, Equatable {
+    let id: UUID
+    let title: String
+    let deletedAt: Double
+}
+
+/// Permanent deletes waiting to be delivered to the paired device.
+enum NearbyDeletionLog {
+    private static let key = "nearbySync.deletions"
+    static let retention: TimeInterval = 90 * 24 * 60 * 60
+
+    /// Remember a permanent delete. Notebooks that never synced are skipped:
+    /// the peer has no copy, and their titles should not leave the device.
+    static func record(id: UUID, title: String, defaults: UserDefaults = .standard, now: Date = .now) {
+        let suffix = "." + id.uuidString
+        guard defaults.dictionaryRepresentation().keys.contains(where: {
+            $0.hasPrefix("nearbySync.shared.") && $0.hasSuffix(suffix)
+        }) else { return }
+        var entries = load(defaults).filter { $0.id != id }
+        entries.append(NearbySyncDeletion(id: id, title: title, deletedAt: now.timeIntervalSince1970))
+        save(entries, to: defaults)
+    }
+
+    /// Deletions still to deliver; expired ones are dropped.
+    static func pending(defaults: UserDefaults = .standard, now: Date = .now) -> [NearbySyncDeletion] {
+        let all = load(defaults)
+        let live = all.filter { now.timeIntervalSince1970 - $0.deletedAt < retention }
+        if live.count != all.count { save(live, to: defaults) }
+        return live
+    }
+
+    static func clear(ids: some Collection<UUID>, defaults: UserDefaults = .standard) {
+        guard !ids.isEmpty else { return }
+        let drop = Set(ids)
+        save(load(defaults).filter { !drop.contains($0.id) }, to: defaults)
+    }
+
+    private static func load(_ defaults: UserDefaults) -> [NearbySyncDeletion] {
+        defaults.data(forKey: key).flatMap { try? JSONDecoder().decode([NearbySyncDeletion].self, from: $0) } ?? []
+    }
+
+    private static func save(_ entries: [NearbySyncDeletion], to defaults: UserDefaults) {
+        if entries.isEmpty { defaults.removeObject(forKey: key) }
+        else { defaults.set(try? JSONEncoder().encode(entries), forKey: key) }
+    }
+}
+
+/// Notebooks the user chose to keep after the other device deleted them, so
+/// the question is not asked again.
+enum NearbyKeptDeletions {
+    private static let key = "nearbySync.keptDeletions"
+
+    static func contains(_ id: UUID, defaults: UserDefaults = .standard) -> Bool {
+        (defaults.stringArray(forKey: key) ?? []).contains(id.uuidString)
+    }
+
+    static func add(_ id: UUID, defaults: UserDefaults = .standard) {
+        var ids = defaults.stringArray(forKey: key) ?? []
+        if !ids.contains(id.uuidString) { ids.append(id.uuidString) }
+        defaults.set(ids, forKey: key)
+    }
+}
+
+/// What this device does with a notebook the other device permanently deleted.
+enum NearbyDeletionDecision: Equatable {
+    /// Nothing to ask: the notebook is gone, in Trash, or already kept.
+    case acknowledge
+    /// Ask the user. Not acknowledged, so it is offered again until answered.
+    case askUser
+    /// Edited here since the last sync. Deleting would lose that work, so keep it.
+    case keepEdited
+
+    static func decide(localHash: String?, localInTrash: Bool, baseline: String?,
+                       alreadyKept: Bool) -> Self {
+        guard let localHash, !localInTrash, !alreadyKept else { return .acknowledge }
+        guard let baseline, baseline == localHash else { return .keepEdited }
+        return .askUser
+    }
+}
+
+struct NearbyPendingDeletion: Identifiable, Equatable {
+    let id: UUID
+    let title: String
+}
+
+/// Applies the other device's permanent deletes to this library, one
+/// notebook at a time, never deleting anything the user has not confirmed.
+enum NearbyDeletionHandler {
+    struct Classification {
+        var handled: [UUID] = []
+        var toAsk: [NearbyPendingDeletion] = []
+        var keptEdited: [String] = []
+    }
+
+    private static func baselineKeys(for id: UUID, defaults: UserDefaults) -> [String] {
+        defaults.dictionaryRepresentation().keys
+            .filter { $0.hasPrefix("nearbySync.shared.") && $0.hasSuffix("." + id.uuidString) }
+    }
+
+    @MainActor
+    static func classify(_ deletions: [NearbySyncDeletion], peerKey: String, in context: ModelContext,
+                         openNotebookIDs: Set<UUID>, alreadyQueued: Set<UUID>,
+                         defaults: UserDefaults = .standard) throws -> Classification {
+        var result = Classification()
+        let notebooks = try context.fetch(FetchDescriptor<Notebook>())
+        for deletion in deletions {
+            let existing = notebooks.first { $0.stableID == deletion.id }
+            let localHash = try existing.map { NearbySyncCoordinator.hash(try CloudTranslator.syncArchiveData(for: $0)) }
+            let baseline = defaults.string(forKey: "nearbySync.shared.\(peerKey).\(deletion.id.uuidString)")
+            switch NearbyDeletionDecision.decide(
+                localHash: localHash, localInTrash: existing?.trashedAt != nil,
+                baseline: baseline, alreadyKept: NearbyKeptDeletions.contains(deletion.id, defaults: defaults)
+            ) {
+            case .acknowledge:
+                result.handled.append(deletion.id)
+            case .keepEdited:
+                result.handled.append(deletion.id)
+                result.keptEdited.append(deletion.title)
+            case .askUser:
+                // An open notebook is not deleted under its editor; ask later.
+                if !openNotebookIDs.contains(deletion.id), !alreadyQueued.contains(deletion.id),
+                   !result.toAsk.contains(where: { $0.id == deletion.id }) {
+                    result.toAsk.append(NearbyPendingDeletion(id: deletion.id, title: deletion.title))
+                }
+            }
+        }
+        return result
+    }
+
+    /// Keep remembers the choice. Delete re-checks each notebook first: one
+    /// edited or opened since the question was queued is left alone.
+    @MainActor
+    static func apply(_ items: [NearbyPendingDeletion], delete: Bool, in context: ModelContext,
+                      openNotebookIDs: Set<UUID>, defaults: UserDefaults = .standard) throws {
+        let notebooks = try context.fetch(FetchDescriptor<Notebook>())
+        for item in items {
+            guard delete else {
+                NearbyKeptDeletions.add(item.id, defaults: defaults)
+                continue
+            }
+            guard let notebook = notebooks.first(where: { $0.stableID == item.id }),
+                  !openNotebookIDs.contains(item.id) else { continue }
+            let hash = NearbySyncCoordinator.hash(try CloudTranslator.syncArchiveData(for: notebook))
+            let keys = baselineKeys(for: item.id, defaults: defaults)
+            guard keys.contains(where: { defaults.string(forKey: $0) == hash }) else { continue }
+            context.delete(notebook)
+            keys.forEach { defaults.removeObject(forKey: $0) }
+        }
+        try context.save()
+    }
 }
 
 struct NearbySyncAcknowledgement: Codable, Equatable {
@@ -240,6 +399,13 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
     /// True when the other device's conflict setting differs from this one's,
     /// in which case both copies are kept so nothing is lost.
     @Published private(set) var policyMismatch = false
+    /// Notebooks the other device permanently deleted that are waiting for the
+    /// user to say whether to delete them here too.
+    @Published private(set) var pendingDeletions: [NearbyPendingDeletion] = []
+    /// Notebooks kept without asking because they were edited here.
+    @Published private(set) var keptEditedTitles: [String] = []
+    private var deletionsHandledIncoming: [UUID] = []
+    private var lastSentDeletionIDs: Set<UUID> = []
     /// Stable IDs of notebooks an editor currently has open. Replacing one
     /// deletes its model under the editor and discards edits made since the
     /// exchange began, so those notebooks wait until they are closed.
@@ -307,6 +473,12 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
                                                 discoveryInfo: ["id": id.uuidString, "platform": Self.platform],
                                                 serviceType: Self.serviceType)
         super.init()
+        // A UI test cannot bring a second device, so it can seed the question
+        // the other device's permanent delete would raise.
+        let arguments = CommandLine.arguments
+        if arguments.contains("-ui-testing"), arguments.contains("-ui-testing-pending-deletion") {
+            pendingDeletions = [NearbyPendingDeletion(id: UUID(), title: "Seeded Notebook")]
+        }
         session.delegate = self
         browser.delegate = self
         advertiser.delegate = self
@@ -384,10 +556,12 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
 
     @discardableResult
     private func sendMessage(_ kind: String, to peer: MCPeerID,
-                             accepted: [NearbySyncAcknowledgement]? = nil) -> Bool {
+                             accepted: [NearbySyncAcknowledgement]? = nil,
+                             deletionsHandled: [UUID]? = nil) -> Bool {
         do {
             if kind == "request" { initiated = true }
-            let data = try JSONEncoder().encode(NearbySyncMessage(kind: kind, accepted: accepted))
+            let data = try JSONEncoder().encode(NearbySyncMessage(kind: kind, accepted: accepted,
+                                                                    deletionsHandled: deletionsHandled))
             try session.send(data, toPeers: [peer], with: .reliable)
             return true
         } catch {
@@ -416,11 +590,16 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
             lastSentHashes = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.hash) })
             lastLocalDigest = Self.hash(Data(entries.sorted { $0.id.uuidString < $1.id.uuidString }
                 .map { $0.id.uuidString + $0.hash }.joined().utf8))
+            let deletions = NearbyDeletionLog.pending()
+            lastSentDeletionIDs = Set(deletions.map(\.id))
             let package = NearbySyncPackage(version: 5, deviceID: deviceID,
                                             deviceName: localPeer.displayName, entries: entries,
                                             accepted: acceptedIncoming,
-                                            conflictPolicy: conflictPolicy.rawValue)
+                                            conflictPolicy: conflictPolicy.rawValue,
+                                            deletions: deletions,
+                                            deletionsHandled: deletionsHandledIncoming)
             acceptedIncoming.removeAll()
+            deletionsHandledIncoming.removeAll()
             let data = try JSONEncoder().encode(package)
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("BetterNotes-Nearby-\(UUID().uuidString).json")
@@ -464,6 +643,7 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
             }
             activePeerDeviceID = package.deviceID
             rememberAccepted(package.accepted ?? [], from: package.deviceID)
+            rememberHandledDeletions(package.deletionsHandled ?? [])
             let remoteName = String(package.deviceName.prefix(40))
             var imported = 0
             var updated = 0
@@ -544,14 +724,16 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
             }
             deferredNotebookIDs = deferred
             deferredCount = deferred.count
+            let handledDeletions = try processDeletions(package.deletions ?? [], peerKey: peerKey)
             lastReceiveSummary = "\(imported) new, \(updated) updated, \(conflicts) conflict copies"
             status = "Received \(lastReceiveSummary) from \(remoteName)."
             if initiated {
                 acceptedIncoming = accepted
+                deletionsHandledIncoming = handledDeletions
                 sendLibrary(to: peer)
             } else {
                 lastLocalDigest = try localDigest()
-                if sendMessage("complete", to: peer, accepted: accepted) {
+                if sendMessage("complete", to: peer, accepted: accepted, deletionsHandled: handledDeletions) {
                     rememberPair(peer)
                     complete(with: peer)
                     isBusy = false
@@ -576,6 +758,7 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
         lastReceiveSummary = ""
         lastSentHashes.removeAll()
         acceptedIncoming.removeAll()
+        deletionsHandledIncoming.removeAll()
     }
 
     private func armWatchdog() {
@@ -585,6 +768,34 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
             guard !Task.isCancelled, let self, self.isBusy else { return }
             self.fail("Sync timed out. Reopen Nearby Sync on both devices to retry.")
             self.session.disconnect()
+        }
+    }
+
+    /// Drop deletions the peer says it dealt with. An id this device did not
+    /// send in its last package is ignored.
+    private func rememberHandledDeletions(_ handled: [UUID]) {
+        NearbyDeletionLog.clear(ids: handled.filter { lastSentDeletionIDs.contains($0) })
+    }
+
+    private func processDeletions(_ deletions: [NearbySyncDeletion], peerKey: String) throws -> [UUID] {
+        guard let context else { return [] }
+        let result = try NearbyDeletionHandler.classify(
+            deletions, peerKey: peerKey, in: context, openNotebookIDs: openNotebookIDs,
+            alreadyQueued: Set(pendingDeletions.map(\.id)))
+        pendingDeletions += result.toAsk
+        for title in result.keptEdited where !keptEditedTitles.contains(title) { keptEditedTitles.append(title) }
+        return result.handled
+    }
+
+    /// The user's answer to the prompt.
+    func answerDeletions(delete: Bool) {
+        let items = pendingDeletions
+        pendingDeletions = []
+        guard let context else { return }
+        do {
+            try NearbyDeletionHandler.apply(items, delete: delete, in: context, openNotebookIDs: openNotebookIDs)
+        } catch {
+            status = "Could not apply the deletion: \(error.localizedDescription)"
         }
     }
 
@@ -655,7 +866,7 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
         return Self.hash(Data(components.joined().utf8))
     }
 
-    private static func hash(_ data: Data) -> String {
+    static func hash(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
@@ -766,6 +977,7 @@ extension NearbySyncCoordinator: MCSessionDelegate {
                 if let remoteDeviceID = self.activePeerDeviceID {
                     self.rememberAccepted(message.accepted ?? [], from: remoteDeviceID)
                 }
+                self.rememberHandledDeletions(message.deletionsHandled ?? [])
                 self.rememberPair(peerID)
                 self.complete(with: peerID)
                 self.isBusy = false
@@ -812,6 +1024,45 @@ private enum NearbySyncError: LocalizedError {
         case .unsupportedVersion: "Update BetterNotes on both devices before syncing nearby."
         }
     }
+}
+
+/// Asks whether to delete here what the other device permanently deleted.
+/// Attached at the app root because paired devices sync with the sheet closed.
+private struct NearbyDeletionPrompt: ViewModifier {
+    @EnvironmentObject private var sync: NearbySyncCoordinator
+
+    private var message: String {
+        let items = sync.pendingDeletions
+        if items.count == 1, let only = items.first {
+            return AppLocalization.format(
+                "“%@” was permanently deleted on your other device. Delete it here too? This cannot be undone.",
+                only.title)
+        }
+        let list = items.prefix(5).map { "• " + $0.title }.joined(separator: "\n")
+            + (items.count > 5 ? "\n…" : "")
+        return AppLocalization.format(
+            "%lld notebooks were permanently deleted on your other device:\n%@\nDelete them here too? This cannot be undone.",
+            Int64(items.count), list)
+    }
+
+    func body(content: Content) -> some View {
+        content.alert(
+            AppLocalization.text("Deleted on your other device"),
+            isPresented: Binding(
+                get: { !sync.pendingDeletions.isEmpty },
+                set: { _ in }
+            )
+        ) {
+            Button(AppLocalization.text("Delete Here Too"), role: .destructive) { sync.answerDeletions(delete: true) }
+            Button(AppLocalization.text("Keep"), role: .cancel) { sync.answerDeletions(delete: false) }
+        } message: {
+            Text(message)
+        }
+    }
+}
+
+extension View {
+    func nearbyDeletionPrompt() -> some View { modifier(NearbyDeletionPrompt()) }
 }
 
 struct NearbySyncSheet: View {
@@ -865,6 +1116,13 @@ struct NearbySyncSheet: View {
                     Text(AppLocalization.nearbyStatus(sync.status))
                     if sync.deferredCount > 0 {
                         Text("Open notebooks waiting to update: \(sync.deferredCount). Close them to finish syncing.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !sync.keptEditedTitles.isEmpty {
+                        Text(AppLocalization.format(
+                            "Kept because they were edited here after the other device deleted them: %@",
+                            sync.keptEditedTitles.joined(separator: ", ")))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }

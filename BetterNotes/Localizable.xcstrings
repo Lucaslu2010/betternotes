@@ -51,6 +51,22 @@
         }
       }
     },
+    "%lld notebooks were permanently deleted on your other device:\n%@\nDelete them here too? This cannot be undone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有 %lld 本笔记本已在你的另一台设备上被永久删除：\n%@\n要在此设备上也删除吗？此操作无法撤销。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有 %lld 本筆記本已在你的另一臺裝置上被永久刪除：\n%@\n要在此裝置上也刪除嗎？此操作無法復原。"
+          }
+        }
+      }
+    },
     "%lld pages": {
       "localizations": {
         "zh-Hans": {
@@ -2056,6 +2072,22 @@
         }
       }
     },
+    "Delete Here Too": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在此也删除"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在此也刪除"
+          }
+        }
+      }
+    },
     "Delete Page": {
       "localizations": {
         "zh-Hans": {
@@ -2134,6 +2166,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "可在這裡恢復已刪除的筆記本"
+          }
+        }
+      }
+    },
+    "Deleted on your other device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在另一台设备上已删除"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在另一臺裝置上已刪除"
           }
         }
       }
@@ -3394,6 +3442,22 @@
         }
       }
     },
+    "Keep": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留"
+          }
+        }
+      }
+    },
     "Keep BetterNotes open on both devices until the transfer finishes. Conflicting edits are saved as separate notebooks in Archive.": {
       "localizations": {
         "zh-Hans": {
@@ -3438,6 +3502,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "「保留兩份」會把另一個版本作為筆記本存入存檔。其他選項會捨棄落敗的編輯。請在兩臺裝置上使用相同的設定；「以最新編輯為準」要求兩臺裝置的時鐘都準確。"
+          }
+        }
+      }
+    },
+    "Kept because they were edited here after the other device deleted them: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "因为在另一台设备删除后你在此处编辑过，所以已保留：%@"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "因為在另一臺裝置刪除後你在此處編輯過，所以已保留：%@"
           }
         }
       }
@@ -8213,6 +8293,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "另一部裝置未能完成同步。"
+          }
+        }
+      }
+    },
+    "“%@” was permanently deleted on your other device. Delete it here too? This cannot be undone.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“%@”已在你的另一台设备上被永久删除。要在此设备上也删除吗？此操作无法撤销。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「%@」已在你的另一臺裝置上被永久刪除。要在此裝置上也刪除嗎？此操作無法復原。"
           }
         }
       }

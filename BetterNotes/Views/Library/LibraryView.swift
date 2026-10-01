@@ -658,8 +658,10 @@ struct LibraryView: View {
         ) {
             Button("Delete Permanently", role: .destructive) {
                 if let notebook = notebookToPermanentlyDelete {
+                    let deleted = (id: notebook.stableID, title: notebook.title)
                     context.delete(notebook)
-                    _ = saveChanges()
+                    // Only a delete that was saved is announced to the other device.
+                    if saveChanges() { NearbyDeletionLog.record(id: deleted.id, title: deleted.title) }
                 }
                 notebookToPermanentlyDelete = nil
             }
@@ -1679,10 +1681,13 @@ private var emptyState: some View {
     }
 
     private func emptyTrash() {
+        let emptied = notebooks.filter { $0.trashedAt != nil }.map { (id: $0.stableID, title: $0.title) }
         for notebook in notebooks where notebook.trashedAt != nil {
             context.delete(notebook)
         }
-        _ = saveChanges()
+        if saveChanges() {
+            emptied.forEach { NearbyDeletionLog.record(id: $0.id, title: $0.title) }
+        }
     }
 
     /// Removes notebooks and pages that have sat in the trash past the

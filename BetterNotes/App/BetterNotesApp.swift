@@ -149,6 +149,7 @@ struct BetterNotesApp: App {
                 }
             }
             .environment(\.locale, Locale(identifier: language))
+            .nearbyDeletionPrompt()
         }
         .modelContainer(modelContainer)
         .environmentObject(aiSettings)

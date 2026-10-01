@@ -297,8 +297,12 @@ struct MacLibraryView: View {
               let notebook = notebooks.first(where: { $0.stableID == id }) else { return }
         notebookToPermanentlyDelete = nil
         if selectedNotebookID == id { selectedNotebookID = nil; selectedPageID = nil }
+        let deleted = (id: notebook.stableID, title: notebook.title)
         context.delete(notebook)
-        do { try context.save() } catch { alertMessage = error.localizedDescription }
+        do {
+            try context.save()
+            NearbyDeletionLog.record(id: deleted.id, title: deleted.title)
+        } catch { alertMessage = error.localizedDescription }
     }
 
     private func pageLabel(_ page: Page) -> String {
