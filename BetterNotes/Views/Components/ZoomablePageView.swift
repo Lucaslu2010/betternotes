@@ -26,6 +26,16 @@ enum PageSwipeDirection {
     case next
 }
 
+/// A leftward drag past the last page, reported while it happens so the
+/// editor can show the page being pulled. Distances are points of leftward
+/// finger travel.
+enum PageEdgePull {
+    case changed(CGFloat)
+    /// `flick` is a fast leftward release, which commits without a full pull.
+    case ended(distance: CGFloat, flick: Bool)
+    case cancelled
+}
+
 /// Long-press recognizer for the blank-canvas paste menu that ignores a
 /// resting palm. A fingertip's touch majorRadius is typically under ~15pt;
 /// a palm heel reports well above that. Without this check, a hand resting
@@ -43,76 +53,12 @@ private final class BlankCanvasLongPressGestureRecognizer: UILongPressGestureRec
     }
 }
 
-private final class PullToAddPageIndicator: UIView {
-    private let track = CAShapeLayer()
-    private let progressRing = CAShapeLayer()
-    private let arrow = UIImageView(image: UIImage(systemName: "arrow.up"))
-    private let pageIcon = UIImageView(image: UIImage(systemName: "plus.square"))
-    private let caption = UILabel()
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isUserInteractionEnabled = false
-        isAccessibilityElement = true
-        accessibilityIdentifier = "pull-to-add-page"
-        tintColor = .systemBlue
-
-        for ring in [track, progressRing] {
-            ring.fillColor = UIColor.clear.cgColor
-            ring.lineWidth = 4
-            ring.lineCap = .round
-            layer.addSublayer(ring)
-        }
-        progressRing.strokeEnd = 0
-        arrow.tintColor = .systemBlue
-        arrow.contentMode = .scaleAspectFit
-        pageIcon.tintColor = .secondaryLabel
-        pageIcon.contentMode = .scaleAspectFit
-        caption.textAlignment = .center
-        caption.font = .preferredFont(forTextStyle: .footnote)
-        caption.textColor = .secondaryLabel
-        addSubview(arrow)
-        addSubview(pageIcon)
-        addSubview(caption)
-        setProgress(0)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        let centerX = bounds.midX
-        arrow.frame = CGRect(x: centerX - 10, y: 0, width: 20, height: 18)
-        pageIcon.frame = CGRect(x: centerX - 13, y: 34, width: 26, height: 26)
-        caption.frame = CGRect(x: 0, y: 75, width: bounds.width, height: 22)
-        let circle = UIBezierPath(
-            arcCenter: CGPoint(x: centerX, y: 47),
-            radius: 24,
-            startAngle: -.pi / 2,
-            endAngle: 3 * .pi / 2,
-            clockwise: true
-        ).cgPath
-        track.path = circle
-        progressRing.path = circle
-    }
-
-    func setProgress(_ progress: CGFloat) {
-        let ready = progress >= 1
-        progressRing.strokeEnd = min(max(progress, 0), 1)
-        caption.text = AppLocalization.text(ready ? "Release to Add Page" : "Pull to Add Page")
-        accessibilityLabel = caption.text
-        arrow.tintColor = ready ? .systemGreen : .systemBlue
-        progressRing.strokeColor = (ready ? UIColor.systemGreen : UIColor.systemBlue).cgColor
-        track.strokeColor = UIColor.tertiaryLabel.cgColor
-    }
-}
-
 struct ZoomablePageView<Content: View>: UIViewRepresentable {
     let pageSize: CGSize
     let panRequiresTwoFingers: Bool
     let onPageSwipe: (PageSwipeDirection) -> Void
     let canPullToAddPage: Bool
-    let onPullToAddPage: () -> Void
+    let onPullToAddPage: (PageEdgePull) -> Void
     @Binding var zoomCommand: PageZoomCommand?
     @Binding var zoomScale: CGFloat
     @Binding var zoomRatio: CGFloat
@@ -127,7 +73,7 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
         panRequiresTwoFingers: Bool,
         onPageSwipe: @escaping (PageSwipeDirection) -> Void = { _ in },
         canPullToAddPage: Bool = false,
-        onPullToAddPage: @escaping () -> Void = {},
+        onPullToAddPage: @escaping (PageEdgePull) -> Void = { _ in },
         zoomCommand: Binding<PageZoomCommand?> = .constant(nil),
         zoomScale: Binding<CGFloat> = .constant(1),
         zoomRatio: Binding<CGFloat> = .constant(1),
@@ -171,7 +117,6 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
         scrollView.delegate = context.coordinator
         scrollView.backgroundColor = UIColor.systemGroupedBackground
         scrollView.bouncesZoom = true
-        scrollView.alwaysBounceVertical = canPullToAddPage
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.showsVerticalScrollIndicator = false
         // Delays on touches so the PKCanvasView can start drawing before the
@@ -185,7 +130,6 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
         contentView.clipsToBounds = false
         contentView.frame = CGRect(origin: .zero, size: pageSize)
         scrollView.addSubview(contentView)
-        scrollView.insertSubview(context.coordinator.pullToAddIndicator, belowSubview: contentView)
 
         let hostedView = context.coordinator.hostingController.view!
         hostedView.backgroundColor = .clear
@@ -224,10 +168,9 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate {
         let hostingController: UIHostingController<Content>
         let contentView = UIView()
-        fileprivate let pullToAddIndicator = PullToAddPageIndicator(frame: CGRect(x: 0, y: 0, width: 240, height: 100))
         var onPageSwipe: (PageSwipeDirection) -> Void
         var canPullToAddPage: Bool
-        var onPullToAddPage: () -> Void
+        var onPullToAddPage: (PageEdgePull) -> Void
         var canShowBlankCanvasMenu: (CGPoint) -> Bool
         var onBlankCanvasMenuWillShow: () -> Void
         var onBlankCanvasPaste: () -> Void
@@ -246,7 +189,7 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
             pageSize: CGSize,
             onPageSwipe: @escaping (PageSwipeDirection) -> Void,
             canPullToAddPage: Bool,
-            onPullToAddPage: @escaping () -> Void,
+            onPullToAddPage: @escaping (PageEdgePull) -> Void,
             canShowBlankCanvasMenu: @escaping (CGPoint) -> Bool,
             onBlankCanvasMenuWillShow: @escaping () -> Void,
             onBlankCanvasPaste: @escaping () -> Void
@@ -259,7 +202,6 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
             self.onBlankCanvasMenuWillShow = onBlankCanvasMenuWillShow
             self.onBlankCanvasPaste = onBlankCanvasPaste
             self.lastPageSize = pageSize
-            pullToAddIndicator.isHidden = true
         }
 
         func installBlankCanvasPasteMenu() {
@@ -328,13 +270,11 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
             // contentSize must track zoomScale, not the raw page size — see
             // centerPage(), which keeps it in sync on every zoom/layout pass.
             scrollView.maximumZoomScale = 4.0
-            scrollView.alwaysBounceVertical = canPullToAddPage
             scrollView.panGestureRecognizer.minimumNumberOfTouches = panRequiresTwoFingers ? 2 : 1
             // Finger drawing uses one finger, so page turns use two in that
             // mode. With Pencil drawing, a single finger can turn the page.
             pageSwipeGesture?.minimumNumberOfTouches = panRequiresTwoFingers ? 2 : 1
             pageSwipeGesture?.maximumNumberOfTouches = panRequiresTwoFingers ? 2 : 1
-            if !canPullToAddPage { pullToAddIndicator.isHidden = true }
 
             DispatchQueue.main.async { [weak self, weak scrollView] in
                 guard let self, let scrollView else { return }
@@ -364,13 +304,6 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             reportVisiblePageCenter(scrollView, pageSize: lastPageSize)
-            updatePullToAddIndicator(in: scrollView)
-        }
-
-        func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-            let shouldAdd = canPullToAddPage && bottomOverscroll(in: scrollView) >= 100
-            pullToAddIndicator.isHidden = true
-            if shouldAdd { onPullToAddPage() }
         }
 
         func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
@@ -407,7 +340,61 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
                 || (otherGestureRecognizer === pageSwipeGesture && gestureRecognizer is UIPanGestureRecognizer)
         }
 
+        private var pullIsEligible = false
+        private var isPullingToAddPage = false
+
+        /// True when the page cannot scroll any further to the right, so a
+        /// leftward drag is a request for the next page and not a pan of a
+        /// zoomed-in page.
+        private func isPinnedToTrailingEdge(_ scrollView: UIScrollView) -> Bool {
+            let maxOffsetX = scrollView.contentSize.width - scrollView.bounds.width + scrollView.adjustedContentInset.right
+            return scrollView.contentOffset.x >= maxOffsetX - 1
+        }
+
+        /// Reports a leftward drag on the last page so the editor can show the
+        /// page being pulled. Returns true when this gesture belongs to the pull.
+        private func handleAddPagePull(_ gesture: UIPanGestureRecognizer, in scrollView: UIScrollView) -> Bool {
+            let translation = gesture.translation(in: scrollView)
+            switch gesture.state {
+            case .began:
+                pullIsEligible = isPinnedToTrailingEdge(scrollView)
+                isPullingToAddPage = false
+                return false
+            case .changed:
+                guard pullIsEligible else { return false }
+                let leftward = -translation.x
+                let horizontal = abs(translation.x) > abs(translation.y) * 1.2
+                if leftward > 0, isPullingToAddPage || horizontal {
+                    isPullingToAddPage = true
+                    onPullToAddPage(.changed(leftward))
+                    return true
+                }
+                if isPullingToAddPage {
+                    onPullToAddPage(.changed(0))
+                    return true
+                }
+                return false
+            case .ended:
+                guard isPullingToAddPage else { return false }
+                isPullingToAddPage = false
+                let velocity = gesture.velocity(in: scrollView)
+                onPullToAddPage(.ended(distance: max(0, -translation.x), flick: velocity.x < -800))
+                return true
+            case .cancelled, .failed:
+                guard isPullingToAddPage else { return false }
+                isPullingToAddPage = false
+                onPullToAddPage(.cancelled)
+                return true
+            default:
+                return false
+            }
+        }
+
         @objc private func handlePageSwipePan(_ gesture: UIPanGestureRecognizer) {
+            if canPullToAddPage, let scrollView = gesture.view as? UIScrollView,
+               handleAddPagePull(gesture, in: scrollView) {
+                return
+            }
             guard gesture.state == .ended, let view = gesture.view else { return }
 
             let translation = gesture.translation(in: view)
@@ -419,7 +406,11 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
             guard isLongHorizontalSwipe || isFastHorizontalSwipe else { return }
 
             let directionValue = isLongHorizontalSwipe ? translation.x : velocity.x
-            onPageSwipe(directionValue < 0 ? .next : .previous)
+            let direction: PageSwipeDirection = directionValue < 0 ? .next : .previous
+            // On the last page the next page is added only by pulling, which
+            // shows the pull and asks for a full drag, not by a bare swipe.
+            if canPullToAddPage && direction == .next { return }
+            onPageSwipe(direction)
         }
 
         func editMenuInteraction(
@@ -532,28 +523,6 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
                 bottom: verticalInset + bottomClearance,
                 right: horizontalInset
             )
-            pullToAddIndicator.frame.origin = CGPoint(
-                x: (scaledWidth - pullToAddIndicator.bounds.width) / 2,
-                y: scaledHeight + 8
-            )
-        }
-
-        private func bottomOverscroll(in scrollView: UIScrollView) -> CGFloat {
-            let bottomOffset = max(
-                -scrollView.adjustedContentInset.top,
-                scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
-            )
-            return max(0, scrollView.contentOffset.y - bottomOffset)
-        }
-
-        private func updatePullToAddIndicator(in scrollView: UIScrollView) {
-            guard canPullToAddPage, scrollView.isDragging, !scrollView.isZooming else {
-                pullToAddIndicator.isHidden = true
-                return
-            }
-            let distance = bottomOverscroll(in: scrollView)
-            pullToAddIndicator.isHidden = distance < 8
-            if distance >= 8 { pullToAddIndicator.setProgress(distance / 100) }
         }
 
         private func refreshRenderingScale(for scrollView: UIScrollView) {

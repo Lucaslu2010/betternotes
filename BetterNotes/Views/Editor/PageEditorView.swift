@@ -54,8 +54,8 @@ struct PageEditorView: View {
     @Binding var command: EditorCommand?
     let pageTurnDirection: PageTurnDirection
     var onPageSwipe: (PageSwipeDirection) -> Void = { _ in }
+    /// True on the last page of an editable notebook in single-page mode.
     var canPullToAddPage = false
-    var onPullToAddPage: () -> Void = {}
     // Vertical scroll mode zooms the whole multi-page document as one unit
     // (see NotebookView.verticalScrollContent) instead of letting each page
     // run its own independent pinch-to-zoom UIScrollView -- that per-page
@@ -130,6 +130,8 @@ struct PageEditorView: View {
     @State private var isApplyingProgrammaticChange = false
     @State private var pendingCanvasDrawing = PendingCanvasDrawing()
     @State private var pageSlideOffset: CGFloat = 0
+    /// Points the finger has pulled the last page to the left.
+    @State private var addPagePull: CGFloat = 0
     @State private var pageAreaWidth: CGFloat = 0
     @State private var isUsingInkTool = false
     @State private var heldShapePreview: PKDrawing?
@@ -226,7 +228,7 @@ struct PageEditorView: View {
                             panRequiresTwoFingers: pagePanRequiresTwoFingers,
                             onPageSwipe: onPageSwipe,
                             canPullToAddPage: canPullToAddPage,
-                            onPullToAddPage: onPullToAddPage,
+                            onPullToAddPage: handleAddPagePull,
                             zoomCommand: $zoomCommand,
                             zoomScale: $zoomScale,
                             zoomRatio: $zoomRatio,
@@ -243,7 +245,16 @@ struct PageEditorView: View {
                         pageContent
                     }
                 }
-                .offset(x: pageSlideOffset)
+                .offset(x: pageSlideOffset - Self.rubberBand(addPagePull))
+                // Drawn behind the page, which slides aside to reveal it.
+                .background(alignment: .trailing) {
+                    if addPagePull > 0 {
+                        AddPagePullIndicator(
+                            progress: addPagePull / Self.addPageThreshold,
+                            revealedWidth: Self.rubberBand(addPagePull)
+                        )
+                    }
+                }
                 .background(
                     GeometryReader { geo in
                         Color.clear
@@ -926,6 +937,38 @@ struct PageEditorView: View {
             scheduleHandwritingOCR(offersQuestions: false)
         }
         animatePageSurfaceIn()
+    }
+
+    /// Finger travel needed to add a page, and the flick that counts as enough.
+    private static let addPageThreshold: CGFloat = 140
+    private static let addPageMinimumFlickDistance: CGFloat = 60
+
+    /// The page follows the finger with resistance, and stops short of
+    /// leaving the screen.
+    private static func rubberBand(_ distance: CGFloat) -> CGFloat {
+        min(max(distance, 0) * 0.6, 220)
+    }
+
+    private func handleAddPagePull(_ event: PageEdgePull) {
+        guard canPullToAddPage, !isReadOnly else { return }
+        switch event {
+        case .changed(let distance):
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { addPagePull = distance }
+        case .ended(let distance, let flick):
+            let commits = distance >= Self.addPageThreshold
+                || (flick && distance >= Self.addPageMinimumFlickDistance)
+            if commits {
+                // The page slides out with its current offset while the new
+                // one slides in; this editor is replaced, so nothing resets.
+                onPageSwipe(.next)
+            } else {
+                withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.8)) { addPagePull = 0 }
+            }
+        case .cancelled:
+            withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.8)) { addPagePull = 0 }
+        }
     }
 
     private func animatePageSurfaceIn() {
@@ -3194,6 +3237,46 @@ private struct SelectionHandles: View {
             EdgeAnchor(id: "l", point: CGPoint(x: bounds.minX, y: bounds.midY), axis: .horizontal),
             EdgeAnchor(id: "r", point: CGPoint(x: bounds.maxX, y: bounds.midY), axis: .horizontal)
         ]
+    }
+}
+
+/// Shown behind the last page while it is pulled aside: a ring that fills as
+/// the pull nears the threshold, and what releasing will do. It is sized to
+/// the strip the page has uncovered so none of it hides behind the page.
+private struct AddPagePullIndicator: View {
+    let progress: CGFloat
+    let revealedWidth: CGFloat
+
+    var body: some View {
+        let ready = progress >= 1
+        let tint: Color = ready ? .green : .blue
+        let caption = AppLocalization.text(ready ? "Release to Add Page" : "Pull to Add Page")
+        VStack(spacing: 8) {
+            ZStack {
+                Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 4)
+                Circle()
+                    .trim(from: 0, to: min(max(progress, 0), 1))
+                    .stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Image(systemName: ready ? "doc.badge.plus" : "arrow.left")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(tint)
+            }
+            .frame(width: 48, height: 48)
+            Text(caption)
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .minimumScaleFactor(0.8)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .frame(width: max(revealedWidth, 0))
+        .opacity(min(1, revealedWidth / 56))
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("pull-to-add-page")
+        .accessibilityLabel(caption)
     }
 }
 

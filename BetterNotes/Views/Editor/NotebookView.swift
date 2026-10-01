@@ -150,7 +150,8 @@ struct NotebookView: View {
                         toolSettings: toolSettings,
                         command: $editorCommand,
                         pageTurnDirection: pageTurnDirection,
-                        onPageSwipe: handlePageSwipe
+                        onPageSwipe: handlePageSwipe,
+                        canPullToAddPage: !isReadOnly && safePageIndex >= sortedPages.count - 1
                     )
                     // PKCanvasView is stateful UIKit content. Scoping the editor to
                     // one page prevents a canvas from being rebound to another page

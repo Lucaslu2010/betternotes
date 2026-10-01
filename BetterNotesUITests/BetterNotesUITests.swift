@@ -161,7 +161,7 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Portrait"].isSelected)
     }
 
-    func testSinglePageAddsOnlyWithLeftSwipeAtEnd() {
+    func testSinglePageAddsOnlyWithLongPullAtEnd() {
         _ = openNotebook(named: uniqueTitle("Swipe to Add Page"))
         let canvas = app.scrollViews["page-canvas"]
         let pageOne = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 1 of 1'"))
@@ -174,8 +174,23 @@ final class BetterNotesUITests: XCTestCase {
 
         let pageTwo = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'"))
         swipeCanvasLeft()
-        XCTAssertTrue(pageTwo.firstMatch.waitForExistence(timeout: 5), "swiping left on the last page did not add one")
+        XCTAssertTrue(pageTwo.firstMatch.waitForExistence(timeout: 5), "a long pull past the last page did not add one")
         attachScreenshot(named: "Page Added by Swipe")
+    }
+
+    /// The pull has to be a real pull: a short, slow drag past the last page
+    /// springs back and adds nothing, so a stray swipe does not litter the
+    /// notebook with blank pages.
+    func testShortPullOnTheLastPageDoesNotAddAPage() {
+        _ = openNotebook(named: uniqueTitle("Short Pull"))
+        let pageOne = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 1 of 1'"))
+        XCTAssertTrue(pageOne.firstMatch.waitForExistence(timeout: 5))
+
+        swipeCanvasLeft(to: 0.70)
+
+        let pageTwo = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Page 2 of 2'"))
+        XCTAssertFalse(pageTwo.firstMatch.waitForExistence(timeout: 2), "a short pull added a page")
+        XCTAssertTrue(pageOne.firstMatch.exists)
     }
 
     func testNotebookPersistsAcrossRelaunch() {
@@ -1355,7 +1370,7 @@ final class BetterNotesUITests: XCTestCase {
         return title
     }
 
-    private func swipeCanvasLeft() {
+    private func swipeCanvasLeft(to endX: CGFloat = 0.18) {
         if !fingerDrawingDisabledForPageSwipes {
             // UI testing enables finger drawing to exercise PencilKit. Turn
             // it off for the one-finger page-turn gesture under test.
@@ -1366,7 +1381,7 @@ final class BetterNotesUITests: XCTestCase {
         let canvas = app.scrollViews["page-canvas"]
         XCTAssertTrue(canvas.waitForExistence(timeout: 5))
         let start = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.78, dy: 0.5))
-        let end = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.5))
+        let end = canvas.coordinate(withNormalizedOffset: CGVector(dx: endX, dy: 0.5))
         start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0)
     }
 
