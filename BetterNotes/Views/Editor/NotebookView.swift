@@ -69,7 +69,8 @@ struct NotebookView: View {
     private var scrollMode: ScrollMode {
         ScrollMode(rawValue: scrollModeRaw) ?? .singlePage
     }
-    @State private var notebookPDFURL: URL?
+    @State private var notebookShareURL: URL?
+    @State private var backupExportError: String?
     @State private var showingNotebookShare = false
     @State private var showingPDFImporter = false
     @State private var recentlyDeletedPage: Page?
@@ -260,7 +261,7 @@ struct NotebookView: View {
             editorPanel(panel)
         }
         .sheet(isPresented: $showingNotebookShare) {
-            if let url = notebookPDFURL {
+            if let url = notebookShareURL {
                 ShareSheet(items: [url])
             }
         }
@@ -276,6 +277,14 @@ struct NotebookView: View {
             allowsMultipleSelection: false
         ) { result in
             importPDF(result)
+        }
+        .alert("Export Failed", isPresented: Binding(
+            get: { backupExportError != nil },
+            set: { if !$0 { backupExportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { backupExportError = nil }
+        } message: {
+            Text(backupExportError ?? "")
         }
         .alert("PDF Import Failed", isPresented: Binding(
             get: { pdfImportError != nil },
@@ -548,6 +557,7 @@ struct NotebookView: View {
                 }
                 .disabled(isReadOnly)
                 Button("Export Notebook as PDF", systemImage: "square.and.arrow.up.on.square", action: exportNotebook)
+                Button("Export Editable Backup", systemImage: "externaldrive", action: exportBackup)
             }
 
             Section("App") {
@@ -748,6 +758,22 @@ struct NotebookView: View {
 
     // MARK: - Notebook-level actions
 
+    /// Same `.betternotes` archive as the library's Export Editable Backup,
+    /// so a notebook can be backed up without leaving the editor.
+    private func exportBackup() {
+        guard saveChanges() else { return }
+        do {
+            let url = try CloudTranslator.writeArchive(for: notebook)
+            // Same deferral as exportNotebook: the Menu is still dismissing.
+            DispatchQueue.main.async {
+                notebookShareURL = url
+                showingNotebookShare = true
+            }
+        } catch {
+            backupExportError = error.localizedDescription
+        }
+    }
+
     private func exportNotebook() {
         _ = saveChanges()
         // Same deferral as LibraryView.exportNotebook: this fires from the
@@ -757,7 +783,7 @@ struct NotebookView: View {
         // nothing drawn inside it. Waiting a turn lets the menu finish first.
         DispatchQueue.main.async {
             let data = PDFExport.renderNotebook(notebook)
-            notebookPDFURL = PDFExport.writePDF(data, name: notebook.title)
+            notebookShareURL = PDFExport.writePDF(data, name: notebook.title)
             showingNotebookShare = true
         }
     }

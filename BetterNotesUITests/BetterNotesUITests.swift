@@ -1237,6 +1237,21 @@ final class BetterNotesUITests: XCTestCase {
                        "tapping the tape did not reveal it")
     }
 
+    /// The editable backup was only reachable from a notebook's long-press
+    /// menu in the library, so it was effectively invisible from the editor.
+    func testEditableBackupCanBeExportedFromTheEditor() {
+        openNotebook(named: uniqueTitle("Editor Backup"))
+        openToolbarMenu(named: "More")
+
+        let backup = app.buttons["Export Editable Backup"].firstMatch
+        XCTAssertTrue(backup.waitForExistence(timeout: 3), "no Export Editable Backup in the editor's More menu")
+        backup.tap()
+
+        let share = app.otherElements["ActivityListView"]
+        XCTAssertTrue(share.waitForExistence(timeout: 6), "the share sheet did not open for the backup")
+        XCTAssertFalse(app.alerts["Export Failed"].exists)
+    }
+
     /// Inserted elements must land where the page is actually showing, and
     /// two of them must not occupy the same point. Both were broken: every
     /// image, recording, note and tape was created at a hardcoded (200, 300).
