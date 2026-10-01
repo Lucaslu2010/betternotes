@@ -1203,6 +1203,40 @@ final class BetterNotesUITests: XCTestCase {
         attachScreenshot(named: "Opaque Tape Options")
     }
 
+    /// Reported on a real iPad: tapping a tape does not reveal what is under
+    /// it. "Tap to reveal" is drawn on a covered tape and replaced by an eye
+    /// icon once revealed, so its disappearance is the observable effect.
+    func testTappingTapeRevealsWhatIsUnderIt() {
+        assertTappingTapeReveals()
+    }
+
+    /// Real fingers often reach the canvas without a known touch type, so the
+    /// canvas -- not the SwiftUI element -- receives the tap.
+    func testTappingTapeRevealsWhenCanvasReceivesFingerTouch() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-force-canvas-finger")
+        app.launch()
+        assertTappingTapeReveals()
+    }
+
+    private func assertTappingTapeReveals() {
+        openNotebook(named: uniqueTitle("Tape Reveal"))
+        insertFromMenu("Tape")
+
+        let tape = app.descendants(matching: .any)["page-element"].firstMatch
+        XCTAssertTrue(tape.waitForExistence(timeout: 5), "no tape was inserted")
+        XCTAssertTrue(app.staticTexts["Tap to reveal"].firstMatch.waitForExistence(timeout: 3),
+                      "a new tape should start covered")
+
+        tape.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        let revealed = NSPredicate(format: "exists == false")
+        expectation(for: revealed, evaluatedWith: app.staticTexts["Tap to reveal"].firstMatch)
+        waitForExpectations(timeout: 4)
+        XCTAssertFalse(app.staticTexts["Tap to reveal"].firstMatch.exists,
+                       "tapping the tape did not reveal it")
+    }
+
     /// Inserted elements must land where the page is actually showing, and
     /// two of them must not occupy the same point. Both were broken: every
     /// image, recording, note and tape was created at a hardcoded (200, 300).

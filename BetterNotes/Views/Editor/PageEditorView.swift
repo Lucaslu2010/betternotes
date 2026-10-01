@@ -1767,6 +1767,23 @@ struct PageEditorView: View {
             }
         case .ended(let point):
             handleFingerElementDrag(.changed(point))
+            // A tap that never moved: tape is revealed and covered by tapping
+            // it. The SwiftUI element handles that for touches that pass
+            // through the canvas, but real fingers often reach the canvas
+            // instead, and this path previously only selected the element.
+            if let session = fingerDragSession,
+               session.pageID == page.id,
+               session.control == .move,
+               !session.didRecordMutation,
+               let tape = page.elements.first(where: { $0.id == session.elementID }),
+               tape.type == .tape, !tape.isLocked {
+                fingerDragSession = nil
+                fingerElementDraft = nil
+                beginElementMutation()
+                tape.isRevealed.toggle()
+                finishElementMutation()
+                return
+            }
             guard let session = fingerDragSession,
                   session.pageID == page.id,
                   session.didRecordMutation,
