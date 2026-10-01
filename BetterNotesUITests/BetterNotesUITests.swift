@@ -1234,6 +1234,55 @@ final class BetterNotesUITests: XCTestCase {
         assertTappingTapeReveals()
     }
 
+    /// Apple Pencil belongs to PencilKit, so a Pencil tap never reached the
+    /// tape. XCTest cannot synthesise a Pencil, so a launch argument makes the
+    /// canvas read a finger as one. The tap must reveal the tape and leave no
+    /// dot of ink behind: if it did, the first Undo would remove the dot, not
+    /// the reveal.
+    func testPencilTapOnTapeRevealsItWithoutLeavingInk() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-finger-as-pencil")
+        app.launch()
+        openNotebook(named: uniqueTitle("Pencil Tape"))
+        app.buttons["Pen"].tap()
+        insertFromMenu("Tape")
+
+        let tape = app.descendants(matching: .any)["page-element"].firstMatch
+        XCTAssertTrue(tape.waitForExistence(timeout: 5), "no tape was inserted")
+        let cover = app.staticTexts["Tap to reveal"].firstMatch
+        XCTAssertTrue(cover.waitForExistence(timeout: 3), "a new tape should start covered")
+
+        XCTAssertEqual(inkCanvas.value as? String, "0")
+        tape.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(cover.waitForNonExistence(timeout: 4), "a Pencil tap did not reveal the tape")
+
+        // PencilKit publishes the tap's dot a moment after the touch ends.
+        Thread.sleep(forTimeInterval: 1.0)
+        XCTAssertEqual(inkCanvas.value as? String, "0", "the Pencil tap left a dot of ink under the tape")
+    }
+
+    /// Writing across a tape is still writing: only a short tap acts on it.
+    func testPencilStrokeAcrossTapeDoesNotRevealIt() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-finger-as-pencil")
+        app.launch()
+        openNotebook(named: uniqueTitle("Pencil Stroke Tape"))
+        app.buttons["Pen"].tap()
+        insertFromMenu("Tape")
+
+        let tape = app.descendants(matching: .any)["page-element"].firstMatch
+        XCTAssertTrue(tape.waitForExistence(timeout: 5))
+        let cover = app.staticTexts["Tap to reveal"].firstMatch
+        XCTAssertTrue(cover.waitForExistence(timeout: 3))
+
+        let from = tape.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
+        let to = tape.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
+        from.press(forDuration: 0.01, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0)
+
+        XCTAssertFalse(cover.waitForNonExistence(timeout: 2), "a stroke across the tape revealed it")
+        XCTAssertEqual(inkCanvas.value as? String, "1", "the stroke across the tape was not drawn")
+    }
+
     private func assertTappingTapeReveals() {
         openNotebook(named: uniqueTitle("Tape Reveal"))
         insertFromMenu("Tape")

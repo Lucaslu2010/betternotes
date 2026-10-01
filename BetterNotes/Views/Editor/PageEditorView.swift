@@ -609,6 +609,8 @@ struct PageEditorView: View {
                     fingerControl(at: point) != nil
                 },
                 onFingerElementDrag: handleFingerElementDrag,
+                canPencilTapElement: { point in tape(at: point) != nil },
+                onPencilTapElement: toggleTape(at:),
                 inkData: page.inkData,
                 canvasInkOpacity: heldShapePreview == nil ? 1 : 0.22,
                 onDrawingChange: { _ in onDrawingChanged() },
@@ -1738,6 +1740,34 @@ struct PageEditorView: View {
             return (element, .move)
         }
         return nil
+    }
+
+    /// The unlocked tape under `point`, topmost first.
+    private func tape(at point: CGPoint) -> PageElement? {
+        guard !isReadOnly else { return nil }
+        return page.elements.reversed().first { element in
+            guard element.type == .tape, !element.isLocked else { return false }
+            let angle = CGFloat(element.rotation * .pi / 180)
+            let width = CGFloat(element.width)
+            let height = CGFloat(element.height)
+            let hitWidth = abs(cos(angle)) * width + abs(sin(angle)) * height
+            let hitHeight = abs(sin(angle)) * width + abs(cos(angle)) * height
+            return CGRect(
+                x: CGFloat(element.posX) - hitWidth / 2,
+                y: CGFloat(element.posY) - hitHeight / 2,
+                width: hitWidth,
+                height: hitHeight
+            ).contains(point)
+        }
+    }
+
+    /// A tap with Apple Pencil, which PencilKit owns, so the SwiftUI tape
+    /// never sees it.
+    private func toggleTape(at point: CGPoint) {
+        guard let tape = tape(at: point) else { return }
+        beginElementMutation()
+        tape.isRevealed.toggle()
+        finishElementMutation()
     }
 
     private func handleFingerElementDrag(_ event: FingerElementDragEvent) {

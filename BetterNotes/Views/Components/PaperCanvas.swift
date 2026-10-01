@@ -8,6 +8,17 @@ final class PencilInputCanvasView: PKCanvasView {
     var elementInteractionRects: [CGRect] = []
     var fingerDrawingAllowed = false
 
+    /// Lets a UI test read how many strokes the canvas holds; PencilKit's ink
+    /// is otherwise invisible to the accessibility tree.
+    override var accessibilityValue: String? {
+        get {
+            ProcessInfo.processInfo.arguments.contains("-ui-testing")
+                ? String(drawing.strokes.count)
+                : super.accessibilityValue
+        }
+        set { super.accessibilityValue = newValue }
+    }
+
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard event?.type == .touches else {
             return super.hitTest(point, with: event)
@@ -22,6 +33,7 @@ final class PencilInputCanvasView: PKCanvasView {
         // UITouch. Treat those as fingers only in UI tests so element drag
         // coverage still exercises the pass-through path.
         let forceCanvasFinger = ProcessInfo.processInfo.arguments.contains("-ui-testing-force-canvas-finger")
+            || PaperCanvas.fingerStandsInForPencil
         let simulatedFinger = touches.isEmpty
             && ProcessInfo.processInfo.arguments.contains("-ui-testing")
         let isFingerTouch = !forceCanvasFinger
@@ -162,12 +174,22 @@ struct PaperCanvas: UIViewRepresentable {
     let elementInteractionRects: [CGRect]
     var canBeginFingerElementDrag: (CGPoint) -> Bool = { _ in false }
     var onFingerElementDrag: (FingerElementDragEvent) -> Void = { _ in }
+    /// A short Apple Pencil tap that lands on a tappable element (tape) acts
+    /// on that element instead of leaving a dot of ink.
+    var canPencilTapElement: (CGPoint) -> Bool = { _ in false }
+    var onPencilTapElement: (CGPoint) -> Void = { _ in }
     let inkData: Data?
     let canvasInkOpacity: CGFloat
     var onDrawingChange: ((Int) -> Void)?
     var onToolUseChange: ((Bool) -> Void)?
     var onShapePreviewChange: ((PKDrawing?) -> Void)?
     var coordinatorHolder: CoordinatorHolder?
+
+    /// UI tests cannot synthesise Apple Pencil touches. With this launch
+    /// argument a finger is routed to the canvas and read as a Pencil, so the
+    /// Pencil-only paths can be driven end to end.
+    static let fingerStandsInForPencil = ProcessInfo.processInfo.arguments
+        .contains("-ui-testing-finger-as-pencil")
 
     func makeCoordinator() -> Coordinator {
         let c = Coordinator(parent: self)
@@ -278,6 +300,9 @@ struct PaperCanvas: UIViewRepresentable {
         private weak var fingerElementTouch: FingerElementTouchRecognizer?
         private var isCapturingPencilStroke = false
         private var activeTouchType: UITouch.TouchType?
+        private var pencilStrokeBegan: CFTimeInterval = 0
+        private var tapDotBaseline: PKDrawing?
+        private var tapDotTimer: Timer?
         private var capturedPencilPoints: [CGPoint] = []
         private var settledDrawingAtToolBegin = PKDrawing()
         private var awaitingResurrectionCheck = false
@@ -381,6 +406,7 @@ struct PaperCanvas: UIViewRepresentable {
         }
 
         func attachFingerElementDrag(to canvas: PKCanvasView) {
+            if PaperCanvas.fingerStandsInForPencil { return }
             if fingerElementTouch?.view === canvas { return }
             if let fingerElementTouch {
                 fingerElementTouch.view?.removeGestureRecognizer(fingerElementTouch)
@@ -427,6 +453,10 @@ struct PaperCanvas: UIViewRepresentable {
                 }
                 return
             }
+
+            // A Pencil tap on tape is not ink: drop the dot PencilKit publishes
+            // for it before the editor hears about it.
+            if removeTapDotIfPublished(on: canvasView) { return }
 
             // PencilKit can spontaneously republish strokes it had already
             // dropped -- from an undo, a redo, or an erase -- the instant a
@@ -539,7 +569,8 @@ struct PaperCanvas: UIViewRepresentable {
             endToolUse(on: canvasView)
         }
 
-        private func beginPencilStroke(at point: CGPoint, touchType: UITouch.TouchType, on canvas: PKCanvasView) {
+        private func beginPencilStroke(at point: CGPoint, touchType observedType: UITouch.TouchType, on canvas: PKCanvasView) {
+            let touchType: UITouch.TouchType = PaperCanvas.fingerStandsInForPencil ? .pencil : observedType
             // A finger that begins on a page element belongs to its move or
             // selection handles, even when Draw with Finger is enabled.
             // Reporting it as ink use clears the selected element before the
@@ -551,6 +582,7 @@ struct PaperCanvas: UIViewRepresentable {
             clearShapeRecognitionState(hidesPreview: true)
             isCapturingPencilStroke = true
             activeTouchType = touchType
+            pencilStrokeBegan = CACurrentMediaTime()
             capturedPencilPoints = [point]
             settledDrawingAtToolBegin = canvas.drawing
             awaitingResurrectionCheck = true
@@ -595,6 +627,7 @@ struct PaperCanvas: UIViewRepresentable {
             shapeHoldTimer?.invalidate()
             shapeHoldTimer = nil
             let heldPreview = shapePreview
+            let tappedElementPoint = pencilTapPoint(commitsShape: commitsShape && heldPreview == nil)
             shapePreview = nil
             shapePreviewLocation = nil
             isCapturingPencilStroke = false
@@ -611,7 +644,53 @@ struct PaperCanvas: UIViewRepresentable {
 
             capturedPencilPoints.removeAll(keepingCapacity: true)
             shapeHoldAnchor = nil
+            if let tappedElementPoint {
+                discardTapDot(baseline: settledDrawingAtToolBegin, on: canvas)
+                parent.onPencilTapElement(tappedElementPoint)
+            }
             endToolUse(on: canvas)
+        }
+
+        /// Where a Pencil tap on a tappable element landed, or nil when the
+        /// stroke was a real stroke: it must be short, brief, still, made with
+        /// an inking tool, and begin on such an element.
+        private func pencilTapPoint(commitsShape: Bool) -> CGPoint? {
+            guard commitsShape,
+                  activeTouchType == .pencil,
+                  parent.tool.inkType != nil,
+                  let first = capturedPencilPoints.first,
+                  CACurrentMediaTime() - pencilStrokeBegan < 0.35,
+                  capturedPencilPoints.allSatisfy({ distance(first, $0) < 6 }),
+                  parent.canPencilTapElement(first) else { return nil }
+            return first
+        }
+
+        /// PencilKit lays down a dot for any tap, and publishes it after the
+        /// touch has ended. Put the drawing back as it was, without telling the
+        /// editor, so the tap leaves neither ink nor an undo step.
+        private func discardTapDot(baseline: PKDrawing, on canvas: PKCanvasView) {
+            tapDotBaseline = baseline
+            tapDotTimer?.invalidate()
+            let timer = Timer(timeInterval: 0.8, repeats: false) { [weak self] _ in
+                self?.tapDotBaseline = nil
+                self?.tapDotTimer = nil
+            }
+            tapDotTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+            removeTapDotIfPublished(on: canvas)
+        }
+
+        @discardableResult
+        private func removeTapDotIfPublished(on canvas: PKCanvasView) -> Bool {
+            guard let baseline = tapDotBaseline,
+                  canvas.drawing.strokes.count > baseline.strokes.count else { return false }
+            tapDotBaseline = nil
+            tapDotTimer?.invalidate()
+            tapDotTimer = nil
+            performProgrammaticDrawingChange(on: canvas, notifiesParent: false) {
+                canvas.drawing = baseline
+            }
+            return true
         }
 
         private func beginToolUse(on canvas: PKCanvasView) {
