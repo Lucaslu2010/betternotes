@@ -179,27 +179,39 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         playbackRequestID = requestID
         Task { @MainActor in
             do {
-                let sessionReady = await Task.detached(priority: .userInitiated) { () -> Bool in
+                // Activating the session and preparing the player both wait on
+                // the audio hardware, which can take seconds on a Bluetooth
+                // route. Doing either on the main thread froze the app and left
+                // the play button unresponsive, so both happen here.
+                let prepared = await Task.detached(priority: .userInitiated) { () -> PreparedPlayback in
                     let session = AVAudioSession.sharedInstance()
                     do {
                         try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
                         try session.setActive(true)
-                        return true
                     } catch {
-                        return false
+                        return PreparedPlayback(sessionActive: false, player: nil, error: AudioPlaybackError.sessionUnavailable)
+                    }
+                    do {
+                        let player = try AVAudioPlayer(data: data)
+                        guard player.prepareToPlay() else {
+                            return PreparedPlayback(sessionActive: true, player: nil, error: AudioPlaybackError.couldNotStart)
+                        }
+                        return PreparedPlayback(sessionActive: true, player: player, error: nil)
+                    } catch {
+                        return PreparedPlayback(sessionActive: true, player: nil, error: error)
                     }
                 }.value
                 guard self.playbackRequestID == requestID else {
-                    if sessionReady, self.playbackRequestID == nil {
+                    if prepared.sessionActive, self.playbackRequestID == nil {
                         self.deactivateAudioSession()
                     }
                     return
                 }
-                guard sessionReady else { throw AudioPlaybackError.sessionUnavailable }
-
-                let player = try AVAudioPlayer(data: data)
+                guard let player = prepared.player else {
+                    throw prepared.error ?? AudioPlaybackError.couldNotStart
+                }
                 player.delegate = self
-                guard player.prepareToPlay(), player.play() else {
+                guard player.play() else {
                     throw AudioPlaybackError.couldNotStart
                 }
                 self.player = player
@@ -211,6 +223,14 @@ final class AudioRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate, 
                 self.lastError = "Unable to play this recording. \(error.localizedDescription)"
             }
         }
+    }
+
+    /// The outcome of preparing playback off the main thread. The player is
+    /// only touched again on the main actor, after the task has finished.
+    private struct PreparedPlayback: @unchecked Sendable {
+        let sessionActive: Bool
+        let player: AVAudioPlayer?
+        let error: Error?
     }
 
     func stopPlayback() {
