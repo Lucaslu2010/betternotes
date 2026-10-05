@@ -4463,7 +4463,7 @@ struct AIProviderSettingsSheet: View {
 
                 if service.isRemoteConfigured {
                     Section {
-                        Button("Use On-Device Assistance Only", role: .destructive) {
+                        Button("Remove AI Provider", role: .destructive) {
                             service.clearConfiguration()
                             apiKey = ""
                         }

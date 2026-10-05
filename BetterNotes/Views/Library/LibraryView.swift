@@ -419,7 +419,7 @@ struct LibraryView: View {
                                 }
                             }
                         }
-                        Section("Sort") {
+                        Section(AppLocalization.text("Sort")) {
                             ForEach(LibrarySort.allCases, id: \.self) { sort in
                                 Button {
                                     librarySort = sort.rawValue
@@ -878,7 +878,7 @@ struct LibraryView: View {
                 }
             }
 
-            Section("Sort") {
+            Section(AppLocalization.text("Sort")) {
                 Picker("Notebook sort", selection: $librarySort) {
                     ForEach(LibrarySort.allCases, id: \.self) { sort in
                         Label(sort.label, systemImage: sort.icon).tag(sort.rawValue)

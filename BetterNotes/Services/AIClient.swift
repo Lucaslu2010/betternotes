@@ -91,7 +91,12 @@ actor AIClient {
             )
         } else {
             parameters["temperature"] = 0.25
-            parameters["max_tokens"] = aiRequest.outputLimit
+            // A reasoning model spends tokens thinking before it answers, so
+            // the connection test's 8-token limit ended every such model with
+            // "used its output limit" even though the connection was fine.
+            parameters["max_tokens"] = aiRequest.featureOrigin == .providerTest
+                ? max(aiRequest.outputLimit, 512)
+                : aiRequest.outputLimit
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: parameters)
 

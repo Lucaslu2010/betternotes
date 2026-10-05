@@ -7843,18 +7843,18 @@
         }
       }
     },
-    "Use On-Device Assistance Only": {
+    "Remove AI Provider": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "仅使用设备端 AI"
+            "value": "移除 AI 服务商"
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "僅使用裝置端 AI"
+            "value": "移除 AI 服務商"
           }
         }
       }

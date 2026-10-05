@@ -861,6 +861,24 @@ final class BetterNotesTests: XCTestCase {
         XCTAssertNil(json["temperature"])
     }
 
+    /// Reasoning models spend tokens thinking before they answer. An 8-token
+    /// limit made the connection test fail for them with "output limit".
+    func testConnectionTestLeavesRoomForAReasoningModelToThink() async throws {
+        let client = makeMockAIClient(stubs: [
+            .init(statusCode: 200, body: #"{"choices":[{"message":{"content":"OK"}}]}"#)
+        ])
+        let configuration = AIProviderConfiguration(
+            apiKey: "test-key", baseURL: "https://example.com/v1",
+            model: "deepseek-reasoner", sendsPageImages: false
+        )
+
+        try await client.testConnection(configuration: configuration)
+
+        let recorded = try XCTUnwrap(MockAIURLProtocol.recordedRequests().last)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(recorded.httpBody)) as? [String: Any])
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(json["max_tokens"] as? Int), 512)
+    }
+
     func testAIClientExplainsReasoningBudgetExhaustion() async {
         let body = """
         data: {"choices":[{"delta":{"content":null},"finish_reason":"length"}]}
