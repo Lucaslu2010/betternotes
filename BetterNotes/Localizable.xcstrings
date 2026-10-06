@@ -5196,6 +5196,22 @@
         }
       }
     },
+    "Pause": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂停"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暫停"
+          }
+        }
+      }
+    },
     "Pen": {
       "extractionState": "stale",
       "localizations": {
@@ -5243,6 +5259,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "畫素橡皮擦"
+          }
+        }
+      }
+    },
+    "Play": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "播放"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "播放"
           }
         }
       }

@@ -742,6 +742,7 @@ private struct ElementView: View {
                     .foregroundStyle(.tint)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(AppLocalization.text(isPlayingAudio ? "Pause" : "Play"))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Recording")

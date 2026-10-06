@@ -705,6 +705,29 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertTrue(alert.waitForNonExistence(timeout: 4), "the prompt stayed after answering")
     }
 
+    /// Reported on a real iPad: a finger on a recording's play button was read
+    /// as a touch on blank page, so the button did nothing. A finger that
+    /// reaches the canvas (rather than the SwiftUI button) must still play.
+    /// The simulator does not show the Select All / Insert Space menu a long
+    /// press raised on the device, so that part is checked by hand.
+    func testFingerOnRecordingPlayButtonPlaysWhenCanvasReceivesIt() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-force-canvas-finger")
+        app.launchArguments.append("-ui-testing-synthetic-recording")
+        app.launch()
+        openNotebook(named: uniqueTitle("Recording Play"))
+        app.buttons["Insert"].tap()
+        app.buttons["Recording"].firstMatch.tap()
+
+        let card = app.descendants(matching: .any)["page-element"].firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 5), "no recording was added")
+        // The play button sits about a quarter of the way into the card.
+        let play = card.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5))
+        play.tap()
+        XCTAssertTrue(app.buttons["Pause"].waitForExistence(timeout: 6),
+                      "tapping the play button did not start playback")
+    }
+
     func testEmptyFolderSurvivesRelaunch() {
         let name = uniqueTitle("Courses")
         app.buttons["library-new-folder"].tap()

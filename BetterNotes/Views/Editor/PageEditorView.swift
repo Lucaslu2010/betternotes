@@ -11,6 +11,8 @@ private enum FingerElementControl: Equatable {
     case resizeLeading
     case resizeTrailing
     case rotate
+    /// The play button of an audio recording, which has no drag of its own.
+    case audioPlay
 }
 
 private struct FingerDragSession {
@@ -1736,7 +1738,13 @@ struct PageEditorView: View {
             )
             guard rect.contains(point) else { continue }
             let localX = point.x - CGFloat(element.posX) + width / 2
-            if element.type == .audioRecording && localX > 44 { continue }
+            if element.type == .audioRecording {
+                // The grip at the leading edge moves the element; the play
+                // button just after it plays. The rest of the card (title,
+                // slider) belongs to its own controls.
+                if localX >= 40 && localX < 80 { return (element, .audioPlay) }
+                if localX >= 80 { continue }
+            }
             return (element, .move)
         }
         return nil
@@ -1787,7 +1795,8 @@ struct PageEditorView: View {
             )
             selectedElementID = element.id
         case .changed(let point):
-            guard var session = fingerDragSession, session.pageID == page.id else { return }
+            guard var session = fingerDragSession, session.pageID == page.id,
+                  session.control != .audioPlay else { return }
             let deltaX = Double(point.x - session.start.x)
             let deltaY = Double(point.y - session.start.y)
             if !session.didRecordMutation && abs(deltaX) + abs(deltaY) > 1 {
@@ -1825,6 +1834,8 @@ struct PageEditorView: View {
                 if angleDelta > .pi { angleDelta -= 2 * .pi }
                 if angleDelta < -.pi { angleDelta += 2 * .pi }
                 rotation += angleDelta * 180 / .pi
+            case .audioPlay:
+                break  // returned above; a play button never drags
             }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
@@ -1855,6 +1866,20 @@ struct PageEditorView: View {
                 beginElementMutation()
                 tape.isRevealed.toggle()
                 finishElementMutation()
+                return
+            }
+            // The same for the play button of a recording: a real finger can
+            // reach the canvas instead of the SwiftUI button, which then did
+            // nothing and, held, raised the canvas's Select All menu.
+            if let session = fingerDragSession,
+               session.pageID == page.id,
+               session.control == .audioPlay,
+               hypot(point.x - session.start.x, point.y - session.start.y) < 20,
+               let audioElement = page.elements.first(where: { $0.id == session.elementID }),
+               audioElement.type == .audioRecording {
+                fingerDragSession = nil
+                fingerElementDraft = nil
+                toggleAudio(audioElement)
                 return
             }
             guard let session = fingerDragSession,
@@ -2501,8 +2526,45 @@ struct PageEditorView: View {
         saveChanges()
     }
 
+    /// The simulator has no microphone, so a UI test cannot record. With this
+    /// launch argument the Recording item adds a finished recording of a quiet
+    /// tone instead, which is enough to exercise playback and its touch routing.
+    private func insertSyntheticRecording() {
+        recordBeforeMutation()
+        let elem = PageElement(type: .audioRecording, x: 200, y: 300, width: 220, height: 56)
+        elem.colorHex = "F18F01"
+        elem.audioData = Self.syntheticWAV(seconds: 3)
+        elem.audioDuration = 3
+        elem.text = "Recording (\(formatDuration(3)))"
+        elem.page = page
+        context.insert(elem)
+        page.appendElement(elem)
+        selectedElementID = elem.id
+        markPageModified()
+        saveChanges()
+    }
+
+    private static func syntheticWAV(seconds: Double, sampleRate: Int = 44_100) -> Data {
+        var pcm = Data()
+        for i in 0..<Int(seconds * Double(sampleRate)) {
+            var sample = Int16(1_500 * sin(2 * Double.pi * 440 * Double(i) / Double(sampleRate)))
+            pcm.append(Data(bytes: &sample, count: 2))
+        }
+        func le<T: FixedWidthInteger>(_ v: T) -> Data { withUnsafeBytes(of: v.littleEndian) { Data($0) } }
+        var wav = Data("RIFF".utf8)
+        wav += le(UInt32(36 + pcm.count)) + Data("WAVEfmt ".utf8) + le(UInt32(16)) + le(UInt16(1)) + le(UInt16(1))
+        wav += le(UInt32(sampleRate)) + le(UInt32(sampleRate * 2)) + le(UInt16(2)) + le(UInt16(16))
+        wav += Data("data".utf8) + le(UInt32(pcm.count)) + pcm
+        return wav
+    }
+
     private func startRecording() {
         guard !isReadOnly, recordingElement == nil else { return }
+        if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+           ProcessInfo.processInfo.arguments.contains("-ui-testing-synthetic-recording") {
+            insertSyntheticRecording()
+            return
+        }
         // Create the recording element synchronously so it appears on the page
         // immediately and recordingElement is non-nil before the popup can be
         // dismissed. Previously the element was created inside an async Task
