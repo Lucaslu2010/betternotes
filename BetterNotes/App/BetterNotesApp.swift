@@ -3,7 +3,7 @@ import SwiftData
 
 @main
 struct BetterNotesApp: App {
-    let modelContainer: ModelContainer
+    let modelContainer: ModelContainer?
     let startupError: String?
     let recoveryURL: URL?
     @StateObject private var aiSettings: AISettingsStore
@@ -11,12 +11,18 @@ struct BetterNotesApp: App {
     @StateObject private var corpusStore: NoteCorpusStore
     @StateObject private var assistantCoordinator: AssistantCoordinator
     @StateObject private var writingSuggestionCoordinator: WritingSuggestionCoordinator
+    @StateObject private var ocrSettings: OCRSettingsStore
+    @StateObject private var ocrService: OCRService
 
     init() {
+        MemoryDiagnostics.shared.start()
         let arguments = CommandLine.arguments
         let isUITesting = arguments.contains("-ui-testing")
         if isUITesting {
             let defaults = UserDefaults.standard
+            defaults.set(OCRProvider.local.rawValue, forKey: "ocr.provider")
+            let scrollMode: ScrollMode = arguments.contains("-ui-testing-vertical-scroll") ? .verticalScroll : .singlePage
+            defaults.set(scrollMode.rawValue, forKey: AppPreferenceKey.scrollMode)
             let toolbarDock: ToolbarDock = arguments.contains("-ui-testing-bottom-toolbar") ? .bottom : .top
             defaults.set(toolbarDock.rawValue, forKey: AppPreferenceKey.toolbarDock)
             defaults.set(true, forKey: AppPreferenceKey.toolbarHintSeen)
@@ -36,6 +42,9 @@ struct BetterNotesApp: App {
             defaults.set(true, forKey: AppPreferenceKey.allowsFingerDrawing)
         }
         let settings = AISettingsStore()
+        let recognitionSettings = OCRSettingsStore()
+        _ocrSettings = StateObject(wrappedValue: recognitionSettings)
+        _ocrService = StateObject(wrappedValue: OCRService(settings: recognitionSettings))
         let client = AIClient()
         let corpus = NoteCorpusStore()
         _aiSettings = StateObject(wrappedValue: settings)
@@ -71,37 +80,30 @@ struct BetterNotesApp: App {
             startupError = nil
             recoveryURL = startupSnapshot
         } catch {
-            // Never delete a user's notes to recover from a migration failure.
-            // Use a temporary in-memory container so the recovery UI can still launch.
+            // Recovery has no model dependencies. Do not try to open the broken
+            // schema again (or force-unwrap a fallback) just to present it.
+            modelContainer = nil
             startupError = error.localizedDescription
             recoveryURL = startupSnapshot ?? StoreRecovery.createSnapshotIfPresent(for: config.url, force: true)
-            // Use try? instead of try! — if even the in-memory container fails
-            // (e.g. schema is fundamentally broken), show the recovery view
-            // with a nil container rather than crashing.
-            let fallback = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-            if let recovered = try? ModelContainer(for: schema, configurations: [fallback]) {
-                modelContainer = recovered
-            } else {
-                // Absolute last resort: create with minimal config.
-                modelContainer = try! ModelContainer(for: schema)
-            }
         }
     }
 
     var body: some Scene {
         WindowGroup {
-            if let startupError {
-                StoreRecoveryView(errorMessage: startupError, recoveryURL: recoveryURL)
-            } else {
+            if let modelContainer {
                 LibraryView()
+                    .modelContainer(modelContainer)
+            } else {
+                StoreRecoveryView(errorMessage: startupError ?? "The notes database could not be opened.", recoveryURL: recoveryURL)
             }
         }
-        .modelContainer(modelContainer)
         .environmentObject(aiSettings)
         .environmentObject(aiService)
         .environmentObject(corpusStore)
         .environmentObject(assistantCoordinator)
         .environmentObject(writingSuggestionCoordinator)
+        .environmentObject(ocrSettings)
+        .environmentObject(ocrService)
     }
 
     private static func argumentValue(after flag: String, in arguments: [String]) -> String? {

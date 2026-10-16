@@ -15,16 +15,16 @@ final class AISettingsStoreTests: XCTestCase {
         super.setUp()
         suiteName = "AISettingsStoreTests-\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
-        AISettingsStore(defaults: defaults).clear()
+        AISettingsStore(defaults: defaults, keychainService: suiteName).clear()
     }
 
     override func tearDown() {
-        AISettingsStore(defaults: defaults).clear()
+        AISettingsStore(defaults: defaults, keychainService: suiteName).clear()
         defaults.removePersistentDomain(forName: suiteName)
         super.tearDown()
     }
 
-    private func makeStore() -> AISettingsStore { AISettingsStore(defaults: defaults) }
+    private func makeStore() -> AISettingsStore { AISettingsStore(defaults: defaults, keychainService: suiteName) }
 
     // MARK: - Which provider URLs are allowed
 
@@ -106,6 +106,22 @@ final class AISettingsStoreTests: XCTestCase {
     }
 
     // MARK: - Normalisation and rejection
+
+    func testConnectionDraftDoesNotReplaceSavedConfigurationOrKey() throws {
+        let store = makeStore()
+        try store.update(apiKey: "saved-key", baseURL: "https://saved.example/v1", model: "saved-model")
+        let draft = try store.testConfiguration(apiKey: " draft-key ", baseURL: " https://draft.example/v1/ ", model: "draft-model")
+        XCTAssertEqual(draft, AIProviderConfiguration(apiKey: "draft-key", baseURL: "https://draft.example/v1", model: "draft-model"))
+        XCTAssertEqual(makeStore().configuration, AIProviderConfiguration(apiKey: "saved-key", baseURL: "https://saved.example/v1", model: "saved-model"))
+        XCTAssertEqual(try store.testConfiguration(apiKey: nil, baseURL: store.baseURL, model: "").apiKey, "saved-key")
+    }
+
+    func testConnectionRequiresKeyAndRejectsInsecureURLWithoutSaving() {
+        let store = makeStore()
+        XCTAssertThrowsError(try store.testConfiguration(apiKey: nil, baseURL: "https://draft.example/v1", model: "m"))
+        XCTAssertThrowsError(try store.testConfiguration(apiKey: "draft-key", baseURL: "http://remote.example/v1", model: "m"))
+        XCTAssertNil(makeStore().configuration)
+    }
 
     func testATrailingSlashAndBlankModelAreNormalised() throws {
         let store = makeStore()

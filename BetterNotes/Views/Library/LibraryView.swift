@@ -110,10 +110,16 @@ private enum SearchDateFilter: String, CaseIterable {
     }
 }
 
+private struct NotebookDestination: Hashable {
+    let notebookID: UUID
+    var pageID: PersistentIdentifier? = nil
+}
+
 struct LibraryView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var corpusStore: NoteCorpusStore
+    @EnvironmentObject private var ocrService: OCRService
     @EnvironmentObject private var assistantCoordinator: AssistantCoordinator
     @Query(sort: \Notebook.modifiedAt, order: .reverse) private var notebooks: [Notebook]
     @State private var showingNewNotebook = false
@@ -121,7 +127,7 @@ struct LibraryView: View {
     @State private var backupImportError: String?
     @State private var exportError: String?
     @State private var operationError: String?
-    @State private var quickNotebook: Notebook?
+    @State private var notebookPath: [NotebookDestination] = []
     @State private var searchText = ""
     @State private var rankedSearchResults: [SearchResult] = []
     @State private var searchAnswer: AssistantReply?
@@ -134,7 +140,7 @@ struct LibraryView: View {
     @State private var searchIncludeArchived = true
     @State private var searchRequestID = UUID()
     @State private var searchDebounceTask: Task<Void, Never>?
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var searchAnswerTask: Task<Void, Never>?
     @State private var notebookToDelete: Notebook?
     @State private var notebookToPermanentlyDelete: Notebook?
     @State private var recentlyTrashedNotebook: Notebook?
@@ -239,20 +245,7 @@ struct LibraryView: View {
             .sorted { $0.page.modifiedAt > $1.page.modifiedAt }
     }
 
-    var body: some View {
-        Group {
-            if horizontalSizeClass == .regular {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    librarySidebar
-                } detail: {
-                    libraryNavigation
-                }
-                .navigationSplitViewStyle(.balanced)
-            } else {
-                libraryNavigation
-            }
-        }
-    }
+    var body: some View { libraryNavigation }
 
     /// Main library content. Extracted from `libraryNavigation` because the
     /// combined body exceeded what the SwiftUI type-checker will solve.
@@ -281,9 +274,7 @@ struct LibraryView: View {
                     LazyVGrid(columns: columns, spacing: 28) {
                         ForEach(sectionNotebooks) { notebook in
                             VStack(spacing: 0) {
-                                NavigationLink {
-                                    NotebookWorkspaceView(initialNotebook: notebook, sidebarVisibility: $columnVisibility)
-                                } label: {
+                                NavigationLink(value: NotebookDestination(notebookID: notebook.stableID)) {
                                     NotebookCover(notebook: notebook)
                                 }
                                 .buttonStyle(.plain)
@@ -320,8 +311,24 @@ struct LibraryView: View {
     // The library body is split into stages. As one chained expression it
     // exceeded what the SwiftUI type-checker will solve in reasonable time.
     private var libraryNavigation: some View {
-        NavigationStack {
-            libraryStageD
+        NavigationStack(path: $notebookPath) {
+            // The sidebar belongs to the library's root screen. Pushing an
+            // editor naturally replaces it, without collapsing a split view
+            // during the same navigation transition (which can pop it back).
+            HStack(spacing: 0) {
+                if horizontalSizeClass == .regular {
+                    librarySidebar.frame(width: 240)
+                    Divider()
+                }
+                libraryStageD
+            }
+                .navigationDestination(for: NotebookDestination.self) { destination in
+                    if let notebook = notebooks.first(where: { $0.stableID == destination.notebookID && $0.trashedAt == nil }) {
+                        NotebookWorkspaceView(initialNotebook: notebook, initialPageID: destination.pageID)
+                    } else {
+                        ContentUnavailableView("Notebook unavailable", systemImage: "book.closed")
+                    }
+                }
         }
     }
 
@@ -331,6 +338,7 @@ struct LibraryView: View {
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search notebooks, text, handwriting")
         .onSubmit(of: .search) { performSearch() }
         .onChange(of: searchText) { _, newValue in
+            searchAnswerTask?.cancel()
             assistantCoordinator.cancel()
             searchRequestID = UUID()
             rankedSearchResults = []
@@ -442,14 +450,6 @@ struct LibraryView: View {
             allowsMultipleSelection: false
         ) { result in
             importBackup(result)
-        }
-        .navigationDestination(isPresented: Binding(
-            get: { quickNotebook != nil },
-            set: { if !$0 { quickNotebook = nil } }
-        )) {
-            if let quickNotebook {
-                NotebookWorkspaceView(initialNotebook: quickNotebook, sidebarVisibility: $columnVisibility)
-            }
         }
     }
 
@@ -659,13 +659,7 @@ struct LibraryView: View {
                     tagFilterBar
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 20)], spacing: 24) {
                         ForEach(bookmarkedPages, id: \.page.id) { entry in
-                            NavigationLink {
-                                NotebookWorkspaceView(
-                                    initialNotebook: entry.notebook,
-                                    initialPageID: entry.page.persistentModelID,
-                                    sidebarVisibility: $columnVisibility
-                                )
-                            } label: {
+                            NavigationLink(value: NotebookDestination(notebookID: entry.notebook.stableID, pageID: entry.page.persistentModelID)) {
                                 VStack(alignment: .leading, spacing: 6) {
                                     PageThumbnail(page: entry.page, index: entry.page.index + 1)
                                     Text(entry.notebook.title)
@@ -756,8 +750,7 @@ struct LibraryView: View {
                 .labelsHidden()
             }
         }
-        .navigationTitle("BetterNotes")
-        .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 280)
+        .listStyle(.sidebar)
     }
 
     private var searchResults: some View {
@@ -792,11 +785,14 @@ struct LibraryView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        if let error = answer.error {
+                            Label(error, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
                         ForEach(answer.citations) { citation in
                             if let destination = searchDestination(for: citation) {
-                                NavigationLink {
-                                    NotebookWorkspaceView(initialNotebook: destination.notebook, initialPageID: destination.page?.persistentModelID, sidebarVisibility: $columnVisibility)
-                                } label: {
+                                NavigationLink(value: NotebookDestination(notebookID: destination.notebook.stableID, pageID: destination.page?.persistentModelID)) {
                                     Label("[\(citation.token)] \(citation.sourceLabel)", systemImage: "doc.text.magnifyingglass")
                                         .font(.caption)
                                 }
@@ -815,13 +811,7 @@ struct LibraryView: View {
                     Section(group.notebookTitle) {
                         ForEach(group.results) { result in
                             if let destination = searchDestination(for: result.chunk) {
-                                NavigationLink {
-                                    NotebookWorkspaceView(
-                                        initialNotebook: destination.notebook,
-                                        initialPageID: destination.page?.persistentModelID,
-                                        sidebarVisibility: $columnVisibility
-                                    )
-                                } label: {
+                                NavigationLink(value: NotebookDestination(notebookID: destination.notebook.stableID, pageID: destination.page?.persistentModelID)) {
                                     VStack(alignment: .leading, spacing: 4) {
                                         HStack {
                                             Label(result.chunk.pageTitle ?? result.chunk.label, systemImage: resultIcon(result.chunk.sourceKind))
@@ -890,7 +880,7 @@ struct LibraryView: View {
                 .toggleStyle(.button)
                 .accessibilityLabel("Include archived notes")
 
-                if searchAnswersEnabled && !rankedSearchResults.isEmpty {
+                if searchAnswersEnabled && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button {
                         askNotesAboutSearch()
                     } label: {
@@ -918,6 +908,7 @@ struct LibraryView: View {
     private func performSearch() {
         let queryText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !queryText.isEmpty else { return }
+        searchAnswerTask?.cancel()
         assistantCoordinator.cancel()
         let requestID = UUID()
         searchRequestID = requestID
@@ -943,15 +934,40 @@ struct LibraryView: View {
 
     private func askNotesAboutSearch() {
         let queryText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard searchAnswersEnabled, !queryText.isEmpty, !rankedSearchResults.isEmpty else { return }
+        guard searchAnswersEnabled, !queryText.isEmpty, !isSearching, !isAnsweringSearch else { return }
         let requestID = searchRequestID
         searchAnswer = nil
         isAnsweringSearch = true
-        assistantCoordinator.answerSearch(question: queryText, results: rankedSearchResults) { reply in
-            guard searchText.trimmingCharacters(in: .whitespacesAndNewlines) == queryText,
-                  searchRequestID == requestID else { return }
-            searchAnswer = reply
-            isAnsweringSearch = false
+        let filters = activeSearchFilters
+        searchAnswerTask = Task { @MainActor in
+            do {
+                let eligible = notebooks.filter {
+                    $0.trashedAt == nil && (filters.notebookID == nil || filters.notebookID == $0.stableID)
+                        && (filters.includeArchived || !$0.isArchived)
+                }
+                try await ocrService.refresh(pages: eligible.flatMap(\.pages).filter {
+                    $0.trashedAt == nil && (!filters.bookmarkedOnly || $0.isBookmarked)
+                })
+                try Task.checkCancellation()
+                guard searchRequestID == requestID else { return }
+                try context.save()
+                await corpusStore.rebuild(notebooks: notebooks)
+                let results = await corpusStore.indexer.search(SearchQuery(text: queryText, filters: filters, limit: 50))
+                try Task.checkCancellation()
+                guard searchRequestID == requestID else { return }
+                rankedSearchResults = results
+                assistantCoordinator.answerSearch(question: queryText, results: results) { reply in
+                    guard searchRequestID == requestID else { return }
+                    searchAnswer = reply
+                    isAnsweringSearch = false
+                }
+            } catch is CancellationError {
+                if searchRequestID == requestID { isAnsweringSearch = false }
+            } catch {
+                guard searchRequestID == requestID else { return }
+                isAnsweringSearch = false
+                searchAnswer = AssistantReply(text: "Could not refresh note recognition. Your existing text was preserved. Try again or check OCR Settings.", citations: [], notice: nil, error: error.localizedDescription)
+            }
         }
     }
 
@@ -1070,18 +1086,15 @@ private struct NotebookWorkspaceView: View {
     let initialNotebook: Notebook
     let initialPageID: PersistentIdentifier?
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query(sort: \Notebook.modifiedAt, order: .reverse) private var notebooks: [Notebook]
-    @State private var openTabIDs: [PersistentIdentifier]
-    @State private var selectedTabID: PersistentIdentifier?
+    @State private var openTabIDs: [UUID]
+    @State private var selectedTabID: UUID?
     @StateObject private var editorState: EditorActionState
-    @Binding var sidebarVisibility: NavigationSplitViewVisibility
 
-    init(initialNotebook: Notebook, initialPageID: PersistentIdentifier? = nil, sidebarVisibility: Binding<NavigationSplitViewVisibility> = .constant(.all)) {
+    init(initialNotebook: Notebook, initialPageID: PersistentIdentifier? = nil) {
         self.initialNotebook = initialNotebook
         self.initialPageID = initialPageID
-        self._sidebarVisibility = sidebarVisibility
-        let id = initialNotebook.id
+        let id = initialNotebook.stableID
         let pages = initialNotebook.pages.filter { $0.trashedAt == nil }.sorted { $0.index < $1.index }
         let initialIndex = initialPageID.flatMap { pageID in
             pages.firstIndex { $0.persistentModelID == pageID }
@@ -1131,19 +1144,7 @@ private struct NotebookWorkspaceView: View {
                 }
             }
             .onAppear(perform: reconcileTabs)
-            .onChange(of: notebooks.count) { _, _ in reconcileTabs() }
-            .onAppear {
-                // Collapse the library sidebar so the editor gets full width.
-                if horizontalSizeClass == .regular {
-                    sidebarVisibility = .detailOnly
-                }
-            }
-            .onDisappear {
-                // Restore the sidebar when returning to the library.
-                if horizontalSizeClass == .regular {
-                    sidebarVisibility = .all
-                }
-            }
+            .onChange(of: notebooks.filter { $0.trashedAt == nil }.map(\.stableID)) { _, _ in reconcileTabs() }
     }
 
     /// Compact dropdown menu for switching between open notebook tabs.
@@ -1153,7 +1154,7 @@ private struct NotebookWorkspaceView: View {
                 Button {
                     selectNotebook(notebook)
                 } label: {
-                    Label(notebook.title, systemImage: selectedTabID == notebook.id ? "book.fill" : "book")
+                    Label(notebook.title, systemImage: selectedTabID == notebook.stableID ? "book.fill" : "book")
                 }
             }
             Divider()
@@ -1187,7 +1188,7 @@ private struct NotebookWorkspaceView: View {
             )
             // PencilKit owns stateful UIKit content, so switching notebooks
             // must create a fresh canvas hierarchy.
-            .id(selectedNotebook.id)
+            .id(selectedNotebook.stableID)
         } else {
             ContentUnavailableView(
                 "Notebook unavailable",
@@ -1199,7 +1200,7 @@ private struct NotebookWorkspaceView: View {
 
     private var selectedNotebook: Notebook? {
         if let selectedTabID,
-           let selected = notebooks.first(where: { $0.id == selectedTabID }) {
+           let selected = notebooks.first(where: { $0.stableID == selectedTabID }) {
             return selected
         }
         return openNotebooks.first
@@ -1212,23 +1213,23 @@ private struct NotebookWorkspaceView: View {
 
     private var openNotebooks: [Notebook] {
         openTabIDs.compactMap { id in
-            notebooks.first(where: { $0.id == id })
+            notebooks.first(where: { $0.stableID == id })
         }
     }
 
     private var availableNotebooks: [Notebook] {
-        notebooks.filter { $0.trashedAt == nil && !$0.isArchived && !openTabIDs.contains($0.id) }
+        notebooks.filter { $0.trashedAt == nil && !$0.isArchived && !openTabIDs.contains($0.stableID) }
     }
 
     private func openNotebook(_ notebook: Notebook) {
-        if !openTabIDs.contains(notebook.id) {
-            openTabIDs.append(notebook.id)
+        if !openTabIDs.contains(notebook.stableID) {
+            openTabIDs.append(notebook.stableID)
         }
         selectNotebook(notebook)
     }
 
     private func selectNotebook(_ notebook: Notebook, pageID: UUID? = nil) {
-        selectedTabID = notebook.id
+        selectedTabID = notebook.stableID
         let pages = notebook.pages.filter { $0.trashedAt == nil }.sorted { $0.index < $1.index }
         editorState.currentPageIndex = pageID.flatMap { stablePageID in
             pages.firstIndex { $0.stableID == stablePageID }
@@ -1239,17 +1240,17 @@ private struct NotebookWorkspaceView: View {
 
     private func openAssistantSource(notebookID: UUID, pageID: UUID?) {
         guard let notebook = notebooks.first(where: { $0.stableID == notebookID && $0.trashedAt == nil }) else { return }
-        if !openTabIDs.contains(notebook.id) {
-            openTabIDs.append(notebook.id)
+        if !openTabIDs.contains(notebook.stableID) {
+            openTabIDs.append(notebook.stableID)
         }
         selectNotebook(notebook, pageID: pageID)
     }
 
     private func removeFromWorkspace(_ notebook: Notebook) {
         guard openTabIDs.count > 1 else { return }
-        guard let index = openTabIDs.firstIndex(of: notebook.id) else { return }
+        guard let index = openTabIDs.firstIndex(of: notebook.stableID) else { return }
         openTabIDs.remove(at: index)
-        if selectedTabID == notebook.id {
+        if selectedTabID == notebook.stableID {
             selectedTabID = openTabIDs.isEmpty ? nil : openTabIDs[min(index, openTabIDs.count - 1)]
             editorState.currentPageIndex = 0
         }
@@ -1257,9 +1258,9 @@ private struct NotebookWorkspaceView: View {
     }
 
     private func reconcileTabs() {
-        let validIDs = Set(notebooks.filter { $0.trashedAt == nil }.map(\.id))
+        let validIDs = Set(notebooks.filter { $0.trashedAt == nil }.map(\.stableID))
         openTabIDs.removeAll { !validIDs.contains($0) }
-        if openTabIDs.isEmpty, let first = notebooks.first(where: { $0.trashedAt == nil })?.id {
+        if openTabIDs.isEmpty, let first = notebooks.first(where: { $0.trashedAt == nil })?.stableID {
             openTabIDs = [first]
         }
         if let selectedTabID, openTabIDs.contains(selectedTabID) {
@@ -1315,6 +1316,10 @@ private var emptyState: some View {
             newPage.isBookmarked = srcPage.isBookmarked
             newPage.inkData = srcPage.inkData
             newPage.ocrText = srcPage.ocrText
+            newPage.pdfText = srcPage.pdfText
+            newPage.ocrStorageVersion = srcPage.ocrStorageVersion
+            newPage.ocrInkFingerprint = srcPage.ocrInkFingerprint
+            newPage.ocrProviderIdentity = srcPage.ocrProviderIdentity
             newPage.ocrUpdatedAt = srcPage.ocrUpdatedAt
             newPage.backgroundHex = srcPage.backgroundHex
             newPage.lineStyle = srcPage.lineStyle
@@ -1404,7 +1409,8 @@ private var emptyState: some View {
     private func importBackup(_ result: Result<[URL], Error>) {
         do {
             guard let url = try result.get().first else { return }
-            quickNotebook = try CloudTranslator.importArchive(from: url, into: context)
+            let notebook = try CloudTranslator.importArchive(from: url, into: context)
+            notebookPath.append(NotebookDestination(notebookID: notebook.stableID))
             librarySection = .notes
         } catch {
             backupImportError = error.localizedDescription
@@ -1430,7 +1436,7 @@ private var emptyState: some View {
         notebook.pages.append(page)
         notebook.modifiedAt = .now
         if saveChanges() {
-            quickNotebook = notebook
+            notebookPath.append(NotebookDestination(notebookID: notebook.stableID))
         }
     }
 
@@ -1447,13 +1453,14 @@ private var emptyState: some View {
                 indexingCompleted = 0
             }
             for page in pages {
-                let recognized = await HandwritingOCR.recognizeText(
-                    from: page.inkData,
-                    pageSize: page.pageOrientation.size
-                )
-                page.ocrText = recognized
-                page.ocrUpdatedAt = .now
-                indexingCompleted += 1
+                do {
+                    try await ocrService.refresh(pages: [page], force: true)
+                    indexingCompleted += 1
+                } catch {
+                    operationError = error.localizedDescription
+                    _ = saveChanges()
+                    return
+                }
             }
             notebook.modifiedAt = .now
             _ = saveChanges()
@@ -1786,10 +1793,12 @@ private enum NotebookEditError: LocalizedError {
 struct BetterNotesSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = true
+    @AppStorage(AppPreferenceKey.pencilDoubleTapEnabled) private var pencilDoubleTapEnabled = true
+    @AppStorage(AppPreferenceKey.pencilDoubleTapTool) private var pencilDoubleTapToolRaw = DrawingTool.eraser.rawValue
     @AppStorage(AppPreferenceKey.librarySort) private var librarySort = LibrarySort.modified.rawValue
     @EnvironmentObject private var ai: AIService
     @EnvironmentObject private var aiSettings: AISettingsStore
-    @State private var showingAIProviderSettings = false
+    @EnvironmentObject private var ocrSettings: OCRSettingsStore
     @AppStorage(AppPreferenceKey.assistantEnabled) private var assistantEnabled = true
     @AppStorage(AppPreferenceKey.searchAnswersEnabled) private var searchAnswersEnabled = true
 
@@ -1814,14 +1823,48 @@ struct BetterNotesSettingsSheet: View {
                     }
                 }
 
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    Section {
+                        Toggle("Double-Tap Tool Switch", isOn: $pencilDoubleTapEnabled)
+                            .accessibilityIdentifier("pencil-double-tap-enabled")
+                        Picker("Switch To", selection: $pencilDoubleTapToolRaw) {
+                            ForEach(DrawingTool.allCases, id: \.self) { tool in
+                                Label(tool.label, systemImage: tool.icon)
+                                    .accessibilityLabel(tool.label)
+                                    .accessibilityIdentifier("pencil-double-tap-option-\(tool.rawValue)")
+                                    .tag(tool.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .disabled(!pencilDoubleTapEnabled)
+                        .accessibilityIdentifier("pencil-double-tap-tool")
+                    } header: {
+                        Text("Apple Pencil Pro")
+                    } footer: {
+                        Text("Apple Pencil Pro only. Double-tap to switch to the selected tool; double-tap again to return to your previous tool. Enable Double Tap in iPad Settings > Apple Pencil.")
+                    }
+                }
+
+                Section("Text Recognition") {
+                    NavigationLink {
+                        OCRSettingsView()
+                    } label: {
+                        Label("OCR Settings", systemImage: "text.viewfinder")
+                    }
+                    LabeledContent("Provider", value: ocrSettings.provider.label)
+                    Text("Write ?? followed by a question on the same line to prepare it in the assistant.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("AI") {
                     Toggle(isOn: $aiSettings.automaticWritingSuggestions) {
                         Label("Automatic Writing Suggestions", systemImage: "sparkles")
                     }
                     .accessibilityValue(aiSettings.automaticWritingSuggestions ? "On" : "Off")
 
-                    Button {
-                        showingAIProviderSettings = true
+                    NavigationLink {
+                        AIProviderSettingsSheet(service: ai)
                     } label: {
                         Label("AI Provider Settings", systemImage: "gearshape")
                     }
@@ -1848,6 +1891,7 @@ struct BetterNotesSettingsSheet: View {
                     LabeledContent("Build", value: buildNumber)
                 }
             }
+            .accessibilityIdentifier("app-settings-form")
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1855,9 +1899,6 @@ struct BetterNotesSettingsSheet: View {
                     Button("Done") { dismiss() }
                         .bold()
                 }
-            }
-            .sheet(isPresented: $showingAIProviderSettings) {
-                AIProviderSettingsSheet(service: ai)
             }
         }
     }

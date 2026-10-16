@@ -51,9 +51,14 @@ struct AssistantView: View {
     var onReplaceSelection: (String) -> Void
     var onCreateNote: (String) -> Void
     var onDismiss: () -> Void
+    var initialQuestion: HandwrittenQuestionDraft? = nil
+    var onRetryQuestionRecognition: () -> Void = {}
     @Environment(\.modelContext) private var context
     @EnvironmentObject private var coordinator: AssistantCoordinator
     @EnvironmentObject private var aiService: AIService
+    @EnvironmentObject private var ocrService: OCRService
+    @EnvironmentObject private var corpusStore: NoteCorpusStore
+    @Query private var notebooks: [Notebook]
     @Query(sort: \AssistantThread.updatedAt, order: .reverse) private var threads: [AssistantThread]
     @State private var selectedThreadID: UUID?
     @State private var composer = ""
@@ -66,6 +71,13 @@ struct AssistantView: View {
     @State private var confirmingClear = false
     @State private var confirmingDelete = false
     @FocusState private var composerFocused: Bool
+    @State private var preparationTask: Task<Void, Never>?
+    @State private var isPreparing = false
+    @State private var recognitionError: String?
+    @State private var preparationID = UUID()
+    @State private var appliedQuestionID: UUID?
+
+    private var isRecognizingQuestion: Bool { initialQuestion?.isRecognizing == true }
 
     private let starters = [
         ("Explain a concept", "Explain the most important concept in these notes in simple terms."),
@@ -78,7 +90,9 @@ struct AssistantView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 scopePicker
+                    .disabled(isPreparing || isRecognizingQuestion)
                 quickActions
+                    .disabled(isPreparing || isRecognizingQuestion)
                 Divider()
                 conversation
                 composerBar
@@ -104,9 +118,23 @@ struct AssistantView: View {
             .navigationTitle(currentThread?.title ?? "Assistant")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { assistantToolbar }
-            .onDisappear { coordinator.cancel() }
+            .onDisappear {
+                preparationTask?.cancel()
+                coordinator.cancel()
+            }
+            .onChange(of: initialQuestion, initial: true) { _, draft in
+                guard let draft else { return }
+                if appliedQuestionID != draft.id {
+                    coordinator.clearTransientState()
+                    isStartingNewConversation = true
+                    selectedThreadID = nil
+                    draftScope = .currentNotebook
+                    appliedQuestionID = draft.id
+                }
+                applyQuestionDraft(draft)
+            }
             .sheet(isPresented: $showingProviderSettings) {
-                AIProviderSettingsSheet(service: aiService)
+                NavigationStack { AIProviderSettingsSheet(service: aiService) }
             }
             .alert("Rename Conversation", isPresented: $showingRename) {
                 TextField("Conversation name", text: $renameText)
@@ -332,6 +360,15 @@ struct AssistantView: View {
 
     private var composerBar: some View {
         VStack(spacing: 8) {
+            if let initialQuestion {
+                questionRecognitionStatus(initialQuestion)
+            }
+            if isPreparing {
+                HStack { ProgressView(); Text("Reading notes").font(.caption); Spacer() }
+            }
+            if let recognitionError {
+                Text(recognitionError).font(.caption).foregroundStyle(.orange)
+            }
             if let error = coordinator.errorMessage, !coordinator.isResponding {
                 HStack {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -351,9 +388,15 @@ struct AssistantView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($composerFocused)
                     .submitLabel(.send)
+                    .disabled(isRecognizingQuestion)
                     .onSubmit { submit(composer) }
-                if coordinator.isResponding {
-                    Button { coordinator.cancel() } label: {
+                if coordinator.isResponding || isPreparing {
+                    Button {
+                        preparationTask?.cancel()
+                        preparationID = UUID()
+                        isPreparing = false
+                        coordinator.cancel()
+                    } label: {
                         Image(systemName: "stop.fill")
                             .frame(width: 32, height: 32)
                     }
@@ -365,13 +408,63 @@ struct AssistantView: View {
                             .frame(width: 32, height: 32)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(isRecognizingQuestion || composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityLabel("Send message")
                 }
             }
         }
         .padding(12)
         .background(.bar)
+    }
+
+    @ViewBuilder
+    private func questionRecognitionStatus(_ draft: HandwrittenQuestionDraft) -> some View {
+        switch draft.phase {
+        case .recognizing:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("?? recognized on device")
+                Spacer()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("question-ocr-in-progress")
+        case .ready:
+            HStack {
+                Label("?? recognized · Question ready", systemImage: "checkmark.circle")
+                Spacer()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("question-ocr-ready")
+        case .failed(let message):
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("?? recognized on device", systemImage: "text.viewfinder")
+                    Text(message)
+                    Text("You can retry or type your question below.")
+                }
+                Spacer()
+                Button("Retry", action: onRetryQuestionRecognition)
+            }
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .accessibilityIdentifier("question-ocr-failed")
+        }
+    }
+
+    private func applyQuestionDraft(_ draft: HandwrittenQuestionDraft) {
+        switch draft.phase {
+        case .recognizing:
+            composer = "Better OCR happening"
+            composerFocused = false
+        case .ready(let question):
+            composer = question
+            composerFocused = true
+        case .failed:
+            composer = ""
+            composerFocused = true
+        }
     }
 
     @ToolbarContentBuilder
@@ -408,6 +501,7 @@ struct AssistantView: View {
                 Image(systemName: "bubble.left.and.bubble.right")
             }
             .accessibilityLabel("Conversations")
+            .disabled(isPreparing || isRecognizingQuestion)
         }
     }
 
@@ -480,7 +574,36 @@ struct AssistantView: View {
 
     private func submit(_ rawQuestion: String) {
         let question = rawQuestion.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, !coordinator.isResponding else { return }
+        guard !question.isEmpty, !coordinator.isResponding, !isPreparing, !isRecognizingQuestion else { return }
+        let scope = currentThread?.scope ?? draftScope
+        let relevant = notebooks.filter {
+            $0.trashedAt == nil && (scope == .allNotes || $0.stableID == notebook.stableID)
+        }.flatMap(\.pages).filter {
+            $0.trashedAt == nil && (scope != .currentPage || $0.stableID == page.stableID)
+        }
+        recognitionError = nil
+        isPreparing = true
+        let requestID = UUID()
+        preparationID = requestID
+        preparationTask = Task { @MainActor in
+            defer { if preparationID == requestID { isPreparing = false } }
+            do {
+                try await ocrService.refresh(pages: relevant)
+                try Task.checkCancellation()
+                try context.save()
+                await corpusStore.rebuild(notebooks: notebooks)
+                try Task.checkCancellation()
+                guard page.modelContext != nil, preparationID == requestID else { return }
+                submitRecognizedQuestion(question)
+            } catch is CancellationError {
+            } catch {
+                guard preparationID == requestID else { return }
+                recognitionError = "Could not read notes: \(error.localizedDescription) Check OCR Settings and try again."
+            }
+        }
+    }
+
+    private func submitRecognizedQuestion(_ question: String) {
         let thread = threadForSubmission()
         let history = thread.orderedMessages.map { AIConversationMessage(role: $0.role, content: $0.content) }
         let userMessage = AssistantMessage(role: .user, content: question)

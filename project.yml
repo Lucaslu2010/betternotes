@@ -25,6 +25,10 @@ settings:
     # BetterNotesUITests requires a development team" while the app itself
     # built and installed perfectly well.
     DEVELOPMENT_TEAM: RQLD7J8CV7
+  configs:
+    Debug:
+      # Local USB development signing; release keeps the repository's team.
+      DEVELOPMENT_TEAM: D98JSNGGGQ
 targets:
   BetterNotes:
     type: application
@@ -44,6 +48,9 @@ targets:
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "BetterNotes uses speech recognition when you choose to transcribe an audio note."
         ENABLE_PREVIEWS: "YES"
         SWIFT_EMIT_LOC_STRINGS: "YES"
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.lucaslu.betternotes.dev
   BetterNotesTests:
     type: bundle.unit-test
     platform: iOS
@@ -55,6 +62,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.betternotes.app.tests
         GENERATE_INFOPLIST_FILE: "YES"
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.lucaslu.betternotes.dev.tests
   BetterNotesUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -66,6 +76,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.betternotes.app.uitests
         GENERATE_INFOPLIST_FILE: "YES"
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.lucaslu.betternotes.dev.uitests
 
 schemes:
   BetterNotes:

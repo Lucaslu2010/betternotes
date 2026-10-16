@@ -2,10 +2,166 @@ import XCTest
 import SwiftData
 import SwiftUI
 import UIKit
+import PencilKit
 @testable import BetterNotes
 
 @MainActor
 final class BetterNotesTests: XCTestCase {
+    func testPenLiftWaitsForLatePencilKitStrokeCommit() async throws {
+        let canvas = PKCanvasView()
+        let original = lifecycleStroke(y: 20)
+        canvas.drawing = PKDrawing(strokes: [original])
+        var toolEvents: [Bool] = []
+        let coordinator = lifecycleCoordinator(canvas: canvas, onToolUse: { toolEvents.append($0) })
+        coordinator.canvasViewDidBeginUsingTool(canvas)
+        // PencilKit sometimes emits an unchanged drawing before publishing
+        // its final stroke. This must not select the previous stroke to smooth.
+        coordinator.canvasViewDrawingDidChange(canvas)
+        coordinator.canvasViewDidEndUsingTool(canvas)
+        XCTAssertEqual(toolEvents, [true])
+        XCTAssertEqual(Array(canvas.drawing.strokes[0].path).map(\.location), Array(original.path).map(\.location))
+        canvas.drawing = PKDrawing(strokes: [original, lifecycleStroke(y: 80)])
+        coordinator.canvasViewDrawingDidChange(canvas)
+        try await Task.sleep(for: .milliseconds(240))
+        XCTAssertEqual(canvas.drawing.strokes.count, 2)
+        XCTAssertEqual(Array(canvas.drawing.strokes[0].path).map(\.location), Array(original.path).map(\.location))
+        XCTAssertEqual(toolEvents, [true, false])
+    }
+
+    func testNewStrokeCancelsPreviousPenLiftRewrite() async throws {
+        let canvas = PKCanvasView()
+        let coordinator = lifecycleCoordinator(canvas: canvas)
+        coordinator.canvasViewDidBeginUsingTool(canvas)
+        canvas.drawing = PKDrawing(strokes: [lifecycleStroke(y: 20)])
+        coordinator.canvasViewDrawingDidChange(canvas)
+        coordinator.canvasViewDidEndUsingTool(canvas)
+        // Begin the next stroke before the previous lift has settled.
+        coordinator.canvasViewDidBeginUsingTool(canvas)
+        let liveDrawing = PKDrawing(strokes: canvas.drawing.strokes + [lifecycleStroke(y: 80)])
+        canvas.drawing = liveDrawing
+        coordinator.canvasViewDrawingDidChange(canvas)
+        try await Task.sleep(for: .milliseconds(240))
+        XCTAssertEqual(canvas.drawing.dataRepresentation(), liveDrawing.dataRepresentation(), "A pending smoothing operation replaced live ink")
+        coordinator.canvasViewDidEndUsingTool(canvas)
+        try await Task.sleep(for: .milliseconds(240))
+        XCTAssertEqual(canvas.drawing.strokes.count, 2)
+    }
+
+    func testToolChangeWaitsUntilPencilKitFinishesStroke() async throws {
+        let canvas = PKCanvasView()
+        let coordinator = lifecycleCoordinator(canvas: canvas)
+        coordinator.updateToolIfIdle(on: canvas)
+        coordinator.canvasViewDidBeginUsingTool(canvas)
+        coordinator.parent = lifecycleCanvas(canvas: canvas, width: 8)
+        coordinator.updateToolIfIdle(on: canvas)
+        XCTAssertEqual((canvas.tool as? PKInkingTool)?.width, 3)
+        coordinator.canvasViewDidEndUsingTool(canvas)
+        coordinator.updateToolIfIdle(on: canvas)
+        XCTAssertEqual((canvas.tool as? PKInkingTool)?.width, 3)
+        try await Task.sleep(for: .milliseconds(240))
+        XCTAssertEqual((canvas.tool as? PKInkingTool)?.width, 8)
+    }
+
+    private func lifecycleStroke(y: CGFloat) -> PKStroke {
+        let points = (0..<8).map { index in
+            PKStrokePoint(location: CGPoint(x: 20 + CGFloat(index) * 8, y: y + (index.isMultiple(of: 2) ? 2 : -2)),
+                          timeOffset: Double(index) * 0.01, size: CGSize(width: 3, height: 3),
+                          opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+        }
+        return PKStroke(ink: PKInk(.pen, color: .black), path: PKStrokePath(controlPoints: points, creationDate: .now))
+    }
+
+    private func lifecycleCanvas(canvas: PKCanvasView, width: CGFloat = 3) -> PaperCanvas {
+        PaperCanvas(canvasView: .constant(canvas), tool: .pen, color: .black, lineWidth: width,
+                    generatedShapeStyle: GeneratedShapeStyle(inkType: .pen, color: .black, opacity: 1, width: width),
+                    eraserWidth: 20, eraserStyle: .vector, lassoMode: .freeform,
+                    isReadOnly: false, allowsFingerDrawing: true, elementInteractionRects: [],
+                    inkData: nil, beautifiesHandwriting: true, canvasInkOpacity: 1)
+    }
+
+    private func lifecycleCoordinator(canvas: PKCanvasView, onToolUse: ((Bool) -> Void)? = nil) -> PaperCanvas.Coordinator {
+        var parent = lifecycleCanvas(canvas: canvas)
+        parent.onToolUseChange = onToolUse
+        let coordinator = PaperCanvas.Coordinator(parent: parent)
+        coordinator.canvas = canvas
+        return coordinator
+    }
+
+    func testPencilDoubleTapTogglesBetweenCurrentAndChosenTools() {
+        var toggle = PencilToolToggle()
+        XCTAssertEqual(toggle.nextTool(current: .pencil, alternate: .lasso), .lasso)
+        XCTAssertEqual(toggle.nextTool(current: .lasso, alternate: .lasso), .pencil)
+        // Choosing a tool manually becomes the next return tool.
+        XCTAssertEqual(toggle.nextTool(current: .marker, alternate: .eraser), .eraser)
+        XCTAssertEqual(toggle.nextTool(current: .eraser, alternate: .eraser), .marker)
+        // No-op targets and changing the preference must still allow a switch.
+        var fresh = PencilToolToggle()
+        XCTAssertEqual(fresh.nextTool(current: .eraser, alternate: .eraser), .pen)
+        XCTAssertEqual(fresh.nextTool(current: .pen, alternate: .pen), .eraser)
+    }
+
+    func testNotebookBackGestureOverrideRestoresOnlyItsOwnNavigationController() throws {
+        let navigation = UINavigationController(rootViewController: UIViewController())
+        let settingsNavigation = UINavigationController(rootViewController: UIViewController())
+        let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        let settingsGesture = try XCTUnwrap(settingsNavigation.interactivePopGestureRecognizer)
+        let delegate = gesture.delegate
+        gesture.isEnabled = true
+        settingsGesture.isEnabled = true
+        let coordinator = DisableInteractivePop.Coordinator()
+        coordinator.install(on: navigation)
+        coordinator.install(on: navigation)
+        XCTAssertFalse(gesture.isEnabled)
+        XCTAssertTrue(settingsGesture.isEnabled)
+        XCTAssertTrue(gesture.delegate === delegate)
+        coordinator.restore()
+        XCTAssertTrue(gesture.isEnabled)
+        gesture.isEnabled = false
+        coordinator.install(on: navigation)
+        coordinator.restore()
+        XCTAssertFalse(gesture.isEnabled)
+    }
+
+    func testDuplicatePersistedSearchChunksDoNotCrashOnLoad() async throws {
+        struct Cache: Encodable { let version: Int; let chunks: [NoteChunk] }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("duplicate-index-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let notebookID = UUID()
+        func chunk(_ text: String, modifiedAt: Date) -> NoteChunk {
+            NoteChunk(id: "duplicate", notebookID: notebookID, pageID: nil, notebookTitle: "Notebook", pageTitle: nil,
+                      sourceKind: .typedText, label: "Text", text: text, terms: ["mitosis": 1], embedding: nil,
+                      fingerprint: text, modifiedAt: modifiedAt, isBookmarked: false, isArchived: false)
+        }
+        let newest = chunk("Mitosis updated", modifiedAt: Date(timeIntervalSince1970: 100))
+        let old = chunk("Mitosis old", modifiedAt: .distantPast)
+        try JSONEncoder().encode(Cache(version: NoteCorpusIndexer.indexVersion, chunks: [newest, old])).write(to: url)
+        let indexer = NoteCorpusIndexer(persistenceURL: url)
+        let count = await indexer.chunkCount
+        let results = await indexer.search(SearchQuery(text: "mitosis"))
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(results.first?.chunk, newest)
+    }
+
+    func testVerticalNotebookKeepsPageCoordinatesAndOneSharedLayout() {
+        let portrait = CGSize(width: 600, height: 900)
+        let landscape = CGSize(width: 900, height: 600)
+        let layout = VerticalNotebookLayout(pageSizes: [portrait, landscape], showsAddPage: true)
+        XCTAssertEqual(layout.pageFrames[0], CGRect(x: 150, y: 24, width: 600, height: 900))
+        XCTAssertEqual(layout.pageFrames[1], CGRect(x: 0, y: 948, width: 900, height: 600))
+        XCTAssertEqual(layout.contentSize, CGSize(width: 900, height: 1664))
+        let readOnly = VerticalNotebookLayout(pageSizes: [portrait, landscape], showsAddPage: false)
+        XCTAssertEqual(readOnly.contentSize.height, 1572)
+    }
+
+    func testVerticalViewportFindsThePageAndConvertsPasteCoordinates() {
+        let layout = VerticalNotebookLayout(pageSizes: [CGSize(width: 600, height: 900), CGSize(width: 900, height: 600)], showsAddPage: false)
+        let viewport = CGRect(x: 200, y: 950, width: 300, height: 200)
+        XCTAssertEqual(layout.pageIndex(at: viewport), 1)
+        XCTAssertEqual(layout.visibleCenter(for: 1, viewport: viewport), CGPoint(x: 350, y: 102))
+        XCTAssertEqual(layout.visibleCenter(for: 0, viewport: viewport), CGPoint(x: 300, y: 450))
+        XCTAssertNil(layout.pageIndex(at: .zero))
+    }
+
     func testEditorActionStateKeepsNavigationAndPresentationTogether() {
         let state = EditorActionState(currentPageIndex: 2)
 

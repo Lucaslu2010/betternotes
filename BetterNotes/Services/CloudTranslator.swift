@@ -159,6 +159,8 @@ struct CloudTranslator {
                 "lineStyle": page.lineStyle,
                 "orientation": page.orientation,
                 "ocrText": page.ocrText,
+                "pdfText": page.pdfText,
+                "ocrStorageVersion": page.ocrStorageVersion,
             ]
             if offset == 0 {
                 pageDict["notebookMetadata"] = [
@@ -259,6 +261,8 @@ struct CloudTranslator {
             page.lineStyle = (pageDict["lineStyle"] as? String) ?? "blank"
             page.orientation = (pageDict["orientation"] as? String) ?? "portrait"
             page.ocrText = pageDict["ocrText"] as? String ?? ""
+            page.pdfText = pageDict["pdfText"] as? String ?? ""
+            page.ocrStorageVersion = pageDict["ocrStorageVersion"] as? Int ?? 0
 
             // Restore ink data.
             if let inkB64 = pageDict["inkData"] as? String,

@@ -80,9 +80,76 @@ drive the handle rather than a coordinate beside it.
 
 ## Editor architecture
 
+Keep the library and notebook destinations under one `NavigationStack` with a
+stable-ID path. The regular-width sidebar lives on the library root screen;
+do not collapse a `NavigationSplitView` while pushing a notebook. Size-class
+branches around navigation or presentation modifiers can recreate the editor
+and dismiss settings during multitasking. The assistant uses one sheet
+modifier, and provider forms push within Settings' navigation stack.
+Load provider drafts once per presentation, not on every appearance.
+
+Apple Pencil double tap has one `PencilDoubleTapInteraction` per notebook, not
+per page. It switches the toolbar's tool binding through `PencilToolToggle`,
+preserving the previous tool for the return tap. Settings appear on all iPads
+with an Apple Pencil Pro compatibility label; iPadOS does not expose a public
+connected-Pencil model API. Honor the system's disabled double-tap preference.
+
+In vertical mode, one `ZoomablePageView` owns zoom and pan for the whole notebook.
+`VerticalNotebookLayout` describes native page frames and the shared viewport.
+Individual `PageEditorView`s set `managesOwnZoom: false`, locking their wrappers
+to 1:1 so pinching scales page boxes and spacing together. Toolbar zoom commands
+go to the outer view; page navigation scrolls to a native page rect. Keep ink and
+selection geometry in page coordinates and convert the shared viewport for paste.
+
+### OCR and handwritten questions
+
+`HandwritingOCR` is always the local Apple Vision marker detector. A handwritten
+line beginning with `??` immediately opens the assistant, including a bare marker.
+The composer shows "Better OCR happening" until the selected provider returns the
+question, then replaces that text. `EditorActionState` owns the task so presenting
+the window cannot cancel it when the page view disappears. Dismissal cancels it;
+errors stay in the question window with Retry. Sending remains explicit and is
+disabled during recognition. Full note OCR refresh still happens when sending.
+`OCRSettingsStore` defaults to on-device recognition and stores custom
+OCR tokens in a separate Keychain service from the answering AI credentials.
+`OCRService` reads content using the selected provider. Custom mode uploads only
+for a detected question or an explicit assistant, Ask Notes, or handwriting-index
+request, never for every drawing change. Ink/image fingerprints and provider
+identities prevent unchanged content from being uploaded again.
+
+PaddleOCR uses the **synchronous** `API_URL` and `TOKEN` from AI Studio's example:
+JSON base64 `file`, `fileType: 1`, and `Authorization: token …`. Its endpoint
+selects the model. Document-parsing Markdown and PP-OCR `rec_texts` responses are
+supported. OpenAI-compatible vision OCR instead uses a full chat/completions URL,
+a model name, and Bearer authentication. OCR settings include setup instructions
+and a synthetic-image connection test that does not alter saved configuration.
+
+Keep `Page.pdfText` separate from `Page.ocrText` (handwriting); search combines
+both through `searchableOCRText`. Recognition failures and stale/cancelled requests
+must not replace existing text. New OCR behavior has regression coverage in
+`BetterNotesTests/OCRPipelineTests.swift`; provider calls are mocked.
+
+OCR refresh uses a text-only image path, not `SmartImageExtractor.extract`,
+which also builds full-resolution photo crops. `HandwritingOCR` serializes local
+recognition and image preparation on one worker, cancels the active Vision
+request, and drains temporary images in an autorelease pool per job. OCR bitmaps
+are capped at 3200 pixels per edge and 6 megapixels; image inputs are downsampled
+with ImageIO before decoding. Keep rendered images out of network-await scopes.
+Paddle requests disable both visualization and Markdown images. OCR downloads
+stop at 8 MiB before JSON parsing, and oversized uploads fail before Base64
+encoding. The repeated OCR/provider regression logs physical memory on device.
+
 `PageEditorView` stacks, bottom to top: `PageBackground` → `ElementOverlay` →
 `PaperCanvas` → `TapeDisplayLayer` (hit-testing off) → `UnifiedLassoOverlay`
 (only when `tool == .lasso`) → `SelectionHandles`.
+
+Keep live ink in PencilKit until the pen-up callbacks settle. The coordinator
+debounces finalization by 120 ms, cancels it on a new stroke, and waits for the
+drawing gesture to finish before smoothing. Do not publish partial drawings
+into SwiftData at touch rate or reassign an unchanged PencilKit tool on every
+SwiftUI update. The tiled ink overlay is read-only; swapping it in on each
+pen-up can display stale tiles over the newest stroke. Lifecycle regression
+tests cover late commits, rapid next strokes, and tool changes during a stroke.
 
 Two pieces of selection state, and both must move together:
 

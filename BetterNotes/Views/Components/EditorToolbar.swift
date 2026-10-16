@@ -3,7 +3,7 @@ import PencilKit
 
 // MARK: - Drawing tool model
 
-enum DrawingTool: Hashable, CaseIterable {
+enum DrawingTool: String, Hashable, CaseIterable {
     case pen
     case pencil
     case marker
@@ -335,6 +335,12 @@ struct EditorToolbar: View {
             }
             .navigationTitle("Ink Color")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showingColorPopover = false }
+                        .accessibilityIdentifier("ink-color-done")
+                }
+            }
         }
     }
 
@@ -407,6 +413,12 @@ struct EditorToolbar: View {
             .padding(18)
             .navigationTitle(tool == .eraser ? "Eraser" : "Stroke Thickness")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showingSizePopover = false }
+                        .accessibilityIdentifier("stroke-size-done")
+                }
+            }
         }
     }
 

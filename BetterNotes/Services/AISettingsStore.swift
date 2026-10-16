@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Security
 
@@ -18,11 +19,13 @@ final class AISettingsStore: ObservableObject {
 
     private var apiKey = ""
     private let defaults: UserDefaults
+    private let keychainService: String
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, keychainService: String = "com.betternotes.app.ai-provider") {
         self.defaults = defaults
+        self.keychainService = keychainService
         self.automaticWritingSuggestions = defaults.bool(forKey: AppPreferenceKey.automaticWritingSuggestions)
-        apiKey = AIKeychainStore.load() ?? ""
+        apiKey = AIKeychainStore.load(service: keychainService) ?? ""
         // Re-check the stored URL rather than trusting it. update() validates
         // on the way in, but UserDefaults is not a trust boundary the way the
         // Keychain is — a plain-HTTP URL written by an older build or a synced
@@ -40,6 +43,17 @@ final class AISettingsStore: ObservableObject {
         return AIProviderConfiguration(apiKey: apiKey, baseURL: baseURL, model: model)
     }
 
+    /// Validate a connection-test draft without saving its fields or key.
+    func testConfiguration(apiKey: String?, baseURL: String, model: String) throws -> AIProviderConfiguration {
+        let url = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard Self.isAllowedProviderURL(url) else { throw AIConfigurationError.invalidURL }
+        let key = (apiKey ?? self.apiKey).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw AIConfigurationError.missingAPIKey }
+        let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AIProviderConfiguration(apiKey: key, baseURL: url, model: model.isEmpty ? "deepseek-chat" : model)
+    }
+
     func update(apiKey: String?, baseURL: String, model: String) throws {
         let trimmedURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -47,7 +61,7 @@ final class AISettingsStore: ObservableObject {
 
         if let apiKey {
             let newKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            try AIKeychainStore.save(newKey)
+            try AIKeychainStore.save(newKey, service: keychainService)
             self.apiKey = newKey
         }
         self.baseURL = trimmedURL
@@ -60,7 +74,7 @@ final class AISettingsStore: ObservableObject {
 
     func clear() {
         apiKey = ""
-        AIKeychainStore.delete()
+        AIKeychainStore.delete(service: keychainService)
         isRemoteConfigured = false
     }
 
@@ -75,12 +89,15 @@ final class AISettingsStore: ObservableObject {
 
 enum AIConfigurationError: LocalizedError {
     case invalidURL
+    case missingAPIKey
     case secureStorage(OSStatus)
 
     var errorDescription: String? {
         switch self {
         case .invalidURL:
             return "Enter an HTTPS provider URL. Plain HTTP is allowed only for localhost."
+        case .missingAPIKey:
+            return "Enter an API key before testing the connection."
         case .secureStorage(let status):
             return "The API key could not be stored securely (Keychain error \(status))."
         }
@@ -88,11 +105,10 @@ enum AIConfigurationError: LocalizedError {
 }
 
 private enum AIKeychainStore {
-    private static let service = "com.betternotes.app.ai-provider"
     private static let account = "api-key"
 
-    static func save(_ value: String) throws {
-        guard !value.isEmpty else { delete(); return }
+    static func save(_ value: String, service: String) throws {
+        guard !value.isEmpty else { delete(service: service); return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -109,7 +125,7 @@ private enum AIKeychainStore {
         guard status == errSecSuccess else { throw AIConfigurationError.secureStorage(status) }
     }
 
-    static func load() -> String? {
+    static func load(service: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -123,7 +139,7 @@ private enum AIKeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static func delete() {
+    static func delete(service: String) {
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

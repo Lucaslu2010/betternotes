@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import PencilKit
+import SwiftData
 
 enum PageZoomAction: Equatable {
     case fitPage
@@ -26,14 +27,98 @@ enum PageSwipeDirection {
     case next
 }
 
+struct PageScrollCommand: Equatable, Identifiable {
+    let id = UUID()
+    let rect: CGRect
+}
+
+/// Native page coordinates for the one zoomable vertical writing area.
+struct VerticalNotebookLayout {
+    static let spacing: CGFloat = 24
+    static let padding: CGFloat = 24
+    let pageFrames: [CGRect]
+    let contentSize: CGSize
+
+    init(pageSizes: [CGSize], showsAddPage: Bool) {
+        let width = pageSizes.map(\.width).max() ?? 1
+        var y = Self.padding
+        var frames: [CGRect] = []
+        for size in pageSizes {
+            frames.append(CGRect(x: (width - size.width) / 2, y: y, width: size.width, height: size.height))
+            y += size.height + Self.spacing
+        }
+        if showsAddPage { y += 68 }
+        let trailingSpacing = showsAddPage || pageSizes.isEmpty ? 0 : Self.spacing
+        contentSize = CGSize(width: width, height: y + Self.padding - trailingSpacing)
+        pageFrames = frames
+    }
+
+    func pageIndex(at viewport: CGRect) -> Int? {
+        guard !viewport.isEmpty else { return nil }
+        if let index = pageFrames.firstIndex(where: { viewport.midY >= $0.minY && viewport.midY <= $0.maxY }) { return index }
+        return pageFrames.indices.min { abs(pageFrames[$0].midY - viewport.midY) < abs(pageFrames[$1].midY - viewport.midY) }
+    }
+
+    func visibleCenter(for index: Int, viewport: CGRect) -> CGPoint {
+        let frame = pageFrames[index]
+        let visible = frame.intersection(viewport)
+        guard !visible.isNull, !visible.isEmpty else { return CGPoint(x: frame.width / 2, y: frame.height / 2) }
+        return CGPoint(x: visible.midX - frame.minX, y: visible.midY - frame.minY)
+    }
+}
+
 struct ZoomablePageView<Content: View>: UIViewRepresentable {
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var aiSettings: AISettingsStore
+    @EnvironmentObject private var aiService: AIService
+    @EnvironmentObject private var corpusStore: NoteCorpusStore
+    @EnvironmentObject private var assistantCoordinator: AssistantCoordinator
+    @EnvironmentObject private var writingSuggestions: WritingSuggestionCoordinator
+    @EnvironmentObject private var ocrSettings: OCRSettingsStore
+    @EnvironmentObject private var ocrService: OCRService
+
+    struct HostedContent: View {
+        let content: Content
+        let modelContext: ModelContext
+        let aiSettings: AISettingsStore
+        let aiService: AIService
+        let corpusStore: NoteCorpusStore
+        let assistantCoordinator: AssistantCoordinator
+        let writingSuggestions: WritingSuggestionCoordinator
+        let ocrSettings: OCRSettingsStore
+        let ocrService: OCRService
+
+        var body: some View {
+            content
+                .environment(\.modelContext, modelContext)
+                .environmentObject(aiSettings)
+                .environmentObject(aiService)
+                .environmentObject(corpusStore)
+                .environmentObject(assistantCoordinator)
+                .environmentObject(writingSuggestions)
+                .environmentObject(ocrSettings)
+                .environmentObject(ocrService)
+        }
+    }
+
+    private var hostedContent: HostedContent {
+        HostedContent(content: content, modelContext: modelContext, aiSettings: aiSettings,
+                      aiService: aiService, corpusStore: corpusStore, assistantCoordinator: assistantCoordinator,
+                      writingSuggestions: writingSuggestions, ocrSettings: ocrSettings, ocrService: ocrService)
+    }
+
     let pageSize: CGSize
+    let isZoomEnabled: Bool
+    let continuousScrolling: Bool
+    let zoomReferenceSize: CGSize?
     let panRequiresTwoFingers: Bool
     let onPageSwipe: (PageSwipeDirection) -> Void
     @Binding var zoomCommand: PageZoomCommand?
     @Binding var zoomScale: CGFloat
     @Binding var zoomRatio: CGFloat
     @Binding var visiblePageCenter: CGPoint
+    @Binding var visibleContentRect: CGRect
+    @Binding var scrollCommand: PageScrollCommand?
     let canShowBlankCanvasMenu: (CGPoint) -> Bool
     let onBlankCanvasMenuWillShow: () -> Void
     let onBlankCanvasPaste: () -> Void
@@ -42,23 +127,33 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
     init(
         pageSize: CGSize,
         panRequiresTwoFingers: Bool,
+        isZoomEnabled: Bool = true,
+        continuousScrolling: Bool = false,
+        zoomReferenceSize: CGSize? = nil,
         onPageSwipe: @escaping (PageSwipeDirection) -> Void = { _ in },
         zoomCommand: Binding<PageZoomCommand?> = .constant(nil),
         zoomScale: Binding<CGFloat> = .constant(1),
         zoomRatio: Binding<CGFloat> = .constant(1),
         visiblePageCenter: Binding<CGPoint> = .constant(.zero),
+        visibleContentRect: Binding<CGRect> = .constant(.zero),
+        scrollCommand: Binding<PageScrollCommand?> = .constant(nil),
         canShowBlankCanvasMenu: @escaping (CGPoint) -> Bool = { _ in false },
         onBlankCanvasMenuWillShow: @escaping () -> Void = {},
         onBlankCanvasPaste: @escaping () -> Void = {},
         @ViewBuilder content: () -> Content
     ) {
         self.pageSize = pageSize
+        self.isZoomEnabled = isZoomEnabled
+        self.continuousScrolling = continuousScrolling
+        self.zoomReferenceSize = zoomReferenceSize
         self.panRequiresTwoFingers = panRequiresTwoFingers
         self.onPageSwipe = onPageSwipe
         self._zoomCommand = zoomCommand
         self._zoomScale = zoomScale
         self._zoomRatio = zoomRatio
         self._visiblePageCenter = visiblePageCenter
+        self._visibleContentRect = visibleContentRect
+        self._scrollCommand = scrollCommand
         self.canShowBlankCanvasMenu = canShowBlankCanvasMenu
         self.onBlankCanvasMenuWillShow = onBlankCanvasMenuWillShow
         self.onBlankCanvasPaste = onBlankCanvasPaste
@@ -66,19 +161,24 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
-            content: content,
+        let coordinator = Coordinator(
+            content: hostedContent,
             pageSize: pageSize,
             onPageSwipe: onPageSwipe,
             canShowBlankCanvasMenu: canShowBlankCanvasMenu,
             onBlankCanvasMenuWillShow: onBlankCanvasMenuWillShow,
             onBlankCanvasPaste: onBlankCanvasPaste
         )
+        coordinator.isZoomEnabled = isZoomEnabled
+        coordinator.continuousScrolling = continuousScrolling
+        coordinator.zoomReferenceSize = zoomReferenceSize
+        return coordinator
     }
 
     func makeUIView(context: Context) -> UIScrollView {
+        context.coordinator.hostingController.rootView = hostedContent
         let scrollView = UIScrollView()
-        scrollView.accessibilityIdentifier = "page-canvas"
+        scrollView.accessibilityIdentifier = continuousScrolling ? "notebook-canvas" : "page-canvas"
         scrollView.delegate = context.coordinator
         scrollView.backgroundColor = UIColor.systemGroupedBackground
         scrollView.bouncesZoom = true
@@ -103,18 +203,29 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
         hostedView.clipsToBounds = false
         contentView.addSubview(hostedView)
 
-        context.coordinator.installPageSwipeGesture(on: scrollView)
-        context.coordinator.installBlankCanvasMenu()
+        if isZoomEnabled && !continuousScrolling { context.coordinator.installPageSwipeGesture(on: scrollView) }
+        if !continuousScrolling { context.coordinator.installBlankCanvasMenu() }
 
         return scrollView
     }
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
-        context.coordinator.hostingController.rootView = content
+        // Forward app dependencies, never the entire environment: copying it
+        // also copies SwiftUI's private navigation/presentation machinery into
+        // a second hosting controller and can dismiss the notebook on entry.
+        context.coordinator.hostingController.rootView = hostedContent
         context.coordinator.onPageSwipe = onPageSwipe
         context.coordinator.canShowBlankCanvasMenu = canShowBlankCanvasMenu
         context.coordinator.onBlankCanvasMenuWillShow = onBlankCanvasMenuWillShow
         context.coordinator.onBlankCanvasPaste = onBlankCanvasPaste
+        context.coordinator.isZoomEnabled = isZoomEnabled
+        context.coordinator.continuousScrolling = continuousScrolling
+        context.coordinator.zoomReferenceSize = zoomReferenceSize
+        context.coordinator.setVisibleContentRect = { rect in
+            if visibleContentRect != rect { visibleContentRect = rect }
+        }
+        context.coordinator.scrollCommand = scrollCommand
+        context.coordinator.clearScrollCommand = { self.scrollCommand = nil }
         context.coordinator.update(
             scrollView,
             pageSize: pageSize,
@@ -122,14 +233,15 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
             zoomRatio: zoomRatio,
             zoomCommand: zoomCommand,
             setZoomCommand: { zoomCommand = $0 },
-            setZoomScale: { zoomScale = $0 },
-            setZoomRatio: { zoomRatio = $0 },
-            setVisiblePageCenter: { visiblePageCenter = $0 }
+            setZoomScale: { if zoomScale != $0 { zoomScale = $0 } },
+            setZoomRatio: { if zoomRatio != $0 { zoomRatio = $0 } },
+            setVisiblePageCenter: { if visiblePageCenter != $0 { visiblePageCenter = $0 } }
         )
     }
 
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate, UIContextMenuInteractionDelegate {
-        let hostingController: UIHostingController<Content>
+        private let memoryActivity = MemoryDiagnostics.begin("page-host")
+        let hostingController: UIHostingController<HostedContent>
         let contentView = UIView()
         var onPageSwipe: (PageSwipeDirection) -> Void
         var canShowBlankCanvasMenu: (CGPoint) -> Bool
@@ -143,9 +255,16 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
         private var setVisiblePageCenter: ((CGPoint) -> Void)?
         private weak var pageSwipeGesture: UIPanGestureRecognizer?
         private var lastRenderingScale: CGFloat = 0
+        var isZoomEnabled = true
+        var continuousScrolling = false
+        var zoomReferenceSize: CGSize?
+        var setVisibleContentRect: ((CGRect) -> Void)?
+        var scrollCommand: PageScrollCommand?
+        var clearScrollCommand: (() -> Void)?
+        private var lastScrollCommandID: UUID?
 
         init(
-            content: Content,
+            content: HostedContent,
             pageSize: CGSize,
             onPageSwipe: @escaping (PageSwipeDirection) -> Void,
             canShowBlankCanvasMenu: @escaping (CGPoint) -> Bool,
@@ -195,30 +314,57 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
             self.setVisiblePageCenter = setVisiblePageCenter
 
             if lastPageSize != pageSize {
-                didSetInitialZoom = false
                 lastPageSize = pageSize
-                contentView.transform = .identity
-                contentView.frame = CGRect(origin: .zero, size: pageSize)
+                if continuousScrolling {
+                    // Adding/removing a page changes the document's bounds,
+                    // not its zoom or the position of the pages above it.
+                    contentView.bounds = CGRect(origin: .zero, size: pageSize)
+                    contentView.center = CGPoint(x: pageSize.width * scrollView.zoomScale / 2, y: pageSize.height * scrollView.zoomScale / 2)
+                } else {
+                    didSetInitialZoom = false
+                    contentView.transform = .identity
+                    contentView.frame = CGRect(origin: .zero, size: pageSize)
+                }
                 hostingController.view.frame = contentView.bounds
             } else if contentView.bounds.size != pageSize {
                 contentView.bounds = CGRect(origin: .zero, size: pageSize)
                 hostingController.view.frame = contentView.bounds
             }
 
-            scrollView.contentSize = pageSize
+            scrollView.contentSize = CGSize(width: pageSize.width * scrollView.zoomScale, height: pageSize.height * scrollView.zoomScale)
             scrollView.maximumZoomScale = 4.0
+            scrollView.isScrollEnabled = isZoomEnabled
+            scrollView.pinchGestureRecognizer?.isEnabled = isZoomEnabled
             scrollView.panGestureRecognizer.minimumNumberOfTouches = panRequiresTwoFingers ? 2 : 1
-            pageSwipeGesture?.isEnabled = !panRequiresTwoFingers
+            pageSwipeGesture?.isEnabled = isZoomEnabled && !continuousScrolling && !panRequiresTwoFingers
+
+            if !isZoomEnabled {
+                scrollView.minimumZoomScale = 1
+                scrollView.maximumZoomScale = 1
+                scrollView.zoomScale = 1
+                scrollView.contentInset = .zero
+                return
+            }
 
             DispatchQueue.main.async { [weak self, weak scrollView] in
                 guard let self, let scrollView else { return }
                 self.configureZoomScale(scrollView, pageSize: pageSize, zoomRatio: zoomRatio)
-                if let zoomCommand, self.lastZoomCommandID != zoomCommand.id {
+                if self.isZoomEnabled, let zoomCommand, self.lastZoomCommandID != zoomCommand.id {
                     self.lastZoomCommandID = zoomCommand.id
                     self.apply(zoomCommand.action, to: scrollView, pageSize: pageSize)
                     setZoomCommand(nil)
                 }
                 self.centerPage(in: scrollView, pageSize: pageSize)
+                if self.isZoomEnabled, let command = self.scrollCommand, self.lastScrollCommandID != command.id {
+                    self.lastScrollCommandID = command.id
+                    let viewport = scrollView.bounds.size
+                    let target = CGRect(origin: command.rect.origin, size: CGSize(
+                        width: min(command.rect.width, viewport.width / scrollView.zoomScale),
+                        height: min(command.rect.height, viewport.height / scrollView.zoomScale)
+                    ))
+                    scrollView.scrollRectToVisible(self.contentView.convert(target, to: scrollView), animated: true)
+                    self.clearScrollCommand?()
+                }
                 self.refreshRenderingScale(for: scrollView)
                 self.reportZoom(scrollView, pageSize: pageSize)
                 self.reportVisiblePageCenter(scrollView, pageSize: pageSize)
@@ -306,6 +452,13 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
         private func configureZoomScale(_ scrollView: UIScrollView, pageSize: CGSize, zoomRatio: CGFloat) {
             guard scrollView.bounds.width > 0, scrollView.bounds.height > 0 else { return }
 
+            guard isZoomEnabled else {
+                scrollView.minimumZoomScale = 1
+                scrollView.maximumZoomScale = 1
+                scrollView.zoomScale = 1
+                return
+            }
+
             let scales = calculatedScales(for: scrollView, pageSize: pageSize)
 
             scrollView.minimumZoomScale = scales.minimum
@@ -347,9 +500,11 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
             let availableWidth = max(1, scrollView.bounds.width - horizontalPadding)
             let availableHeight = max(1, scrollView.bounds.height - verticalPadding)
             let widthScale = max(0.2, availableWidth / pageSize.width)
-            let heightScale = max(0.2, availableHeight / pageSize.height)
+            let referenceHeight = zoomReferenceSize?.height ?? pageSize.height
+            let heightScale = max(0.2, availableHeight / referenceHeight)
             let fitPageScale = min(widthScale, heightScale)
-            return (fitPage: fitPageScale, fitWidth: widthScale, minimum: fitPageScale, maximum: 4.0)
+            let minimum = continuousScrolling ? widthScale * 0.5 : fitPageScale
+            return (fitPage: fitPageScale, fitWidth: widthScale, minimum: minimum, maximum: 4.0)
         }
 
         private func clamped(_ scale: CGFloat, in scrollView: UIScrollView) -> CGFloat {
@@ -365,6 +520,7 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
             guard scrollView.bounds.width > 0, scrollView.bounds.height > 0 else { return }
             let viewportCenter = CGPoint(x: scrollView.bounds.midX, y: scrollView.bounds.midY)
             let pageCenter = contentView.convert(viewportCenter, from: scrollView)
+            setVisibleContentRect?(contentView.convert(scrollView.bounds, from: scrollView))
             setVisiblePageCenter?(CGPoint(
                 x: min(max(pageCenter.x, 0), pageSize.width),
                 y: min(max(pageCenter.y, 0), pageSize.height)
@@ -381,7 +537,7 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
             let scaledWidth = pageSize.width * scrollView.zoomScale
             let scaledHeight = pageSize.height * scrollView.zoomScale
             let horizontalInset = max((scrollView.bounds.width - scaledWidth) / 2, 0)
-            let verticalInset = max((scrollView.bounds.height - scaledHeight) / 2, 0)
+            let verticalInset = continuousScrolling ? 0 : max((scrollView.bounds.height - scaledHeight) / 2, 0)
             scrollView.contentInset = UIEdgeInsets(
                 top: verticalInset,
                 left: horizontalInset,
@@ -391,6 +547,7 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
         }
 
         private func refreshRenderingScale(for scrollView: UIScrollView) {
+            guard isZoomEnabled else { return }
             let displayScale = scrollView.window?.screen.scale ?? (UITraitCollection.current.displayScale > 0 ? UITraitCollection.current.displayScale : 2)
             let zoomedScale = displayScale * max(scrollView.zoomScale, 1)
             let renderingScale = min(max(zoomedScale, displayScale), 8)

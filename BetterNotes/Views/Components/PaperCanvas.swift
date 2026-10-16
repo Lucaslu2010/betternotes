@@ -5,6 +5,7 @@ import QuartzCore
 /// Lets PencilKit draw with Apple Pencil or, optionally, a finger while
 /// preserving direct interaction with SwiftUI page elements underneath.
 final class PencilInputCanvasView: PKCanvasView {
+    private let memoryActivity = MemoryDiagnostics.begin("canvas")
     var elementInteractionRects: [CGRect] = []
     var fingerDrawingAllowed = false
 
@@ -160,7 +161,7 @@ struct PaperCanvas: UIViewRepresentable {
         // way to address PencilKit from the accessibility tree, which is why
         // the handwriting path had no automated coverage at all.
         c.accessibilityIdentifier = "ink-canvas"
-        c.tool = context.coordinator.makeTool()
+        context.coordinator.updateToolIfIdle(on: c)
         c.isUserInteractionEnabled = context.coordinator.canvasAcceptsInput
         c.delegate = context.coordinator
         context.coordinator.canvas = c
@@ -208,6 +209,10 @@ struct PaperCanvas: UIViewRepresentable {
         private var isUsingTool = false
         private var strokeCountAtToolBegin = 0
         private var drawingChangeObservedForToolUse = false
+        private var pendingToolFinish: DispatchWorkItem?
+        private var toolFinishGeneration = 0
+        private var skipsPendingHandwritingBeautification = false
+        private var appliedToolConfiguration: ToolConfiguration?
         private var isApplyingProgrammaticDrawing = false
         private var suppressesProgrammaticDrawingNotification = false
         private var pencilObserver: PencilStrokeObserverGestureRecognizer?
@@ -227,6 +232,16 @@ struct PaperCanvas: UIViewRepresentable {
         private let committedShapeProtectionDelay: TimeInterval = 1.0
         private let continuationDistance: CGFloat = 8
         private let meaningfulMovementDistance: CGFloat = 3
+        private let strokeSettlingDelay: TimeInterval = 0.12
+
+        private struct ToolConfiguration: Equatable {
+            let tool: DrawingTool
+            let color: UIColor
+            let lineWidth: CGFloat
+            let eraserWidth: CGFloat
+            let eraserStyle: EraserStyle
+            let lassoMode: LassoMode
+        }
 
         private struct ShapePreview {
             let strokeIndex: Int
@@ -250,6 +265,7 @@ struct PaperCanvas: UIViewRepresentable {
         init(parent: PaperCanvas) { self.parent = parent }
 
         deinit {
+            pendingToolFinish?.cancel()
             shapeHoldTimer?.invalidate()
             pendingShapeCommitTimer?.invalidate()
             shapeCommitClearTimer?.invalidate()
@@ -325,7 +341,13 @@ struct PaperCanvas: UIViewRepresentable {
 
         func updateToolIfIdle(on canvas: PKCanvasView) {
             guard !isUsingTool, !isCapturingPencilStroke else { return }
+            let configuration = ToolConfiguration(
+                tool: parent.tool, color: parent.color, lineWidth: parent.lineWidth,
+                eraserWidth: parent.eraserWidth, eraserStyle: parent.eraserStyle, lassoMode: parent.lassoMode
+            )
+            guard appliedToolConfiguration != configuration else { return }
             canvas.tool = makeTool()
+            appliedToolConfiguration = configuration
         }
 
         // Called whenever the drawing changes (stroke added/erased).
@@ -347,10 +369,14 @@ struct PaperCanvas: UIViewRepresentable {
             if isUsingTool, !drawingChangeObservedForToolUse {
                 if count > strokeCountAtToolBegin {
                     strokeCountAtToolBegin = count - 1
-                } else if count > 0 {
-                    strokeCountAtToolBegin = count - 1
                 }
                 drawingChangeObservedForToolUse = true
+            }
+
+            // A final drawing callback can follow both pen-up notifications.
+            // Give PencilKit another quiet interval before replacing any ink.
+            if pendingToolFinish != nil {
+                scheduleToolFinish(on: canvasView)
             }
 
             // PencilKit may publish the completed stroke either before or
@@ -481,11 +507,16 @@ struct PaperCanvas: UIViewRepresentable {
         }
 
         private func beginToolUse(on canvas: PKCanvasView) {
-            guard !isUsingTool else { return }
+            guard !isUsingTool || pendingToolFinish != nil else { return }
+            pendingToolFinish?.cancel()
+            pendingToolFinish = nil
+            toolFinishGeneration &+= 1
+            skipsPendingHandwritingBeautification = false
             strokeCountAtToolBegin = canvas.drawing.strokes.count
             drawingChangeObservedForToolUse = false
+            let wasUsingTool = isUsingTool
             isUsingTool = true
-            parent.onToolUseChange?(true)
+            if !wasUsingTool { parent.onToolUseChange?(true) }
             committedShapePreview = nil
             shapeCommitClearTimer?.invalidate()
             shapeCommitClearTimer = nil
@@ -493,15 +524,38 @@ struct PaperCanvas: UIViewRepresentable {
 
         private func endToolUse(on canvas: PKCanvasView, skipsHandwritingBeautification: Bool = false) {
             guard isUsingTool else { return }
-            isUsingTool = false
             shapeHoldTimer?.invalidate()
             shapeHoldTimer = nil
-            if !skipsHandwritingBeautification {
-                finalizeHandwritingBeautification(on: canvas)
+            skipsPendingHandwritingBeautification = skipsPendingHandwritingBeautification || skipsHandwritingBeautification
+            scheduleToolFinish(on: canvas)
+        }
+
+        private func scheduleToolFinish(on canvas: PKCanvasView) {
+            pendingToolFinish?.cancel()
+            toolFinishGeneration &+= 1
+            let generation = toolFinishGeneration
+            let work = DispatchWorkItem { [weak self, weak canvas] in
+                guard let self, let canvas, self.toolFinishGeneration == generation,
+                      self.isUsingTool, !self.isCapturingPencilStroke else { return }
+                self.pendingToolFinish = nil
+                let state = canvas.drawingGestureRecognizer.state
+                guard state != .began, state != .changed else {
+                    self.scheduleToolFinish(on: canvas)
+                    return
+                }
+                self.isUsingTool = false
+                if self.pendingShapeCommit != nil {
+                    _ = self.commitPendingShapeIfPossible(on: canvas)
+                } else if !self.skipsPendingHandwritingBeautification {
+                    self.finalizeHandwritingBeautification(on: canvas)
+                }
+                self.strokeCountAtToolBegin = canvas.drawing.strokes.count
+                self.drawingChangeObservedForToolUse = false
+                self.updateToolIfIdle(on: canvas)
+                self.parent.onToolUseChange?(false)
             }
-            strokeCountAtToolBegin = canvas.drawing.strokes.count
-            drawingChangeObservedForToolUse = false
-            parent.onToolUseChange?(false)
+            pendingToolFinish = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + strokeSettlingDelay, execute: work)
         }
 
         private func scheduleShapeHoldIfNeeded(on canvas: PKCanvasView) {
@@ -550,7 +604,8 @@ struct PaperCanvas: UIViewRepresentable {
 
         @discardableResult
         private func commitPendingShapeIfPossible(on canvas: PKCanvasView) -> Bool {
-            guard let preview = pendingShapeCommit else { return false }
+            guard !isUsingTool, !isCapturingPencilStroke,
+                  let preview = pendingShapeCommit else { return false }
             var strokes = canvas.drawing.strokes
             guard strokes.indices.contains(preview.strokeIndex) else { return false }
 
@@ -653,6 +708,9 @@ struct PaperCanvas: UIViewRepresentable {
         }
 
         func cancelShapeRecognition() {
+            pendingToolFinish?.cancel()
+            pendingToolFinish = nil
+            toolFinishGeneration &+= 1
             clearShapeRecognitionState(hidesPreview: true)
             isCapturingPencilStroke = false
             committedShapePreview = nil
@@ -724,6 +782,7 @@ struct PaperCanvas: UIViewRepresentable {
 
             guard parent.beautifiesHandwriting else { return }
             let beautified = HandwritingBeautifier.beautified(strokes: newStrokes)
+            guard PKDrawing(strokes: beautified).dataRepresentation() != PKDrawing(strokes: newStrokes).dataRepresentation() else { return }
             strokes.replaceSubrange(changedRange, with: beautified)
 
             performProgrammaticDrawingChange(on: canvas) {
@@ -793,6 +852,9 @@ struct PaperCanvas: UIViewRepresentable {
 
         func cancelTentativeFingerMark() {
             guard activeTouchType == .direct, let canvas else { return }
+            pendingToolFinish?.cancel()
+            pendingToolFinish = nil
+            toolFinishGeneration &+= 1
             shapeHoldTimer?.invalidate()
             shapeHoldTimer = nil
             shapePreview = nil

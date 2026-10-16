@@ -64,6 +64,8 @@ actor AIClient {
         stream: Bool,
         onDelta: @escaping @Sendable (String) -> Void
     ) async throws -> String {
+        let activity = MemoryDiagnostics.begin("ai-api", details: "stream=\(stream)")
+        defer { activity.end() }
         guard AISettingsStore.isAllowedProviderURL(configuration.baseURL),
               let url = URL(string: "\(configuration.baseURL)/chat/completions") else {
             throw AIConfigurationError.invalidURL

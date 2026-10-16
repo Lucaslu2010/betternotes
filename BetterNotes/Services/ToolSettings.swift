@@ -15,6 +15,8 @@ enum AppPreferenceKey {
     static let assistantEnabled = "ai.assistantEnabled"
     static let searchAnswersEnabled = "ai.searchAnswersEnabled"
     static let scrollMode = "display.scrollMode"
+    static let pencilDoubleTapEnabled = "pencil.doubleTapEnabled"
+    static let pencilDoubleTapTool = "pencil.doubleTapTool"
 }
 
 /// Display mode for pages within a notebook.
