@@ -15,7 +15,7 @@ struct BetterNotesMacApp: App {
             .appendingPathComponent("BetterNotesMac", isDirectory: true)
         let storeURL = storeDirectory.appendingPathComponent("BetterNotes.store")
         let schema = Schema([
-            Notebook.self, Page.self, PageElement.self,
+            Notebook.self, NotebookFolder.self, Page.self, PageElement.self,
             AssistantThread.self, AssistantMessage.self,
         ])
         do {

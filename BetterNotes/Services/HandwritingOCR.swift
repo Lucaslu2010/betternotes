@@ -1,81 +1,161 @@
 import Foundation
+import ImageIO
 import PencilKit
 import UIKit
 import Vision
 
 enum HandwritingOCR {
-    static func recognizeText(from inkData: Data?, pageSize: CGSize) async -> String {
-        guard let inkData,
-              let drawing = try? PKDrawing(data: inkData) else {
-            return ""
-        }
-        return await recognizeText(from: drawing, pageSize: pageSize)
-    }
-
-    static func recognizeLines(from inkData: Data?, pageSize: CGSize) async -> [RecognizedLine] {
-        guard let inkData,
-              let drawing = try? PKDrawing(data: inkData) else {
-            return []
-        }
-        return await recognizeLines(from: drawing, pageSize: pageSize)
-    }
-
-    /// One recognized line, with where it sits **in page coordinates**.
-    ///
-    /// Vision reports a normalized box inside the cropped image it was handed;
-    /// on its own that is unusable for placing anything on the page, so the
-    /// crop rect is folded back in here rather than at each call site.
-    struct RecognizedLine: Equatable, Sendable {
+    struct Line: Sendable {
         let text: String
+        /// Coordinates in the page's top-left-origin coordinate space.
         let bounds: CGRect
-        /// Vision's confidence in `text`, 0...1. Nothing downstream enforces
-        /// a threshold on this yet -- it exists so a low-confidence line can
-        /// be told apart from a high-confidence one instead of both looking
-        /// like equally-trustworthy text.
-        let confidence: Float
     }
 
-    /// Recognize a drawing directly, without a round trip through `Data`.
-    ///
-    /// The lasso hands us a `PKDrawing` assembled from the selected strokes, so
-    /// re-encoding it only to decode it again would be pure waste. Every helper
-    /// below already worked on a drawing; this is the entry point that says so.
+    static func recognizeText(from inkData: Data?, pageSize: CGSize, region: CGRect? = nil) async -> String {
+        await scan(from: inkData, pageSize: pageSize, region: region).map(\.text).joined(separator: "\n")
+    }
+
+    /// Recognize a drawing directly, for callers that already hold one
+    /// (the lasso assembles a `PKDrawing` from the selected strokes).
     static func recognizeText(from drawing: PKDrawing, pageSize: CGSize) async -> String {
-        let lines = await recognizeLines(from: drawing, pageSize: pageSize)
-        return lines.map(\.text).joined(separator: "\n")
+        guard !drawing.strokes.isEmpty else { return "" }
+        return await recognizeText(from: drawing.dataRepresentation(), pageSize: pageSize)
     }
 
-    static func recognizeLines(from drawing: PKDrawing, pageSize: CGSize) async -> [RecognizedLine] {
-        guard !drawing.strokes.isEmpty else { return [] }
+    private static let worker = Worker()
 
-        let recognitionDrawing = normalizedDrawing(for: drawing)
-        let recognitionRect = cropRect(for: recognitionDrawing, pageSize: pageSize)
-        let image = await renderImage(
-            for: recognitionDrawing,
-            rect: recognitionRect,
-            scale: renderScale(for: recognitionRect)
-        )
-        guard let cgImage = image.cgImage else { return [] }
-
-        return await withTaskCancellationHandler(operation: {
-            await Task.detached(priority: .utility) {
-                performRecognition(on: cgImage, cropRect: recognitionRect)
-            }.value
-        }, onCancel: {
-            // The Vision request runs synchronously inside performRecognition,
-            // so we can't truly cancel mid-flight. But wrapping in the
-            // cancellation handler lets the awaiter bail if the Task was
-            // cancelled before we entered the detached call.
-        })
+    static func scan(from inkData: Data?, pageSize: CGSize, region: CGRect? = nil, detectingMarker: Bool = false) async -> [Line] {
+        let cancellation = RecognitionCancellation()
+        return await withTaskCancellationHandler {
+            await worker.scan(inkData: inkData, pageSize: pageSize, region: region, detectingMarker: detectingMarker, cancellation: cancellation)
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 
-    @MainActor
+    /// Vision can split punctuation from the words, or the two marks from
+    /// each other. Reassemble observations on the same visual row first.
+    static func questionLine(in lines: [Line]) -> Line? {
+        questionLines(in: lines).last
+    }
+
+    /// Every row that carries a question marker, top to bottom.
+    static func questionLines(in lines: [Line]) -> [Line] {
+        var found: [Line] = []
+        for line in lines {
+            let row = lines.filter { abs($0.bounds.midY - line.bounds.midY) <= max($0.bounds.height, line.bounds.height) * 0.5 }
+                .sorted { $0.bounds.minX < $1.bounds.minX }
+            let text = row.map(\.text).joined(separator: " ")
+            guard HandwrittenQuestion.question(in: text) != nil else { continue }
+            let bounds = row.reduce(CGRect.null) { $0.union($1.bounds) }
+            guard !found.contains(where: { $0.bounds.intersects(bounds) }) else { continue }
+            found.append(Line(text: text, bounds: bounds))
+        }
+        return found
+    }
+
+    static func questionRegion(for line: Line, pageSize: CGSize) -> CGRect {
+        // A suffix marker must include the words to its left as well.
+        CGRect(x: 0, y: line.bounds.minY, width: pageSize.width, height: line.bounds.height)
+            .insetBy(dx: 0, dy: -max(12, line.bounds.height * 0.35))
+            .intersection(CGRect(origin: .zero, size: pageSize))
+    }
+
+    static func recentLineRegion(in drawing: PKDrawing, pageSize: CGSize) -> CGRect? {
+        guard let last = drawing.strokes.last else { return nil }
+        let bounds = last.renderBounds
+        return CGRect(x: 0, y: bounds.minY, width: pageSize.width, height: bounds.height)
+            .insetBy(dx: 0, dy: -max(48, bounds.height))
+            .intersection(CGRect(origin: .zero, size: pageSize))
+    }
+
+    /// OCR refresh needs only text, not the full-resolution crop produced by
+    /// the photo-import feature. Decode a thumbnail directly from compressed data.
+    static func recognizeImage(from data: Data) async -> String {
+        let cancellation = RecognitionCancellation()
+        return await withTaskCancellationHandler {
+            await worker.scanImage(data, cancellation: cancellation).map(\.text).joined(separator: "\n")
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    static func imageData(from inkData: Data, pageSize: CGSize, region: CGRect? = nil) async -> Data? {
+        await worker.imageData(inkData: inkData, pageSize: pageSize, region: region)
+    }
+
+    static func preparedImageData(from data: Data) async -> Data? {
+        await worker.preparedImageData(from: data)
+    }
+
+    /// All local OCR and image preparation share one worker. No detached
+    /// recognitions survive cancellation and accumulate full-page bitmaps.
+    private actor Worker {
+        func scan(inkData: Data?, pageSize: CGSize, region: CGRect?, detectingMarker: Bool, cancellation: RecognitionCancellation) -> [Line] {
+            let activity = MemoryDiagnostics.begin("vision-ink", details: "bytes=\(inkData?.count ?? 0)")
+            defer { activity.end() }
+            return autoreleasepool {
+                guard !Task.isCancelled, !cancellation.isCancelled, let inkData,
+                      let drawing = try? PKDrawing(data: inkData), !drawing.strokes.isEmpty else { return [] }
+                let normalized = normalizedDrawing(for: drawing)
+                let rect = region ?? cropRect(for: normalized, pageSize: pageSize)
+                guard OCRImageBudget.isValid(rect.size), !cancellation.isCancelled else { return [] }
+                let image = renderImage(for: normalized, rect: rect, scale: renderScale(for: rect))
+                guard let cgImage = image.cgImage, !cancellation.isCancelled else { return [] }
+                return performRecognition(on: cgImage, detectingMarker: detectingMarker, cancellation: cancellation).map { line in
+                    Line(text: line.text, bounds: CGRect(
+                        x: rect.minX + line.bounds.minX * rect.width,
+                        y: rect.minY + (1 - line.bounds.maxY) * rect.height,
+                        width: line.bounds.width * rect.width,
+                        height: line.bounds.height * rect.height
+                    ))
+                }
+            }
+        }
+
+        func scanImage(_ data: Data, cancellation: RecognitionCancellation) -> [Line] {
+            let activity = MemoryDiagnostics.begin("vision-image", details: "bytes=\(data.count)")
+            defer { activity.end() }
+            return autoreleasepool {
+                guard !Task.isCancelled, !cancellation.isCancelled,
+                      let image = OCRImageBudget.thumbnail(from: data) else { return [] }
+                return performRecognition(on: image, cancellation: cancellation)
+            }
+        }
+
+        func imageData(inkData: Data, pageSize: CGSize, region: CGRect?) -> Data? {
+            let activity = MemoryDiagnostics.begin("render-ink", details: "bytes=\(inkData.count)")
+            defer { activity.end() }
+            return autoreleasepool {
+                guard !Task.isCancelled, let drawing = try? PKDrawing(data: inkData), !drawing.strokes.isEmpty else { return nil }
+                let normalized = normalizedDrawing(for: drawing)
+                let rect = region ?? cropRect(for: normalized, pageSize: pageSize)
+                guard OCRImageBudget.isValid(rect.size) else { return nil }
+                let image = renderImage(for: normalized, rect: rect, scale: renderScale(for: rect))
+                guard !Task.isCancelled else { return nil }
+                return image.pngData()
+            }
+        }
+
+        func preparedImageData(from data: Data) -> Data? {
+            let activity = MemoryDiagnostics.begin("render-image", details: "bytes=\(data.count)")
+            defer { activity.end() }
+            return autoreleasepool {
+                guard !Task.isCancelled, let image = OCRImageBudget.thumbnail(from: data) else { return nil }
+                let output = NSMutableData()
+                guard let destination = CGImageDestinationCreateWithData(output, "public.png" as CFString, 1, nil) else { return nil }
+                CGImageDestinationAddImage(destination, image, nil)
+                guard CGImageDestinationFinalize(destination), !Task.isCancelled else { return nil }
+                return output as Data
+            }
+        }
+    }
+
     static func renderImage(for drawing: PKDrawing, rect: CGRect, scale: CGFloat) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.scale = scale
         format.opaque = true
         format.preferredRange = .standard
-
         let outputRect = CGRect(origin: .zero, size: rect.size)
         let renderer = UIGraphicsImageRenderer(size: rect.size, format: format)
         var image = UIImage()
@@ -86,60 +166,73 @@ enum HandwritingOCR {
             image = renderer.image { context in
                 UIColor.white.setFill()
                 context.fill(outputRect)
-
                 drawing.image(from: rect, scale: scale).draw(in: outputRect)
             }
         }
         return image
     }
 
-    private static func performRecognition(on cgImage: CGImage, cropRect: CGRect) -> [RecognizedLine] {
+    private static func performRecognition(on cgImage: CGImage, detectingMarker: Bool = false, cancellation: RecognitionCancellation) -> [Line] {
         let request = VNRecognizeTextRequest()
+        guard cancellation.install(request) else { return [] }
+        defer { cancellation.finish() }
         if #available(iOS 16.0, *) {
             request.revision = VNRecognizeTextRequestRevision3
         }
         request.recognitionLevel = .accurate
-        // Confirmed live against real handwritten math (arctan/arcsin
-        // homework): with language correction and auto language-detection on,
-        // Vision "corrects" handwriting toward whatever language's dictionary
-        // it guessed -- observed substituting whole runs of random Chinese
-        // characters into what was actually English math notation, and
-        // separately collapsing a literal "??" (the ink-question trigger,
-        // see InkQuestionDetector) down to a single "?". Both behaviors bias
-        // toward natural-language prose, which handwritten equations and
-        // short symbol-heavy annotations are not. Pin to English and take
-        // Vision's raw stroke-shape reading over its "corrected" guess.
+        // Confirmed live against real handwritten math: with language
+        // correction and auto language-detection on, Vision "corrects"
+        // handwriting toward whatever dictionary it guessed -- substituting
+        // runs of random Chinese characters into English math notation, and
+        // collapsing a literal "??" (the question trigger) down to "?".
+        // Pin to English and take Vision's raw stroke-shape reading.
         request.usesLanguageCorrection = false
         request.recognitionLanguages = ["en-US"]
-        // minimumTextHeight MUST be > 0; 0 is rejected by Vision and makes
-        // the entire request throw, silently returning no recognized text.
-        // 0.02 keeps short words/captions detectable while filtering noise.
-        request.minimumTextHeight = 0.02
-        // Foreground tier: the calling Task.detached already moves us off the
-        // main actor. Background processing adds multi-second latency that is
-        // not acceptable for an interactive recognize-now action.
+        request.customWords = ["??", "？？"]
+        request.minimumTextHeight = detectingMarker ? 0.005 : 0.02
         request.preferBackgroundProcessing = false
-
-        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: .up, options: [:])
         do {
-            try handler.perform([request])
-        } catch {
-            // Distinguish "Vision threw" from "there was no text" -- both
-            // used to collapse into the same empty result, which made a
-            // real Vision-level failure indistinguishable from blank ink.
-            #if DEBUG
-            print("[HandwritingOCR] VNImageRequestHandler.perform failed: \(error)")
-            #endif
-            return []
-        }
-
-        return recognizedLines(from: request.results ?? [], cropRect: cropRect)
+            try VNImageRequestHandler(cgImage: cgImage, orientation: .up, options: [:]).perform([request])
+        } catch { return [] }
+        guard !cancellation.isCancelled else { return [] }
+        return recognizedLines(from: request.results ?? [])
     }
 
-    private static func recognizedLines(
-        from observations: [VNRecognizedTextObservation],
-        cropRect: CGRect
-    ) -> [RecognizedLine] {
+    private final class RecognitionCancellation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        private var request: VNRequest?
+
+        var isCancelled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return cancelled
+        }
+
+        func install(_ request: VNRequest) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !cancelled else { return false }
+            self.request = request
+            return true
+        }
+
+        func finish() {
+            lock.lock()
+            request = nil
+            lock.unlock()
+        }
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let active = request
+            lock.unlock()
+            active?.cancel()
+        }
+    }
+
+    private static func recognizedLines(from observations: [VNRecognizedTextObservation]) -> [Line] {
         observations
             .sorted { lhs, rhs in
                 let rowDistance = abs(lhs.boundingBox.midY - rhs.boundingBox.midY)
@@ -149,25 +242,10 @@ enum HandwritingOCR {
                 return lhs.boundingBox.minX < rhs.boundingBox.minX
             }
             .compactMap { observation in
-                guard let candidate = observation.topCandidates(1).first else { return nil }
-                let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return nil }
-                return RecognizedLine(
-                    text: text,
-                    bounds: pageRect(of: observation.boundingBox, in: cropRect),
-                    confidence: candidate.confidence
-                )
+                guard let text = observation.topCandidates(1).first?.string.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !text.isEmpty else { return nil }
+                return Line(text: text, bounds: observation.boundingBox)
             }
-    }
-
-    /// Vision's normalized, bottom-left-origin box mapped back onto the page.
-    private static func pageRect(of boundingBox: CGRect, in cropRect: CGRect) -> CGRect {
-        CGRect(
-            x: cropRect.minX + boundingBox.minX * cropRect.width,
-            y: cropRect.minY + (1 - boundingBox.maxY) * cropRect.height,
-            width: boundingBox.width * cropRect.width,
-            height: boundingBox.height * cropRect.height
-        )
     }
 
     private static func normalizedDrawing(for drawing: PKDrawing) -> PKDrawing {
@@ -203,10 +281,39 @@ enum HandwritingOCR {
     }
 
     private static func renderScale(for rect: CGRect) -> CGFloat {
-        let longestEdge = max(rect.width, rect.height)
-        guard longestEdge.isFinite, longestEdge > 0 else { return 3 }
+        OCRImageBudget.scale(for: rect.size, maximumScale: 6)
+    }
+}
 
-        let targetLongestEdge: CGFloat = 3600
-        return min(max(targetLongestEdge / longestEdge, 3), 6)
+/// Limit decoded OCR bitmaps before allocation, including unusually large
+/// source photos and page sizes. Original note images remain untouched.
+enum OCRImageBudget {
+    static let maximumEdge: CGFloat = 3200
+    static let maximumPixels: CGFloat = 6_000_000
+
+    static func isValid(_ size: CGSize) -> Bool {
+        size.width.isFinite && size.height.isFinite && size.width > 0 && size.height > 0
+    }
+
+    static func scale(for size: CGSize, maximumScale: CGFloat = 1) -> CGFloat {
+        guard isValid(size) else { return 1 }
+        return min(maximumScale, maximumEdge / max(size.width, size.height),
+                   sqrt(maximumPixels / size.width / size.height))
+    }
+
+    static func thumbnail(from data: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat else { return nil }
+        let size = CGSize(width: width, height: height)
+        guard isValid(size) else { return nil }
+        let edge = max(1, floor(max(width, height) * scale(for: size)))
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: edge
+        ] as CFDictionary)
     }
 }

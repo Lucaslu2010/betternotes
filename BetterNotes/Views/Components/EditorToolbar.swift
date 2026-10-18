@@ -3,7 +3,7 @@ import PencilKit
 
 // MARK: - Drawing tool model
 
-enum DrawingTool: Hashable, CaseIterable {
+enum DrawingTool: String, Hashable, CaseIterable {
     case pen
     case pencil
     case marker
@@ -186,6 +186,7 @@ struct EditorToolbar: View {
 
     @State private var showingColorPopover = false
     @State private var showingSizePopover = false
+    @State private var showingLassoModes = false
 
     private var popoverArrowEdge: Edge {
         switch dock {
@@ -275,8 +276,22 @@ struct EditorToolbar: View {
     }
 
     private func drawingToolButton(_ drawingTool: DrawingTool) -> some View {
-        Button { tool = drawingTool } label: {
-            Image(systemName: drawingTool.icon)
+        Button {
+            if drawingTool == .lasso {
+                // The first tap activates the saved mode; another tap on the
+                // active lasso opens the mode choices.
+                if tool == .lasso {
+                    showingLassoModes = true
+                } else {
+                    toolSettings.restoreLastLassoMode()
+                    lassoMode = toolSettings.lassoMode
+                    tool = .lasso
+                }
+            } else {
+                tool = drawingTool
+            }
+        } label: {
+            Image(systemName: drawingTool == .lasso ? lassoMode.icon : drawingTool.icon)
                 .font(.system(size: 17, weight: .medium))
                 .frame(width: 44, height: 44)
                 .foregroundStyle(tool == drawingTool ? .white : .primary)
@@ -286,19 +301,40 @@ struct EditorToolbar: View {
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .accessibilityLabel(drawingTool.label)
+        .accessibilityValue(drawingTool == .lasso ? lassoMode.label : "")
+        .accessibilityIdentifier("drawing-tool-\(drawingTool.rawValue)")
         .accessibilityAddTraits(tool == drawingTool ? .isSelected : [])
         .disabled(isReadOnly)
+        .popover(isPresented: drawingTool == .lasso ? $showingLassoModes : .constant(false), arrowEdge: popoverArrowEdge) {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(LassoMode.allCases, id: \.self) { mode in
+                    Button {
+                        lassoMode = mode
+                        showingLassoModes = false
+                    } label: {
+                        HStack {
+                            Label(mode.label, systemImage: mode.icon)
+                            Spacer()
+                            if lassoMode == mode { Image(systemName: "checkmark") }
+                        }
+                        .frame(minWidth: 130, minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+            .presentationCompactAdaptation(.popover)
+        }
     }
 
     @ViewBuilder private var activeToolControls: some View {
         if tool == .lasso {
-            Menu {
-                Picker("Selection Shape", selection: $lassoMode) {
-                    ForEach(LassoMode.allCases, id: \.self) { Label($0.label, systemImage: $0.icon).tag($0) }
-                }
-            } label: { toolbarImage(lassoMode.icon) }
-            .accessibilityLabel("Selection Shape")
-            .disabled(isReadOnly)
+            Text(lassoMode.label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 32)
+                .accessibilityLabel("Selection shape: \(lassoMode.label). Tap Lasso again to change.")
         } else {
             if tool.supportsColor { colorButton }
             if tool.supportsSize { sizeButton }
@@ -359,6 +395,12 @@ struct EditorToolbar: View {
             }
             .navigationTitle("Ink Color")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showingColorPopover = false }
+                        .accessibilityIdentifier("ink-color-done")
+                }
+            }
         }
     }
 
@@ -431,6 +473,12 @@ struct EditorToolbar: View {
             .padding(18)
             .navigationTitle(tool == .eraser ? "Eraser" : "Stroke Thickness")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { showingSizePopover = false }
+                        .accessibilityIdentifier("stroke-size-done")
+                }
+            }
         }
     }
 

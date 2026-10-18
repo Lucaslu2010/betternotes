@@ -4,6 +4,21 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>BetterNotes Notebook</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.betternotes.archive</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -24,13 +39,27 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>BetterNotes finds your paired Mac on the same network to sync editable notebooks.</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
 			<key>UTTypeConformsTo</key>
 			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>BetterNotes Notebook Reference</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.betternotes.notebook-reference</string>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
 				<string>public.json</string>
 			</array>
+			<key>UTTypeDescription</key>
+			<string>BetterNotes Notebook</string>
 			<key>UTTypeIdentifier</key>
 			<string>com.betternotes.archive</string>
 			<key>UTTypeTagSpecification</key>

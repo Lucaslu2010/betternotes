@@ -77,12 +77,13 @@ struct CloudTranslator {
     }
 
     @MainActor
-    static func importArchive(from url: URL, into context: ModelContext) throws -> Notebook {
+    static func importArchive(from url: URL, into context: ModelContext,
+                              configure: ((Notebook) throws -> Void)? = nil) throws -> Notebook {
         let hasAccess = url.startAccessingSecurityScopedResource()
         defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
 
         let data = try Data(contentsOf: url)
-        return try importArchiveData(data, into: context)
+        return try importArchiveData(data, into: context, configure: configure)
     }
 
     @MainActor
@@ -90,7 +91,8 @@ struct CloudTranslator {
         _ data: Data,
         into context: ModelContext,
         replacing existing: Notebook? = nil,
-        conflictSuffix: String? = nil
+        conflictSuffix: String? = nil,
+        configure: ((Notebook) throws -> Void)? = nil
     ) throws -> Notebook {
         let existingNotebookIDs = Set(try context.fetch(FetchDescriptor<Notebook>()).map(\.stableID))
         let existingPageIDs = Set(try context.fetch(FetchDescriptor<Page>()).map(\.stableID))
@@ -187,6 +189,7 @@ struct CloudTranslator {
         if let existing {
             context.delete(existing)
         }
+        try configure?(notebook)
         try context.save()
         committed = true
         return notebook
@@ -283,6 +286,8 @@ struct CloudTranslator {
                 "ocrText": page.ocrText,
                 "createdAt": timestamp(page.createdAt, forSync: includingTrash),
                 "modifiedAt": timestamp(page.modifiedAt, forSync: includingTrash),
+                "pdfText": page.pdfText,
+                "ocrStorageVersion": page.ocrStorageVersion,
             ]
             if includingTrash, let trashedAt = page.trashedAt {
                 pageDict["trashedAt"] = timestamp(trashedAt, forSync: true)
@@ -400,6 +405,8 @@ struct CloudTranslator {
             if let modified = pageDict["modifiedAt"] as? Double { page.modifiedAt = Date(timeIntervalSince1970: modified) }
             if let trashed = pageDict["trashedAt"] as? Double { page.trashedAt = Date(timeIntervalSince1970: trashed) }
             if let updated = pageDict["ocrUpdatedAt"] as? Double { page.ocrUpdatedAt = Date(timeIntervalSince1970: updated) }
+            page.pdfText = pageDict["pdfText"] as? String ?? ""
+            page.ocrStorageVersion = pageDict["ocrStorageVersion"] as? Int ?? 0
 
             // Restore ink data.
             if let inkB64 = pageDict["inkData"] as? String,

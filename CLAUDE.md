@@ -9,6 +9,14 @@ The first nearby connection requires approval on both devices; subsequent
 connections start automatically while both apps are open. An editable archive
 is still available for recovery. Nearby sync uses Multipeer Connectivity,
 Bonjour service `_better-notes._tcp`, and required session encryption.
+Library folders sync too: `NearbySyncFolder` records ride in the package's optional
+`folders` field (older peers send none, and then folders are left alone). A folder is
+identified by its path. `NearbyFolderSync.merge` is a three-way merge against the paths
+both devices had after the last exchange (`nearbySync.folders.<peer>`): a path that
+one side removed since then is removed on the other, a path in neither baseline is
+new, and a folder both still have keeps the side with the newer `modifiedAt`. Touch
+`NotebookFolder.modifiedAt` whenever a folder's own state changes. A folder that still
+holds notebooks is recreated by `NotebookFolders.preserveMemberships`.
 When both devices edited a notebook, a Nearby Sync setting decides (default:
 keep both, the copy going to Archive); a winning choice applies only when both
 devices use the same one. Moving to Trash syncs as an edit. A permanent delete
@@ -102,9 +110,178 @@ drive the handle rather than a coordinate beside it.
 
 ## Editor architecture
 
+Library folders have persistent `NotebookFolder` records so empty folders survive
+relaunch; notebook membership stays in `Notebook.folderName` for backup compatibility.
+The folder-plus button sits immediately left of New Notebook. Folders appear as
+tiles alongside notebooks. Notes shows only root notebooks and root folders;
+opening a folder shows only its immediate children. `parentPath` and `path` on
+`NotebookFolder` describe subfolders; `Notebook.folderName` stores the full path.
+Breadcrumbs and Parent Folder navigate locations, including on compact screens.
+Preserve legacy folder names and missing ancestors when loading memberships.
+Notebook drags use the typed `NotebookDragPayload`, a native lift preview and
+`NotebookLiftButtonStyle`. Folder targets highlight/expand and bounce after a
+successful drop; breadcrumbs and sidebar folders accept drops too. Moves save
+membership atomically and reject missing folders or deleted notebooks.
+
+Folders have the same ellipsis menu as notebooks: Favorite, Archive, Rename,
+Customize Colour, and Move to Trash. Folder colours and favorites persist on the
+folder record; Favorites includes folders. Archive is inherited by descendants,
+without changing individual notebook archive flags; `isEffectivelyArchived` also
+feeds the search index. Archive lists folder containers and allows browsing them.
+Rename rewrites descendant parent paths and all notebook memberships in one save.
+Folder Trash stamps only live descendant notebooks with the folder deletion date;
+Restore clears only that matching group, preserving earlier independent deletions.
+Trash lists folder containers, and the existing 30-day retention/Empty Trash also
+removes their contents. Archived/trashed folders cannot receive imports or drops.
+
+Every incoming document waits for `ImportDestinationPicker` before importing.
+Notes (root) is initially selected, and users must tap Import to confirm it or a
+folder. Cancelling never creates a notebook. Only the sheet's onDismiss callback
+starts the chosen import, preventing presentation races with queued files.
+
+`project.yml` registers BetterNotes as the owner of the `.betternotes` UTI only;
+XcodeGen writes `BetterNotes/Info.plist`. PDFs and images are deliberately *not*
+registered, so BetterNotes does not appear as a handler for them system-wide; they
+import through the in-app file picker. `DocumentImporter.supportedTypes` is the
+list that picker accepts: PDF, BetterNotes backups, JPEG/PNG/HEIC/HEIF/
+TIFF/GIF/BMP/WebP. Word, Excel, PowerPoint, and plain-text import are unsupported.
+`LibraryView.onOpenURL` queues incoming files, including repeated URLs, and opens
+the imported notebook. PDF and image imports keep source files unchanged and add
+locked artwork that users can annotate; multi-frame images use the first frame.
+Image decoding is capped at 3200 pixels per edge. Explicit imports also live in
+the library's More menu. `DocumentSupportTests` covers persistence, actual file
+imports, malformed files, backup identity collisions, and built-bundle declarations.
+
+Notebook destinations are values (`NotebookDestination`, keyed by stable ID) pushed
+with `NavigationLink(value:)`. The regular-width `NavigationSplitView` sidebar is
+kept and its toggle is removed while a notebook is open (`isNotebookOpen`). Size-class
+branches around navigation or presentation modifiers can recreate the editor
+and dismiss settings during multitasking; check that on device. The assistant uses one sheet
+modifier, and provider forms push within Settings' navigation stack.
+Load provider drafts once per presentation, not on every appearance.
+
+Apple Pencil double tap has one `PencilDoubleTapInteraction` per notebook, not
+per page. It switches the toolbar's tool binding through `PencilToolToggle`,
+preserving the previous tool for the return tap. Settings appear on all iPads
+with an Apple Pencil Pro compatibility label; iPadOS does not expose a public
+connected-Pencil model API. Honor the system's disabled double-tap preference.
+
+In vertical mode, one `ZoomablePageView` owns zoom and pan for the whole notebook.
+`VerticalNotebookLayout` describes native page frames and the shared viewport.
+Individual `PageEditorView`s set `managesOwnZoom: false`, locking their wrappers
+to 1:1 so pinching scales page boxes and spacing together. Toolbar zoom commands
+go to the outer view; page navigation scrolls to a native page rect. Keep ink and
+selection geometry in page coordinates and convert the shared viewport for paste.
+
+`InkCanvasViewport` forwards the actual display zoom to PencilKit, then applies
+an inverse transform to its viewport so the page stays in native coordinates.
+Convert observed Pencil points through the canvas zoom and content offset. Do
+not force contentsScale on PencilKit's private tile views. Defer viewport changes
+while a tool is active. All lasso modes reserve one-finger drags for selection;
+page panning requires two fingers even when finger drawing is off.
+Settled ink uses a fresh `PKDrawing.image` raster of the visible viewport at
+screen-scale × zoom, capped at 6 megapixels and 4096 pixels per edge. A shared
+serial queue coalesces renders; generation checks discard stale results. Hide
+the native cache only after the current raster is ready, and keep input enabled.
+Only the outer zoom owner may publish the visible ink rect in vertical mode.
+
+Tapping Lasso activates the last saved mode immediately (Free for new users).
+Tapping the already-active tool opens its mode choices. Selection drags use a
+cached UIKit image layer and local handle bounds; do not rebuild PKDrawing or
+publish page-wide SwiftUI state per drag frame. Commit one transformed drawing
+when the gesture ends, including when leaving the page or changing tools.
+The page consumes the selected tool as a value, rather than a binding, so a
+toolbar change invalidates the content across the hosted-view boundaries on
+the first tap. First-tap UI regressions cover both modes and scroll layouts,
+including when Draw with Finger is off.
+
+Successful autosaves stay silent; only failures show a save badge with Retry.
+Scribble to Erase is enabled by default and can be toggled in Settings > Input
+or the editor's More > Handwriting menu. `ScribbleEraser` looks for at least three
+substantial back-and-forth passes crossing existing strokes. It removes crossed
+ink and the scratch stroke in the settled-tool callback,
+so one undo restores the original ink. Blank-area scribbles remain ordinary ink.
+The hit area includes 12–18 points of padding; small detached strokes near a
+directly crossed character (such as a question-mark dot) are removed with it.
+Synthetic ink and native-zoom regression checks live in `InkInteractionTests`.
+Cancel pending handwriting recognition when a stroke starts. Classify scratches
+before erasing them, then save the edit without scheduling OCR or question
+detection, including for blank-area scratches. The next ordinary stroke resumes
+automatic recognition.
+Entering Lasso cancels pending automatic recognition. Lasso selection and its
+move/resize/rotate operations never schedule OCR or question detection; explicit
+Recognize Handwriting and Assistant actions remain available.
+
+### OCR and handwritten questions
+
+`HandwritingOCR` is always the local Apple Vision marker detector. It reads English
+only with language correction off (correction rewrote `??` to `?` and invented
+foreign characters in handwritten math) and renders ink in a light trait collection
+so Dark Mode cannot blank the page. A handwritten line beginning or ending with `??`
+shows a small inline confirmation label beneath the handwriting, including a bare
+marker. Old writing is checked as well as new: opening a page rescans it (when its
+text could hold a marker) and every marker row is a candidate, newest first. A row is
+offered once; `Page.handledQuestionFingerprints` (up to 16 `QuestionInkFingerprint`s
+in `lastHandwrittenQuestionFingerprint`, "|"-separated) remembers it. The setting
+"Offer to Answer ?? in Ink" and the Assistant switch gate the label. The lasso's
+Ask flow still answers in place on the page (`InkAnswerCoordinator`). Detection must never present the
+assistant sheet or focus a text field. Only tapping Answer opens the assistant
+and submits the recognized question; Not now dismisses the label.
+Join OCR observations on the same row before testing the marker. If the full-page
+pass misses it, retry the most recent ink row locally with language correction
+disabled so small punctuation survives. Question crops span the full page width
+to retain words to the left of a suffix marker. Debug console entries prefixed
+`question-detector` report scheduling, missing markers, disabled Assistant,
+duplicate suppression, and presentation, without logging note text.
+The inline label shows "Better OCR happening" until the selected provider returns
+the question, then replaces that text. `EditorActionState` owns the task so page
+updates cannot cancel it. Writing outside the question region does not invalidate
+the request. Dismissal cancels it; errors stay in the label with Retry. Answer is
+unavailable during recognition. Full note OCR refresh still happens when sending.
+Question-region identity uses `QuestionInkFingerprint` over stroke geometry and
+masks, never freshly constructed `PKDrawing` archive bytes (those carry a new
+drawing identity even for the same strokes). Retry captures the current page ink
+instead of reusing a snapshot already rejected as stale.
+`OCRSettingsStore` defaults to on-device recognition and stores custom
+OCR tokens in a separate Keychain service from the answering AI credentials.
+`OCRService` reads content using the selected provider. Custom mode uploads only
+for a detected question or an explicit assistant, Ask Notes, or handwriting-index
+request, never for every drawing change. Ink/image fingerprints and provider
+identities prevent unchanged content from being uploaded again.
+
+PaddleOCR uses the **synchronous** `API_URL` and `TOKEN` from AI Studio's example:
+JSON base64 `file`, `fileType: 1`, and `Authorization: token …`. Its endpoint
+selects the model. Document-parsing Markdown and PP-OCR `rec_texts` responses are
+supported. OpenAI-compatible vision OCR instead uses a full chat/completions URL,
+a model name, and Bearer authentication. OCR settings include setup instructions
+and a synthetic-image connection test that does not alter saved configuration.
+
+Keep `Page.pdfText` separate from `Page.ocrText` (handwriting); search combines
+both through `searchableOCRText`. Recognition failures and stale/cancelled requests
+must not replace existing text. New OCR behavior has regression coverage in
+`BetterNotesTests/OCRPipelineTests.swift`; provider calls are mocked.
+
+OCR refresh uses a text-only image path, not `SmartImageExtractor.extract`,
+which also builds full-resolution photo crops. `HandwritingOCR` serializes local
+recognition and image preparation on one worker, cancels the active Vision
+request, and drains temporary images in an autorelease pool per job. OCR bitmaps
+are capped at 3200 pixels per edge and 6 megapixels; image inputs are downsampled
+with ImageIO before decoding. Keep rendered images out of network-await scopes.
+Paddle requests disable both visualization and Markdown images. OCR downloads
+stop at 8 MiB before JSON parsing, and oversized uploads fail before Base64
+encoding. The repeated OCR/provider regression logs physical memory on device.
+
 `PageEditorView` stacks, bottom to top: `PageBackground` → `ElementOverlay` →
 `PaperCanvas` → `TapeDisplayLayer` (hit-testing off) → `UnifiedLassoOverlay`
 (only when `tool == .lasso`) → `SelectionHandles`.
+
+Keep live ink in PencilKit until the pen-up callbacks settle. The coordinator
+debounces finalization by 120 ms, cancels it on a new stroke, and waits for the
+drawing gesture to finish before smoothing. Do not publish partial drawings
+into SwiftData at touch rate or reassign an unchanged PencilKit tool on every
+SwiftUI update. Viewport rasters must include the latest committed drawing
+before replacing native tiles; never display a stale pen-up snapshot. Lifecycle regression
+tests cover late commits, rapid next strokes, and tool changes during a stroke.
 
 Two pieces of selection state, and both must move together:
 

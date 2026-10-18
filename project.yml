@@ -39,8 +39,18 @@ targets:
         NSLocalNetworkUsageDescription: "BetterNotes finds your paired Mac on the same network to sync editable notebooks."
         NSBonjourServices:
           - _better-notes._tcp
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: BetterNotes Notebook
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.betternotes.archive]
         UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.betternotes.notebook-reference
+            UTTypeDescription: BetterNotes Notebook Reference
+            UTTypeConformsTo: [public.data]
           - UTTypeIdentifier: com.betternotes.archive
+            UTTypeDescription: BetterNotes Notebook
             UTTypeConformsTo:
               - public.json
             UTTypeTagSpecification:
@@ -81,6 +91,8 @@ targets:
       - path: BetterNotes/Services/AssistantCoordinator.swift
       - path: BetterNotes/Services/CloudTranslator.swift
       - path: BetterNotes/Services/NearbySync.swift
+      - path: BetterNotes/Models/NotebookFolder.swift
+      - path: BetterNotes/Services/MemoryDiagnostics.swift
     info:
       path: BetterNotesMac/Info.plist
       properties:

@@ -5,8 +5,14 @@ import QuartzCore
 /// Lets PencilKit draw with Apple Pencil or, optionally, a finger while
 /// preserving direct interaction with SwiftUI page elements underneath.
 final class PencilInputCanvasView: PKCanvasView {
+    private let memoryActivity = MemoryDiagnostics.begin("canvas")
     var elementInteractionRects: [CGRect] = []
     var fingerDrawingAllowed = false
+
+    func pagePoint(from point: CGPoint) -> CGPoint {
+        CGPoint(x: (point.x + contentOffset.x) / zoomScale,
+                y: (point.y + contentOffset.y) / zoomScale)
+    }
 
     /// Lets a UI test read how many strokes the canvas holds; PencilKit's ink
     /// is otherwise invisible to the accessibility tree.
@@ -39,10 +45,10 @@ final class PencilInputCanvasView: PKCanvasView {
         let isFingerTouch = !forceCanvasFinger
             && (simulatedFinger || (!touches.isEmpty && touches.allSatisfy { $0.type == .direct }))
         if isFingerTouch {
-            // `point` is already expressed in this view's local coordinates.
-            // Converting it from the superview again offsets hit regions,
-            // especially after zooming the page.
-            if elementInteractionRects.contains(where: { $0.contains(point) }) {
+            // `point` is in canvas-local viewport coordinates; element rects
+            // are page coordinates, so convert before comparing.
+            let localPoint = pagePoint(from: point)
+            if elementInteractionRects.contains(where: { $0.contains(localPoint) }) {
                 return nil
             }
         }
@@ -62,12 +68,21 @@ private final class FingerElementTouchRecognizer: UIGestureRecognizer {
     var onEvent: (FingerElementDragEvent) -> Void = { _ in }
     private weak var activeTouch: UITouch?
 
+    /// Touch location in page coordinates; the canvas is magnified by the
+    /// viewport, so its own coordinates are page coordinates times the zoom.
+    private func pageLocation(of touch: UITouch, in view: UIView) -> CGPoint {
+        let point = touch.location(in: view)
+        guard let canvas = view as? PKCanvasView else { return point }
+        return CGPoint(x: (point.x + canvas.contentOffset.x) / canvas.zoomScale,
+                       y: (point.y + canvas.contentOffset.y) / canvas.zoomScale)
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let view, let touch = touches.first(where: { $0.type == .direct }) else {
             state = .failed
             return
         }
-        let point = touch.location(in: view)
+        let point = pageLocation(of: touch, in: view)
         guard canBegin(point) else {
             state = .failed
             return
@@ -79,13 +94,13 @@ private final class FingerElementTouchRecognizer: UIGestureRecognizer {
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let view, let activeTouch, touches.contains(activeTouch) else { return }
-        onEvent(.changed(activeTouch.location(in: view)))
+        onEvent(.changed(pageLocation(of: activeTouch, in: view)))
         state = .changed
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let view, let activeTouch, touches.contains(activeTouch) else { return }
-        onEvent(.ended(activeTouch.location(in: view)))
+        onEvent(.ended(pageLocation(of: activeTouch, in: view)))
         state = .ended
         self.activeTouch = nil
     }
@@ -104,6 +119,236 @@ private final class FingerElementTouchRecognizer: UIGestureRecognizer {
     override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
 }
 
+/// Gives PencilKit the real display zoom, while keeping the SwiftUI page and
+/// all ink/selection coordinates at their original size. Magnifying a canvas
+/// whose native zoom stays at 1 only stretches its existing raster tiles.
+final class InkCanvasViewport: UIView {
+    private static let renderQueue = DispatchQueue(label: "BetterNotes.ink-viewport", qos: .userInitiated)
+    let canvas: PKCanvasView
+    private let displayImage = UIImageView()
+    private let selectionContainer = UIView()
+    private let selectionImage = UIImageView()
+    private let hiddenInkMask = CAShapeLayer()
+    private var visibleRect: CGRect = .zero
+    private var hasViewportMeasurement = false
+    private var rasterIsCurrent = false
+    private var renderGeneration = 0
+    private var pendingRender: DispatchWorkItem?
+    private var previewsSelection = false
+    var inkOpacity: CGFloat = 1 { didSet { updatePresentation() } }
+    private var pageSize: CGSize = .zero
+    private var requestedZoom: CGFloat = 1
+    private var appliedZoom: CGFloat = 0
+    var isUsingTool = false {
+        didSet {
+            if isUsingTool {
+                pendingRender?.cancel()
+                renderGeneration &+= 1
+                rasterIsCurrent = false
+            } else {
+                layoutCanvas()
+                scheduleRaster()
+            }
+            updatePresentation()
+        }
+    }
+
+    init(canvas: PKCanvasView) {
+        self.canvas = canvas
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        addSubview(canvas)
+        displayImage.isUserInteractionEnabled = false
+        addSubview(displayImage)
+        selectionContainer.isUserInteractionEnabled = false
+        selectionContainer.layer.anchorPoint = .zero
+        selectionContainer.layer.position = .zero
+        selectionContainer.addSubview(selectionImage)
+        addSubview(selectionContainer)
+        hiddenInkMask.path = CGMutablePath()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit { pendingRender?.cancel() }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !isHidden, isUserInteractionEnabled, alpha > 0.01,
+              self.point(inside: point, with: event) else { return nil }
+        // Display images never intercept input. Preserve the canvas's nil
+        // result over page elements and when the SwiftUI lasso owns input.
+        return canvas.hitTest(canvas.convert(point, from: self), with: event)
+    }
+
+    func update(pageSize: CGSize, zoom: CGFloat) {
+        guard pageSize.width > 0, pageSize.height > 0 else { return }
+        if self.pageSize != pageSize {
+            self.pageSize = pageSize
+            appliedZoom = 0
+        }
+        updateZoom(zoom)
+    }
+
+    func updateZoom(_ zoom: CGFloat) {
+        guard zoom.isFinite, zoom > 0 else { return }
+        let next = min(max(zoom, 0.1), 8)
+        let changed = abs(requestedZoom - next) > 0.001
+        requestedZoom = next
+        layoutCanvas()
+        if changed { scheduleRaster() }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutCanvas()
+        if !hasViewportMeasurement, let window, !bounds.isEmpty {
+            updateVisibleRect(convert(window.bounds, from: window))
+        }
+    }
+
+    private func layoutCanvas() {
+        guard !isUsingTool, pageSize.width > 0, pageSize.height > 0,
+              abs(appliedZoom - requestedZoom) > 0.001 else { return }
+        let zoom = requestedZoom
+        appliedZoom = zoom
+        let viewportSize = CGSize(width: pageSize.width * zoom, height: pageSize.height * zoom)
+        canvas.transform = .identity
+        canvas.frame = CGRect(origin: .zero, size: viewportSize)
+        canvas.minimumZoomScale = 0.1
+        canvas.maximumZoomScale = 8
+        canvas.setZoomScale(zoom, animated: false)
+        canvas.contentSize = viewportSize
+        canvas.contentInsetAdjustmentBehavior = .never
+        canvas.contentInset = .zero
+        canvas.contentOffset = .zero
+        // The outer scroll view already supplies this magnification. Cancel
+        // it for the viewport, so only PencilKit's native ink zoom remains.
+        canvas.transform = CGAffineTransform(scaleX: 1 / zoom, y: 1 / zoom)
+        canvas.center = CGPoint(x: pageSize.width / 2, y: pageSize.height / 2)
+    }
+
+    func updateVisibleRect(_ rect: CGRect) {
+        hasViewportMeasurement = true
+        let clipped = rect.intersection(CGRect(origin: .zero, size: pageSize))
+        guard clipped != visibleRect else { return }
+        visibleRect = clipped
+        if clipped.isNull || clipped.isEmpty {
+            pendingRender?.cancel()
+            renderGeneration &+= 1
+            displayImage.image = nil
+            rasterIsCurrent = false
+            updatePresentation()
+        } else { scheduleRaster() }
+    }
+
+    func drawingDidChange() {
+        rasterIsCurrent = false
+        displayImage.isHidden = true
+        renderGeneration &+= 1
+        pendingRender?.cancel()
+        if !isUsingTool { scheduleRaster() }
+        updatePresentation()
+    }
+
+    private func scheduleRaster() {
+        guard !isUsingTool, !previewsSelection, !visibleRect.isEmpty, !visibleRect.isNull else { return }
+        pendingRender?.cancel()
+        renderGeneration &+= 1
+        let generation = renderGeneration
+        rasterIsCurrent = false
+        updatePresentation()
+        let drawing = canvas.drawing
+        let rect = visibleRect.insetBy(dx: -8 / requestedZoom, dy: -8 / requestedZoom)
+            .intersection(CGRect(origin: .zero, size: pageSize))
+        let scale = InkRasterBudget.scale(for: rect.size, requested: requestedZoom * (window?.screen.scale ?? 2))
+        let work = DispatchWorkItem { [weak self] in
+            autoreleasepool {
+                let image = Self.rasterize(drawing, rect: rect, scale: scale)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.renderGeneration == generation, !self.isUsingTool, !self.previewsSelection else { return }
+                    self.displayImage.image = image
+                    self.displayImage.frame = rect
+                    self.rasterIsCurrent = true
+                    self.updatePresentation()
+                    MemoryDiagnostics.record("ink-raster scale=\(scale) pixels=\(image.cgImage?.width ?? 0)x\(image.cgImage?.height ?? 0)")
+                }
+            }
+        }
+        pendingRender = work
+        Self.renderQueue.asyncAfter(deadline: .now() + 0.035, execute: work)
+    }
+
+    private func updatePresentation() {
+        canvas.alpha = inkOpacity
+        displayImage.alpha = inkOpacity
+        displayImage.isHidden = isUsingTool || (!rasterIsCurrent && !previewsSelection)
+        // A transparent layer mask hides old native tiles without disabling
+        // UIKit hit testing, unlike setting the canvas alpha close to zero.
+        canvas.layer.mask = (rasterIsCurrent || previewsSelection) && !isUsingTool ? hiddenInkMask : nil
+        selectionContainer.isHidden = !previewsSelection
+    }
+
+    private static func rasterize(_ drawing: PKDrawing, rect: CGRect, scale: CGFloat) -> UIImage {
+        guard !drawing.strokes.isEmpty else { return UIImage() }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        format.opaque = false
+        format.preferredRange = .standard
+        var image = UIImage()
+        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+            image = UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in
+                drawing.image(from: rect, scale: scale).draw(in: CGRect(origin: .zero, size: rect.size))
+            }
+        }
+        return image
+    }
+
+    func beginSelectionPreview(indices: Set<Int>) {
+        let strokes = canvas.drawing.strokes
+        let selected = PKDrawing(strokes: strokes.enumerated().filter { indices.contains($0.offset) }.map(\.element))
+        guard !selected.strokes.isEmpty else { return }
+        pendingRender?.cancel()
+        renderGeneration &+= 1
+        previewsSelection = true
+        let base = PKDrawing(strokes: strokes.enumerated().filter { !indices.contains($0.offset) }.map(\.element))
+        let rect = visibleRect.isEmpty || visibleRect.isNull ? bounds : visibleRect
+        let displayScale = requestedZoom * (window?.screen.scale ?? 2)
+        displayImage.image = Self.rasterize(base, rect: rect, scale: InkRasterBudget.scale(for: rect.size, requested: displayScale))
+        displayImage.frame = rect
+        let selectedRect = selected.bounds.insetBy(dx: -2, dy: -2)
+        selectionImage.image = Self.rasterize(selected, rect: selectedRect, scale: InkRasterBudget.scale(for: selectedRect.size, requested: displayScale))
+        selectionImage.frame = selectedRect
+        selectionContainer.bounds = CGRect(origin: .zero, size: pageSize)
+        selectionContainer.layer.position = .zero
+        selectionContainer.transform = .identity
+        updatePresentation()
+    }
+
+    func updateSelectionPreview(transform: CGAffineTransform) {
+        guard previewsSelection else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        selectionContainer.layer.setAffineTransform(transform)
+        CATransaction.commit()
+    }
+
+    func endSelectionPreview() {
+        previewsSelection = false
+        selectionImage.image = nil
+        selectionContainer.transform = .identity
+        rasterIsCurrent = false
+        drawingDidChange()
+    }
+}
+
+enum InkRasterBudget {
+    static func scale(for size: CGSize, requested: CGFloat) -> CGFloat {
+        guard size.width > 0, size.height > 0 else { return 1 }
+        return min(max(requested, 0.1), 16, 4096 / max(size.width, size.height),
+                   sqrt(6_000_000 / (size.width * size.height)))
+    }
+}
+
 /// Observes Apple Pencil locations without taking ownership of PencilKit's
 /// drawing gesture. PencilKit does not consistently expose its in-progress
 /// stroke through `canvas.drawing`, so hold-to-shape recognition uses this path.
@@ -118,27 +363,34 @@ final class PencilStrokeObserverGestureRecognizer: UIGestureRecognizer, UIGestur
         touches.first { observedTouchTypes.contains($0.type) }
     }
 
+    private func pageLocation(of touch: UITouch, in view: UIView) -> CGPoint {
+        let point = touch.location(in: view)
+        guard let canvas = view as? PKCanvasView else { return point }
+        return CGPoint(x: (point.x + canvas.contentOffset.x) / canvas.zoomScale,
+                       y: (point.y + canvas.contentOffset.y) / canvas.zoomScale)
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let touch = observedTouch(in: touches), let view else {
             state = .failed
             return
         }
         state = .began
-        onBegan?(touch.location(in: view), touch.type)
+        onBegan?(pageLocation(of: touch, in: view), touch.type)
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let touch = observedTouch(in: touches), let view else { return }
         let samples = event.coalescedTouches(for: touch) ?? [touch]
         for sample in samples {
-            onMoved?(sample.location(in: view))
+            onMoved?(pageLocation(of: sample, in: view))
         }
         state = .changed
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
         if let touch = observedTouch(in: touches), let view {
-            onEnded?(touch.location(in: view))
+            onEnded?(pageLocation(of: touch, in: view))
         }
         state = .ended
     }
@@ -180,6 +432,9 @@ struct PaperCanvas: UIViewRepresentable {
     var onPencilTapElement: (CGPoint) -> Void = { _ in }
     let inkData: Data?
     let canvasInkOpacity: CGFloat
+    var scribbleToErase = false
+    var pageSize: CGSize = .zero
+    var pageZoomScale: CGFloat = 1
     var onDrawingChange: ((Int) -> Void)?
     var onToolUseChange: ((Bool) -> Void)?
     var onShapePreviewChange: ((PKDrawing?) -> Void)?
@@ -197,7 +452,7 @@ struct PaperCanvas: UIViewRepresentable {
         return c
     }
 
-    func makeUIView(context: Context) -> PKCanvasView {
+    func makeUIView(context: Context) -> InkCanvasViewport {
         let c = canvasView
         c.drawingPolicy = allowsFingerDrawing ? .anyInput : .pencilOnly
         if let interactiveCanvas = c as? PencilInputCanvasView {
@@ -212,17 +467,12 @@ struct PaperCanvas: UIViewRepresentable {
         c.overrideUserInterfaceStyle = .light
         c.alpha = canvasInkOpacity
         c.clipsToBounds = false
-        // The PKCanvasView is nested inside ZoomablePageView's UIScrollView.
-        // Disable the canvas's own scroll/zoom so the outer scroll view handles
-        // pinch-to-zoom and panning. Otherwise the inner scroll view swallows
-        // the gestures and does nothing (its zoom is locked to 1.0).
+        // Outer scrolling owns pan and pinch gestures. InkCanvasViewport
+        // updates PencilKit's native zoom without enabling competing gestures.
         c.isScrollEnabled = false
         c.bounces = false
         c.alwaysBounceHorizontal = false
         c.alwaysBounceVertical = false
-        c.minimumZoomScale = 1.0
-        c.maximumZoomScale = 1.0
-        c.zoomScale = 1.0
         // Remove the canvas's built-in pinch/pan recognizers so they don't
         // compete with the outer UIScrollView.
         for gr in c.gestureRecognizers ?? [] {
@@ -244,16 +494,19 @@ struct PaperCanvas: UIViewRepresentable {
         // way to address PencilKit from the accessibility tree, which is why
         // the handwriting path had no automated coverage at all.
         c.accessibilityIdentifier = "ink-canvas"
-        c.tool = context.coordinator.makeTool()
+        context.coordinator.updateToolIfIdle(on: c)
         c.isUserInteractionEnabled = context.coordinator.canvasAcceptsInput
         c.delegate = context.coordinator
         context.coordinator.canvas = c
         context.coordinator.attachDrawingGesture(to: c)
         context.coordinator.attachFingerElementDrag(to: c)
-        return c
+        let viewport = InkCanvasViewport(canvas: c)
+        viewport.update(pageSize: pageSize, zoom: pageZoomScale)
+        return viewport
     }
 
-    func updateUIView(_ uiView: PKCanvasView, context: Context) {
+    func updateUIView(_ viewport: InkCanvasViewport, context: Context) {
+        let uiView = viewport.canvas
         context.coordinator.parent = self
         uiView.overrideUserInterfaceStyle = .light
         uiView.drawingPolicy = allowsFingerDrawing ? .anyInput : .pencilOnly
@@ -263,7 +516,7 @@ struct PaperCanvas: UIViewRepresentable {
         }
         uiView.isUserInteractionEnabled = context.coordinator.canvasAcceptsInput
         uiView.isScrollEnabled = false
-        uiView.alpha = canvasInkOpacity
+        viewport.inkOpacity = canvasInkOpacity
         // Re-disable pinch/pan on the inner canvas (PKCanvasView can re-enable
         // them internally on tool changes).
         for gr in uiView.gestureRecognizers ?? [] {
@@ -275,6 +528,7 @@ struct PaperCanvas: UIViewRepresentable {
         context.coordinator.updateToolIfIdle(on: uiView)
         context.coordinator.attachDrawingGesture(to: uiView)
         context.coordinator.attachFingerElementDrag(to: uiView)
+        viewport.update(pageSize: pageSize, zoom: pageZoomScale)
     }
 
     /// Lightweight holder so parent SwiftUI views can reach the coordinator
@@ -292,8 +546,12 @@ struct PaperCanvas: UIViewRepresentable {
         private var shapeCommitClearTimer: Timer?
         private var lastStrokeCount: Int = 0
         private var isUsingTool = false
+        private(set) var lastInkEditWasScribble = false
         private var strokeCountAtToolBegin = 0
         private var drawingChangeObservedForToolUse = false
+        private var pendingToolFinish: DispatchWorkItem?
+        private var toolFinishGeneration = 0
+        private var appliedToolConfiguration: ToolConfiguration?
         private var isApplyingProgrammaticDrawing = false
         private var suppressesProgrammaticDrawingNotification = false
         private var pencilObserver: PencilStrokeObserverGestureRecognizer?
@@ -318,6 +576,16 @@ struct PaperCanvas: UIViewRepresentable {
         private let committedShapeProtectionDelay: TimeInterval = 1.0
         private let continuationDistance: CGFloat = 8
         private let meaningfulMovementDistance: CGFloat = 3
+        private let strokeSettlingDelay: TimeInterval = 0.12
+
+        private struct ToolConfiguration: Equatable {
+            let tool: DrawingTool
+            let color: UIColor
+            let lineWidth: CGFloat
+            let eraserWidth: CGFloat
+            let eraserStyle: EraserStyle
+            let lassoMode: LassoMode
+        }
 
         private struct ShapePreview {
             let strokeIndex: Int
@@ -341,6 +609,7 @@ struct PaperCanvas: UIViewRepresentable {
         init(parent: PaperCanvas) { self.parent = parent }
 
         deinit {
+            pendingToolFinish?.cancel()
             shapeHoldTimer?.invalidate()
             pendingShapeCommitTimer?.invalidate()
             shapeCommitClearTimer?.invalidate()
@@ -358,12 +627,6 @@ struct PaperCanvas: UIViewRepresentable {
             // Element interaction is handled via elementInteractionRects, so
             // the canvas itself is never disabled by tool choice.
             return true
-        }
-
-        // MARK: UIScrollViewDelegate
-
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-            nil
         }
 
         func attachDrawingGesture(to canvas: PKCanvasView) {
@@ -439,11 +702,18 @@ struct PaperCanvas: UIViewRepresentable {
 
         func updateToolIfIdle(on canvas: PKCanvasView) {
             guard !isUsingTool, !isCapturingPencilStroke else { return }
+            let configuration = ToolConfiguration(
+                tool: parent.tool, color: parent.color, lineWidth: parent.lineWidth,
+                eraserWidth: parent.eraserWidth, eraserStyle: parent.eraserStyle, lassoMode: parent.lassoMode
+            )
+            guard appliedToolConfiguration != configuration else { return }
             canvas.tool = makeTool()
+            appliedToolConfiguration = configuration
         }
 
         // Called whenever the drawing changes (stroke added/erased).
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            (canvasView.superview as? InkCanvasViewport)?.drawingDidChange()
             let count = canvasView.drawing.strokes.count
 
             if isApplyingProgrammaticDrawing {
@@ -506,10 +776,14 @@ struct PaperCanvas: UIViewRepresentable {
             if isUsingTool, !drawingChangeObservedForToolUse {
                 if count > strokeCountAtToolBegin {
                     strokeCountAtToolBegin = count - 1
-                } else if count > 0 {
-                    strokeCountAtToolBegin = count - 1
                 }
                 drawingChangeObservedForToolUse = true
+            }
+
+            // A final drawing callback can follow both pen-up notifications.
+            // Give PencilKit another quiet interval before replacing any ink.
+            if pendingToolFinish != nil {
+                scheduleToolFinish(on: canvasView)
             }
 
             // PencilKit may publish the completed stroke either before or
@@ -694,11 +968,17 @@ struct PaperCanvas: UIViewRepresentable {
         }
 
         private func beginToolUse(on canvas: PKCanvasView) {
-            guard !isUsingTool else { return }
+            guard !isUsingTool || pendingToolFinish != nil else { return }
+            pendingToolFinish?.cancel()
+            pendingToolFinish = nil
+            toolFinishGeneration &+= 1
+            lastInkEditWasScribble = false
             strokeCountAtToolBegin = canvas.drawing.strokes.count
             drawingChangeObservedForToolUse = false
+            let wasUsingTool = isUsingTool
             isUsingTool = true
-            parent.onToolUseChange?(true)
+            (canvas.superview as? InkCanvasViewport)?.isUsingTool = true
+            if !wasUsingTool { parent.onToolUseChange?(true) }
             committedShapePreview = nil
             shapeCommitClearTimer?.invalidate()
             shapeCommitClearTimer = nil
@@ -706,12 +986,52 @@ struct PaperCanvas: UIViewRepresentable {
 
         private func endToolUse(on canvas: PKCanvasView) {
             guard isUsingTool else { return }
-            isUsingTool = false
             shapeHoldTimer?.invalidate()
             shapeHoldTimer = nil
-            strokeCountAtToolBegin = canvas.drawing.strokes.count
-            drawingChangeObservedForToolUse = false
-            parent.onToolUseChange?(false)
+            scheduleToolFinish(on: canvas)
+        }
+
+        private func scheduleToolFinish(on canvas: PKCanvasView) {
+            pendingToolFinish?.cancel()
+            toolFinishGeneration &+= 1
+            let generation = toolFinishGeneration
+            let work = DispatchWorkItem { [weak self, weak canvas] in
+                guard let self, let canvas, self.toolFinishGeneration == generation,
+                      self.isUsingTool, !self.isCapturingPencilStroke else { return }
+                self.pendingToolFinish = nil
+                let state = canvas.drawingGestureRecognizer.state
+                guard state != .began, state != .changed else {
+                    self.scheduleToolFinish(on: canvas)
+                    return
+                }
+                self.isUsingTool = false
+                // Classify before removing the scratch stroke. Even a scratch
+                // on blank space is a gesture, not newly written question text.
+                self.lastInkEditWasScribble = self.parent.scribbleToErase
+                    && (self.parent.tool == .pen || self.parent.tool == .pencil)
+                    && ScribbleEraser.containsScratch(in: canvas.drawing, newStrokesFrom: self.strokeCountAtToolBegin)
+                if self.eraseScribbledInk(on: canvas) {
+                    self.clearShapeRecognitionState(hidesPreview: true)
+                    self.committedShapePreview = nil
+                } else if self.pendingShapeCommit != nil {
+                    _ = self.commitPendingShapeIfPossible(on: canvas)
+                }
+                self.strokeCountAtToolBegin = canvas.drawing.strokes.count
+                self.drawingChangeObservedForToolUse = false
+                self.updateToolIfIdle(on: canvas)
+                (canvas.superview as? InkCanvasViewport)?.isUsingTool = false
+                self.parent.onToolUseChange?(false)
+            }
+            pendingToolFinish = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + strokeSettlingDelay, execute: work)
+        }
+
+        private func eraseScribbledInk(on canvas: PKCanvasView) -> Bool {
+            guard parent.scribbleToErase, parent.tool == .pen || parent.tool == .pencil,
+                  let drawing = ScribbleEraser.erasing(in: canvas.drawing, newStrokesFrom: strokeCountAtToolBegin) else { return false }
+            performProgrammaticDrawingChange(on: canvas) { canvas.drawing = drawing }
+            MemoryDiagnostics.record("scribble-erase applied")
+            return true
         }
 
         private func scheduleShapeHoldIfNeeded(on canvas: PKCanvasView) {
@@ -760,7 +1080,8 @@ struct PaperCanvas: UIViewRepresentable {
 
         @discardableResult
         private func commitPendingShapeIfPossible(on canvas: PKCanvasView) -> Bool {
-            guard let preview = pendingShapeCommit else { return false }
+            guard !isUsingTool, !isCapturingPencilStroke,
+                  let preview = pendingShapeCommit else { return false }
             var strokes = canvas.drawing.strokes
             guard strokes.indices.contains(preview.strokeIndex) else { return false }
 
@@ -863,8 +1184,12 @@ struct PaperCanvas: UIViewRepresentable {
         }
 
         func cancelShapeRecognition() {
+            pendingToolFinish?.cancel()
+            pendingToolFinish = nil
+            toolFinishGeneration &+= 1
             clearShapeRecognitionState(hidesPreview: true)
             isCapturingPencilStroke = false
+            (canvas?.superview as? InkCanvasViewport)?.isUsingTool = false
             committedShapePreview = nil
             shapeCommitClearTimer?.invalidate()
             shapeCommitClearTimer = nil
@@ -973,6 +1298,9 @@ struct PaperCanvas: UIViewRepresentable {
 
         func cancelTentativeFingerMark() {
             guard activeTouchType == .direct, let canvas else { return }
+            pendingToolFinish?.cancel()
+            pendingToolFinish = nil
+            toolFinishGeneration &+= 1
             shapeHoldTimer?.invalidate()
             shapeHoldTimer = nil
             shapePreview = nil
@@ -1018,37 +1346,6 @@ struct PaperCanvas: UIViewRepresentable {
 
 /// Displays settled ink plus a snapped-shape preview without participating in
 /// hit testing or mutating PencilKit's active stroke.
-/// Draws ink that has been lifted out of the main canvas for a live drag.
-///
-/// The drawing is assigned only when `generation` changes. The transform comes
-/// from a `.transformEffect` on the SwiftUI side, so a drag repaints nothing
-/// here -- it only re-composites an already-rendered layer, which is what lets
-/// the ink keep up with the selection outline.
-struct LiftedInkOverlay: UIViewRepresentable {
-    let drawing: PKDrawing
-    let generation: Int
-
-    final class Assigned { var generation = -1 }
-
-    func makeCoordinator() -> Assigned { Assigned() }
-
-    func makeUIView(context: Context) -> PKCanvasView {
-        let view = PKCanvasView()
-        view.backgroundColor = .clear
-        view.isOpaque = false
-        view.isScrollEnabled = false
-        view.isUserInteractionEnabled = false
-        view.overrideUserInterfaceStyle = .light
-        return view
-    }
-
-    func updateUIView(_ uiView: PKCanvasView, context: Context) {
-        guard context.coordinator.generation != generation else { return }
-        context.coordinator.generation = generation
-        uiView.drawing = drawing
-    }
-}
-
 struct ShapePreviewOverlay: UIViewRepresentable {
     let drawing: PKDrawing
 

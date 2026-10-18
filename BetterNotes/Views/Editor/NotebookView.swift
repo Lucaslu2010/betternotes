@@ -20,9 +20,94 @@ final class EditorActionState: ObservableObject {
     @Published var isViewOnly = false
     @Published var presentedPanel: EditorPresentedPanel?
     @Published var isAssistantPresented = false
+    @Published var handwrittenQuestion: HandwrittenQuestionDraft?
+    @Published private(set) var shouldSubmitQuestion = false
+    private var questionRecognitionTask: Task<Void, Never>?
+    private var questionRequest: HandwrittenQuestionRequest?
 
     init(currentPageIndex: Int = 0) {
         self.currentPageIndex = currentPageIndex
+    }
+
+    func recognizeQuestion(_ request: HandwrittenQuestionRequest, using ocr: OCRService, context: ModelContext) {
+        questionRecognitionTask?.cancel()
+        questionRequest = request
+        shouldSubmitQuestion = false
+        let draft = HandwrittenQuestionDraft(phase: .recognizing)
+        handwrittenQuestion = draft
+        MemoryDiagnostics.record("question-label shown recognition-started")
+        // Remember detection immediately, including a bare marker. Reopening
+        // the editor must not present the same question again after dismissal.
+        request.page.markQuestionHandled(request.fingerprint)
+        do { try context.save() } catch { /* OCR does not depend on this derived marker cache. */ }
+        questionRecognitionTask = Task { @MainActor [weak self] in
+            do {
+                let text = try await ocr.recognizeInk(request.inkData, pageSize: request.pageSize, region: request.region)
+                try Task.checkCancellation()
+                guard let self, self.handwrittenQuestion?.id == draft.id else { return }
+                guard request.page.modelContext != nil, request.page.trashedAt == nil,
+                      Self.questionInkIsUnchanged(request),
+                      request.page.pageOrientation.size == request.pageSize else {
+                    self.handwrittenQuestion = HandwrittenQuestionDraft(id: draft.id, phase: .failed("The question changed while it was being read. Try again."))
+                    return
+                }
+                let question = HandwrittenQuestion.question(in: text) ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !question.isEmpty else { throw OCRError.emptyQuestion }
+                self.handwrittenQuestion = HandwrittenQuestionDraft(id: draft.id, phase: .ready(question))
+                MemoryDiagnostics.record("question-label recognition-ready")
+            } catch is CancellationError {
+                guard let self, self.handwrittenQuestion?.id == draft.id else { return }
+                self.handwrittenQuestion = HandwrittenQuestionDraft(id: draft.id, phase: .failed("Question recognition was cancelled. Try again."))
+            } catch {
+                guard let self, self.handwrittenQuestion?.id == draft.id else { return }
+                self.handwrittenQuestion = HandwrittenQuestionDraft(id: draft.id, phase: .failed(error.localizedDescription))
+                MemoryDiagnostics.record("question-label recognition-failed")
+            }
+        }
+    }
+
+    private static func questionInkIsUnchanged(_ request: HandwrittenQuestionRequest) -> Bool {
+        if request.page.inkData == request.inkData { return true }
+        guard let current = request.page.inkData,
+              let original = try? PKDrawing(data: request.inkData),
+              let drawing = try? PKDrawing(data: current) else { return false }
+        // Writing elsewhere on the page must not invalidate an inline prompt.
+        return QuestionInkFingerprint.make(in: original, region: request.region)
+            == QuestionInkFingerprint.make(in: drawing, region: request.region)
+    }
+
+    func questionAnchor(for pageID: PersistentIdentifier) -> CGRect? {
+        guard !isAssistantPresented, handwrittenQuestion != nil,
+              let questionRequest, questionRequest.page.persistentModelID == pageID else { return nil }
+        return questionRequest.anchorBounds ?? questionRequest.region
+    }
+
+    func confirmQuestion() {
+        guard case .ready(let question) = handwrittenQuestion?.phase, !question.isEmpty else { return }
+        shouldSubmitQuestion = true
+        isAssistantPresented = true
+        MemoryDiagnostics.record("question-label answer-confirmed")
+    }
+
+    func retryQuestion(using ocr: OCRService, context: ModelContext) {
+        guard let questionRequest, let ink = questionRequest.page.inkData,
+              let drawing = try? PKDrawing(data: ink), questionRequest.page.trashedAt == nil else { return }
+        MemoryDiagnostics.record("question-label retry-current-ink")
+        recognizeQuestion(HandwrittenQuestionRequest(
+            page: questionRequest.page, inkData: ink, pageSize: questionRequest.page.pageOrientation.size,
+            region: questionRequest.region,
+            fingerprint: QuestionInkFingerprint.make(in: drawing, region: questionRequest.region),
+            anchorBounds: questionRequest.anchorBounds
+        ), using: ocr, context: context)
+    }
+
+    func dismissQuestion() {
+        questionRecognitionTask?.cancel()
+        questionRecognitionTask = nil
+        questionRequest = nil
+        handwrittenQuestion = nil
+        shouldSubmitQuestion = false
+        isAssistantPresented = false
     }
 }
 
@@ -42,6 +127,7 @@ struct EditorCommand: Identifiable, Equatable {
         case showSourceText
         case exportPage
         case scanDocument
+        case recognizeHandwriting
     }
 
     let id = UUID()
@@ -56,8 +142,10 @@ struct NotebookView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var corpusStore: NoteCorpusStore
+    @EnvironmentObject private var ocrService: OCRService
     @Query(sort: \Notebook.modifiedAt, order: .reverse) private var allNotebooks: [Notebook]
     @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = false
+    @AppStorage(AppPreferenceKey.scribbleToErase) private var scribbleToErase = true
     @AppStorage(AppPreferenceKey.toolbarDock) private var toolbarDockRaw = ToolbarDock.top.rawValue
     @AppStorage(AppPreferenceKey.toolbarHintSeen) private var toolbarHintSeen = false
     @AppStorage(AppPreferenceKey.panHintSeen) private var panHintSeen = false
@@ -65,6 +153,9 @@ struct NotebookView: View {
     @AppStorage(AppPreferenceKey.lassoHintSeen) private var lassoHintSeen = false
     @AppStorage(AppPreferenceKey.assistantEnabled) private var assistantEnabled = true
     @AppStorage(AppPreferenceKey.scrollMode) private var scrollModeRaw = ScrollMode.singlePage.rawValue
+    @AppStorage(AppPreferenceKey.pencilDoubleTapEnabled) private var pencilDoubleTapEnabled = true
+    @AppStorage(AppPreferenceKey.pencilDoubleTapTool) private var pencilDoubleTapToolRaw = DrawingTool.eraser.rawValue
+    @State private var pencilToolToggle = PencilToolToggle()
 
     private var scrollMode: ScrollMode {
         ScrollMode(rawValue: scrollModeRaw) ?? .singlePage
@@ -81,10 +172,9 @@ struct NotebookView: View {
     @State private var pageZoomScale: CGFloat = 1
     @State private var pageZoomRatio: CGFloat = 1
     @State private var pageZoomCommand: PageZoomCommand?
-    // Gesture-relative: MagnificationGesture reports a multiplier off its own
-    // start, not an absolute scale, so this pins down what pageZoomScale was
-    // when the current pinch began.
-    @State private var verticalZoomBaseScale: CGFloat = 1
+    @State private var verticalVisibleRect: CGRect = .zero
+    @State private var verticalScrollCommand: PageScrollCommand?
+    @State private var verticalPagePanRequirements: [PersistentIdentifier: Bool] = [:]
     @State private var editorCanUndo = false
     @State private var editorCanRedo = false
     @State private var editorCanReplaceSelectedText = false
@@ -146,12 +236,16 @@ struct NotebookView: View {
                         canUndo: $editorCanUndo,
                         canRedo: $editorCanRedo,
                         canReplaceSelectedText: $editorCanReplaceSelectedText,
-                        tool: $editorTool,
+                        tool: editorTool,
                         toolSettings: toolSettings,
+                        questionState: editorState,
                         command: $editorCommand,
                         pageTurnDirection: pageTurnDirection,
                         onPageSwipe: handlePageSwipe,
-                        canPullToAddPage: !isReadOnly && safePageIndex >= sortedPages.count - 1
+                        canPullToAddPage: !isReadOnly && safePageIndex >= sortedPages.count - 1,
+                        onHandwrittenQuestion: { request in
+                            editorState.recognizeQuestion(request, using: ocrService, context: context)
+                        }
                     )
                     // PKCanvasView is stateful UIKit content. Scoping the editor to
                     // one page prevents a canvas from being rebound to another page
@@ -261,13 +355,22 @@ struct NotebookView: View {
         .sheet(item: $editorState.presentedPanel) { panel in
             editorPanel(panel)
         }
+        .background {
+            PencilDoubleTapInteraction(
+                isEnabled: pencilDoubleTapEnabled && !isReadOnly && editorState.presentedPanel == nil && !editorState.isAssistantPresented
+            ) {
+                editorTool = pencilToolToggle.nextTool(
+                    current: editorTool,
+                    alternate: DrawingTool(rawValue: pencilDoubleTapToolRaw) ?? .eraser
+                )
+            }
+        }
         .sheet(isPresented: $showingNotebookShare) {
             if let url = notebookShareURL {
                 ShareSheet(items: [url])
             }
         }
         .assistantPresentation(
-            isCompact: horizontalSizeClass == .compact,
             isPresented: $editorState.isAssistantPresented
         ) {
             assistantContent
@@ -305,7 +408,10 @@ struct NotebookView: View {
             Text(saveError ?? "")
         }
         .onChange(of: editorState.isAssistantPresented) { _, isShowing in
-            guard isShowing else { return }
+            guard isShowing else {
+                editorState.dismissQuestion()
+                return
+            }
             Task { await corpusStore.rebuild(notebooks: allNotebooks) }
         }
         .onDisappear {
@@ -316,9 +422,24 @@ struct NotebookView: View {
 
     // MARK: - Vertical scroll mode
 
+    private var verticalLayout: VerticalNotebookLayout {
+        VerticalNotebookLayout(pageSizes: sortedPages.map { $0.pageOrientation.size }, showsAddPage: !isReadOnly)
+    }
+
     private var verticalScrollContent: some View {
-        ScrollView {
-            LazyVStack(spacing: 24) {
+        let layout = verticalLayout
+        return ZoomablePageView(
+            pageSize: layout.contentSize,
+            panRequiresTwoFingers: !isReadOnly && (allowsFingerDrawing || editorTool == .lasso || verticalPagePanRequirements.values.contains(true)),
+            continuousScrolling: true,
+            zoomReferenceSize: sortedPages[safePageIndex].pageOrientation.size,
+            zoomCommand: $pageZoomCommand,
+            zoomScale: $pageZoomScale,
+            zoomRatio: $pageZoomRatio,
+            visibleContentRect: $verticalVisibleRect,
+            scrollCommand: $verticalScrollCommand
+        ) {
+            LazyVStack(spacing: VerticalNotebookLayout.spacing) {
                 ForEach(Array(sortedPages.enumerated()), id: \.element.persistentModelID) { index, page in
                     PageEditorView(
                         page: page,
@@ -332,39 +453,36 @@ struct NotebookView: View {
                         canUndo: $editorCanUndo,
                         canRedo: $editorCanRedo,
                         canReplaceSelectedText: $editorCanReplaceSelectedText,
-                        tool: $editorTool,
+                        tool: editorTool,
                         toolSettings: toolSettings,
+                        questionState: editorState,
                         command: $editorCommand,
                         pageTurnDirection: pageTurnDirection,
                         onPageSwipe: { _ in },
-                        // The whole vertical document zooms as one unit (see
-                        // PageEditorView.usesOwnZoomContainer) instead of each
-                        // page running its own independent pinch-to-zoom
-                        // UIScrollView -- that per-page zoom was the bug: it
-                        // turned every page into its own isolated zoomable
-                        // island rather than scaling the coherent document
-                        // when pinched. The shared pinch gesture below drives
+                        onHandwrittenQuestion: { request in
+                            editorState.currentPageIndex = index
+                            editorState.recognizeQuestion(request, using: ocrService, context: context)
+                        },
+                        // The whole vertical document zooms as one unit rather
+                        // than each page running its own pinch-to-zoom scroll
+                        // view; the shared ZoomablePageView above drives
                         // pageZoomScale for every page at once.
-                        usesOwnZoomContainer: false
+                        managesOwnZoom: false,
+                        externalVisiblePageCenter: layout.visibleCenter(for: index, viewport: verticalVisibleRect),
+                        onPageInteraction: { editorState.currentPageIndex = index },
+                        onPanRequirementChange: { required in
+                            if verticalPagePanRequirements[page.persistentModelID] != required {
+                                verticalPagePanRequirements[page.persistentModelID] = required
+                            }
+                        }
                     )
                     .id(page.persistentModelID)
                     .frame(width: page.pageOrientation.size.width, height: page.pageOrientation.size.height)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
-                    .scaleEffect(pageZoomScale, anchor: .top)
-                    // The frame must grow with the visual scale too, or
-                    // ScrollView keeps laying the stack out at the unscaled
-                    // size -- the same contentSize-vs-zoomScale mismatch that
-                    // once clamped single-page zoom short of the page bottom,
-                    // here it would clip/overlap neighboring pages instead.
-                    .frame(
-                        width: page.pageOrientation.size.width * pageZoomScale,
-                        height: page.pageOrientation.size.height * pageZoomScale
-                    )
-                    .onAppear {
-                        // Track the current page for the page counter.
-                        editorState.currentPageIndex = index
-                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Page \(index + 1)")
+                    .accessibilityIdentifier("vertical-page-\(page.stableID.uuidString)")
                 }
 
                 // Vertical scroll keeps its explicit end-of-document action.
@@ -372,27 +490,27 @@ struct NotebookView: View {
                 if !isReadOnly {
                     Button(action: addNewPage) {
                         Label("Add Page", systemImage: "plus.square")
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
+                    .frame(height: 44)
                     .padding(.horizontal, 40)
                     .padding(.bottom, 24)
                     .accessibilityIdentifier("vertical-scroll-add-page")
                 }
             }
-            .padding(.vertical, 24)
+            .padding(.vertical, VerticalNotebookLayout.padding)
+            .frame(width: layout.contentSize.width, height: layout.contentSize.height, alignment: .top)
         }
         .background(Color(.systemGroupedBackground))
-        .simultaneousGesture(
-            MagnificationGesture()
-                .onChanged { value in
-                    let target = verticalZoomBaseScale * value
-                    pageZoomScale = min(max(target, 0.5), 4.0)
-                }
-                .onEnded { _ in
-                    verticalZoomBaseScale = pageZoomScale
-                }
-        )
+        .onAppear {
+            verticalScrollCommand = PageScrollCommand(rect: layout.pageFrames[safePageIndex])
+        }
+        .onChange(of: verticalVisibleRect) { _, viewport in
+            if let index = layout.pageIndex(at: viewport), index != safePageIndex {
+                editorState.currentPageIndex = index
+            }
+        }
     }
 
     // MARK: - Navigation
@@ -484,6 +602,12 @@ struct NotebookView: View {
 
     private var editorMoreMenu: some View {
         Menu {
+            Section("App") {
+                Button("Settings", systemImage: "gearshape") {
+                    editorState.presentedPanel = .settings
+                }
+            }
+
             Section("Mode") {
                 Button(
                     isReadOnly ? "Enable Editing" : "Enter View-Only Mode",
@@ -527,6 +651,12 @@ struct NotebookView: View {
             }
 
             Section("Handwriting") {
+                Toggle("Scribble to Erase", systemImage: "scribble", isOn: $scribbleToErase)
+                    .disabled(isReadOnly)
+                    .accessibilityIdentifier("scribble-to-erase")
+                Button("Recognize Handwriting", systemImage: "text.viewfinder") {
+                    sendEditorCommand(.recognizeHandwriting)
+                }
                 Toggle("Draw with Finger", systemImage: "hand.draw", isOn: $allowsFingerDrawing)
                     .disabled(isReadOnly)
             }
@@ -561,11 +691,6 @@ struct NotebookView: View {
                 Button("Export Editable Backup", systemImage: "externaldrive", action: exportBackup)
             }
 
-            Section("App") {
-                Button("Settings", systemImage: "gearshape") {
-                    editorState.presentedPanel = .settings
-                }
-            }
         } label: {
             Image(systemName: "ellipsis.circle")
                 .frame(width: 44, height: 44)
@@ -633,7 +758,13 @@ struct NotebookView: View {
                 onInsert: { sendEditorCommand(.insertAssistantText($0)) },
                 onReplaceSelection: { sendEditorCommand(.replaceSelectedText($0)) },
                 onCreateNote: createNoteFromAssistant,
-                onDismiss: { editorState.isAssistantPresented = false }
+                onDismiss: {
+                    editorState.isAssistantPresented = false
+                    editorState.dismissQuestion()
+                },
+                initialQuestion: editorState.shouldSubmitQuestion ? editorState.handwrittenQuestion : nil,
+                autoSubmitInitialQuestion: editorState.shouldSubmitQuestion,
+                onRetryQuestionRecognition: { editorState.retryQuestion(using: ocrService, context: context) }
             )
         }
     }
@@ -816,7 +947,7 @@ struct NotebookView: View {
                         throw PDFImportError.unreadableDocument
                     }
                     for (offset, importedPage) in importedPages.enumerated() {
-                        let page = makePage(from: importedPage, index: startIndex + offset)
+                        let page = PDFImporter.makePage(from: importedPage, index: startIndex + offset)
                         page.notebook = notebook
                         notebook.pages.append(page)
                     }
@@ -834,30 +965,6 @@ struct NotebookView: View {
         }
     }
 
-    private func makePage(from importedPage: PDFImporter.ImportedPage, index: Int) -> Page {
-        let page = Page(index: index)
-        page.orientation = importedPage.orientation
-        page.lineStyle = PageLineStyle.blank.rawValue
-        page.backgroundHex = "FFFFFF"
-        page.ocrText = importedPage.extractedText
-        page.ocrUpdatedAt = importedPage.extractedText.isEmpty ? nil : Date.now
-
-        if let imageData = importedPage.imageData {
-            let frame = importedPage.imageFrame
-            let element = PageElement(
-                type: .image,
-                x: frame.midX,
-                y: frame.midY,
-                width: frame.width,
-                height: frame.height
-            )
-            element.imageData = imageData
-            element.isLocked = true
-            element.page = page
-            page.appendElement(element)
-        }
-        return page
-    }
 
     // MARK: - Page-level actions
 
@@ -1186,6 +1293,9 @@ struct NotebookView: View {
         guard !pages.isEmpty else { return }
         let targetIndex = min(max(0, index), pages.count - 1)
         let oldIndex = safePageIndex
+        if scrollMode == .verticalScroll {
+            verticalScrollCommand = PageScrollCommand(rect: verticalLayout.pageFrames[targetIndex])
+        }
         guard targetIndex != oldIndex else { return }
 
         pageTurnDirection = targetIndex > oldIndex ? .forward : .backward
@@ -1212,19 +1322,15 @@ struct NotebookView: View {
 }
 
 private extension View {
-    @ViewBuilder
     func assistantPresentation<Presented: View>(
-        isCompact: Bool,
         isPresented: Binding<Bool>,
         @ViewBuilder content: @escaping () -> Presented
     ) -> some View {
-        if isCompact {
-            fullScreenCover(isPresented: isPresented, content: content)
-        } else {
-            inspector(isPresented: isPresented) {
-                content()
-                    .inspectorColumnWidth(min: 380, ideal: 410, max: 440)
-            }
+        // A sheet keeps the assistant out of the notebook's navigation stack.
+        // An inspector creates/reparents navigation columns on iPadOS 26 even
+        // while hidden, repeatedly mounting the destination and popping it.
+        sheet(isPresented: isPresented) {
+            content()
         }
     }
 }
@@ -1507,7 +1613,7 @@ private struct NotebookOverviewGrid: View {
     }
 
     private func searchableText(for page: Page) -> String {
-        var parts = [page.ocrText]
+        var parts = [page.searchableOCRText]
         parts.append(contentsOf: page.elements.compactMap(\.text))
         return parts.joined(separator: " ").lowercased()
     }
@@ -1635,6 +1741,7 @@ private struct PageInfoSheet: View {
     @State private var saveError: String?
     @State private var draftTitle = ""
     @State private var draftIsBookmarked = false
+    @State private var hasLoadedDraft = false
 
     var body: some View {
         NavigationStack {
@@ -1648,6 +1755,8 @@ private struct PageInfoSheet: View {
             .navigationTitle("Page Info")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
+                guard !hasLoadedDraft else { return }
+                hasLoadedDraft = true
                 draftTitle = page.title
                 draftIsBookmarked = page.isBookmarked
             }

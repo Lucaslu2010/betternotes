@@ -1,46 +1,45 @@
 import SwiftUI
 import UIKit
 
-/// Disables the interactive (swipe-to-go-back) pop gesture on a NavigationStack,
-/// so swiping right only navigates pages within the notebook (not back to library).
+/// Reserve horizontal swipes for notebook pages without changing the gesture
+/// delegates of the library or any navigation stacks presented above it.
 struct DisableInteractivePop: UIViewControllerRepresentable {
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIViewController(context: Context) -> Controller {
+        Controller(coordinator: context.coordinator)
     }
 
-    func makeUIViewController(context: Context) -> UIViewController {
-        let vc = Controller(coordinator: context.coordinator)
-        vc.disableInteractivePop()
-        return vc
-    }
-
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        guard let controller = uiViewController as? Controller else { return }
-        controller.coordinator = context.coordinator
+    func updateUIViewController(_ controller: Controller, context: Context) {
         controller.disableInteractivePop()
     }
 
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        func install(in root: UIViewController?) {
-            guard let root else { return }
-            for navigationController in root.findNavigationControllers() {
-                install(on: navigationController)
+    static func dismantleUIViewController(_ controller: Controller, coordinator: Coordinator) {
+        coordinator.restore()
+    }
+
+    final class Coordinator {
+        private weak var gesture: UIGestureRecognizer?
+        private var wasEnabled = true
+
+        func install(on navigationController: UINavigationController?) {
+            guard let next = navigationController?.interactivePopGestureRecognizer else { return }
+            if gesture !== next {
+                restore()
+                gesture = next
+                wasEnabled = next.isEnabled
             }
+            if next.isEnabled { next.isEnabled = false }
         }
 
-        private func install(on navigationController: UINavigationController) {
-            guard let popGesture = navigationController.interactivePopGestureRecognizer else { return }
-            popGesture.isEnabled = false
-            popGesture.delegate = self
-        }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            false
+        func restore() {
+            if let gesture, gesture.isEnabled != wasEnabled { gesture.isEnabled = wasEnabled }
+            gesture = nil
         }
     }
 
     final class Controller: UIViewController {
-        weak var coordinator: Coordinator?
+        let coordinator: Coordinator
 
         init(coordinator: Coordinator) {
             self.coordinator = coordinator
@@ -50,13 +49,12 @@ struct DisableInteractivePop: UIViewControllerRepresentable {
         }
 
         @available(*, unavailable)
-        required init?(coder: NSCoder) {
-            nil
-        }
+        required init?(coder: NSCoder) { nil }
 
         override func didMove(toParent parent: UIViewController?) {
             super.didMove(toParent: parent)
-            disableInteractivePop()
+            if parent == nil { coordinator.restore() }
+            else { disableInteractivePop() }
         }
 
         override func viewDidAppear(_ animated: Bool) {
@@ -69,42 +67,13 @@ struct DisableInteractivePop: UIViewControllerRepresentable {
             disableInteractivePop()
         }
 
+        override func viewDidDisappear(_ animated: Bool) {
+            super.viewDidDisappear(animated)
+            coordinator.restore()
+        }
+
         func disableInteractivePop() {
-            DispatchQueue.main.async { [weak self] in
-                self?.disableInteractivePopNow()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.disableInteractivePopNow()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                self?.disableInteractivePopNow()
-            }
+            coordinator.install(on: navigationController)
         }
-
-        private func disableInteractivePopNow() {
-            coordinator?.install(in: self)
-            coordinator?.install(in: parent)
-            coordinator?.install(in: navigationController)
-            coordinator?.install(in: view.window?.rootViewController)
-        }
-    }
-}
-
-private extension UIViewController {
-    func findNavigationControllers() -> [UINavigationController] {
-        var result: [UINavigationController] = []
-        if let navigationController = self as? UINavigationController {
-            result.append(navigationController)
-        }
-        if let navigationController {
-            result.append(navigationController)
-        }
-        for child in children {
-            result.append(contentsOf: child.findNavigationControllers())
-        }
-        if let presentedViewController {
-            result.append(contentsOf: presentedViewController.findNavigationControllers())
-        }
-        return result
     }
 }
