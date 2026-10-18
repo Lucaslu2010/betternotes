@@ -7,3 +7,4 @@ DerivedData/
 .build/
 __pycache__/
 *.pyc
+ocr-bench/
