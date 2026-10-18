@@ -11,6 +11,55 @@ struct HandwrittenQuestionRequest {
     let pageSize: CGSize
     let region: CGRect
     let fingerprint: String
+    var anchorBounds: CGRect? = nil
+}
+
+/// PKDrawing(strokes:) creates new archive identity even for identical ink.
+/// Hash the visible stroke content instead of those archive bytes. Small
+/// coordinate quantization tolerates floating-point archive round trips.
+enum QuestionInkFingerprint {
+    static func make(in drawing: PKDrawing, region: CGRect) -> String {
+        var hash = SHA256()
+        func number(_ value: CGFloat) {
+            let rounded = (value * 1024).rounded() / 1024
+            var bits = Double(rounded == 0 ? 0 : rounded).bitPattern.littleEndian
+            withUnsafeBytes(of: &bits) { hash.update(bufferPointer: $0) }
+        }
+        let strokes = drawing.strokes.filter { $0.renderBounds.intersects(region) }
+        number(CGFloat(strokes.count))
+        for stroke in strokes {
+            let t = stroke.transform
+            for value in [t.a, t.b, t.c, t.d, t.tx, t.ty] { number(value) }
+            number(CGFloat(stroke.path.count))
+            for point in stroke.path {
+                for value in [point.location.x, point.location.y, point.size.width, point.size.height,
+                              point.opacity, point.force, point.azimuth, point.altitude, point.secondaryScale] {
+                    number(value)
+                }
+            }
+            if let mask = stroke.mask {
+                number(1)
+                number(mask.usesEvenOddFillRule ? 1 : 0)
+                mask.cgPath.applyWithBlock { element in
+                    let element = element.pointee
+                    number(CGFloat(element.type.rawValue))
+                    let count: Int
+                    switch element.type {
+                    case .moveToPoint, .addLineToPoint: count = 1
+                    case .addQuadCurveToPoint: count = 2
+                    case .addCurveToPoint: count = 3
+                    case .closeSubpath: count = 0
+                    @unknown default: count = 0
+                    }
+                    for index in 0..<count {
+                        number(element.points[index].x)
+                        number(element.points[index].y)
+                    }
+                }
+            } else { number(0) }
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 @MainActor

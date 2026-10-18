@@ -38,10 +38,10 @@ private enum LibrarySection: String, CaseIterable {
     var emptyMessage: String {
         switch self {
         case .notes: return "Create a notebook to start writing and drawing"
-        case .favorites: return "Favorite notebooks appear here"
+        case .favorites: return "Favorite notebooks and folders appear here"
         case .bookmarks: return "Bookmark a page from the page overview and it appears here"
         case .archive: return "Archived notebooks stay out of your main library"
-        case .trash: return "Deleted notebooks can be restored from here"
+        case .trash: return "Deleted notebooks and folders can be restored from here"
         }
     }
 
@@ -115,6 +115,19 @@ private struct NotebookDestination: Hashable {
     var pageID: PersistentIdentifier? = nil
 }
 
+private final class IncomingDocument: Identifiable {
+    let id = UUID()
+    let url: URL
+    private let hasScopedAccess: Bool
+
+    init(url: URL) {
+        self.url = url
+        hasScopedAccess = url.startAccessingSecurityScopedResource()
+    }
+
+    deinit { if hasScopedAccess { url.stopAccessingSecurityScopedResource() } }
+}
+
 struct LibraryView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -122,7 +135,16 @@ struct LibraryView: View {
     @EnvironmentObject private var ocrService: OCRService
     @EnvironmentObject private var assistantCoordinator: AssistantCoordinator
     @Query(sort: \Notebook.modifiedAt, order: .reverse) private var notebooks: [Notebook]
+    @Query(sort: \NotebookFolder.name) private var folders: [NotebookFolder]
     @State private var showingNewNotebook = false
+    @State private var showingNewFolder = false
+    @State private var newFolderName = ""
+    @State private var showingDocumentImporter = false
+    @State private var incomingDocuments: [IncomingDocument] = []
+    @State private var showingImportDestination = false
+    @State private var chosenImportFolder: String?
+    @State private var isImportingDocument = false
+    @State private var documentImportError: String?
     @State private var showingBackupImporter = false
     @State private var backupImportError: String?
     @State private var exportError: String?
@@ -146,6 +168,10 @@ struct LibraryView: View {
     @State private var recentlyTrashedNotebook: Notebook?
     @State private var sharingURL: URL?
     @State private var showingShare = false
+    @State private var folderToDelete: NotebookFolder?
+    @State private var renamingFolder: NotebookFolder?
+    @State private var folderNameDraft = ""
+    @State private var customizingFolder: NotebookFolder?
     @State private var renamingNotebook: Notebook?
     @State private var customizingCoverNotebook: Notebook?
     @State private var indexingNotebookID: PersistentIdentifier?
@@ -161,7 +187,7 @@ struct LibraryView: View {
     @AppStorage(AppPreferenceKey.searchAnswersEnabled) private var searchAnswersEnabled = true
 
     private let columns = [
-        GridItem(.adaptive(minimum: 200), spacing: 24)
+        GridItem(.adaptive(minimum: 200), spacing: 24, alignment: .top)
     ]
 
     private var sectionNotebooks: [Notebook] {
@@ -169,16 +195,17 @@ struct LibraryView: View {
             let matchesSection: Bool
             switch librarySection {
             case .notes:
-                matchesSection = notebook.trashedAt == nil && !notebook.isArchived
+                matchesSection = notebook.trashedAt == nil && !notebook.isEffectivelyArchived
             case .favorites:
-                matchesSection = notebook.trashedAt == nil && !notebook.isArchived && notebook.isFavorite
+                matchesSection = notebook.trashedAt == nil && !notebook.isEffectivelyArchived && notebook.isFavorite
             case .bookmarks:
                 // Handled by bookmarkedPages; not a notebook listing.
                 matchesSection = false
             case .archive:
-                matchesSection = notebook.trashedAt == nil && notebook.isArchived
+                matchesSection = notebook.trashedAt == nil && notebook.isEffectivelyArchived
+                    && (selectedFolder != nil || !NotebookFolders.isArchived(notebook.folderName, in: folders))
             case .trash:
-                matchesSection = notebook.trashedAt != nil
+                matchesSection = notebook.trashedAt != nil && !NotebookFolders.isTrashed(notebook.folderName, in: folders)
             }
             return matchesSection && matchesFolder(notebook) && matchesTags(notebook)
         }
@@ -191,13 +218,40 @@ struct LibraryView: View {
 
     // MARK: - Folder and tag filtering
 
-    /// Every folder name in use, sorted for display.
+    /// Only active folders are offered as move/import destinations.
     private var allFolders: [String] {
-        let names = notebooks
-            .filter { $0.trashedAt == nil }
-            .map(\.folderName)
-            .filter { !$0.isEmpty }
-        return Array(Set(names)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        folders.filter { NotebookFolders.isAvailable($0.path, in: folders) }.map(\.path)
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private var visibleFolders: [NotebookFolder] {
+        folders.filter { folder in
+            let archived = NotebookFolders.isArchived(folder.path, in: folders)
+            let trashed = NotebookFolders.isTrashed(folder.path, in: folders)
+            switch librarySection {
+            case .notes:
+                return !archived && !trashed && folder.parentPath == (selectedFolder ?? "")
+            case .favorites:
+                return folder.isFavorite && !archived && !trashed
+            case .archive:
+                guard !trashed else { return false }
+                if let selectedFolder { return folder.parentPath == selectedFolder }
+                return folder.isArchived && !folders.contains { $0 !== folder && $0.isArchived && FolderPath.contains(folder.path, in: $0.path) }
+            case .trash:
+                return folder.trashedAt != nil && !folders.contains { $0 !== folder && $0.trashedAt != nil && FolderPath.contains(folder.path, in: $0.path) }
+            case .bookmarks: return false
+            }
+        }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    private var creationFolder: String {
+        let path = selectedFolder ?? ""
+        return NotebookFolders.isAvailable(path, in: folders) ? path : ""
+    }
+
+    private var libraryTitle: String {
+        if let selectedFolder { return FolderPath.name(of: selectedFolder) }
+        return horizontalSizeClass == .regular ? librarySection.label : "BetterNotes"
     }
 
     /// Every tag in use, sorted for display.
@@ -213,6 +267,9 @@ struct LibraryView: View {
     }
 
     private func matchesFolder(_ notebook: Notebook) -> Bool {
+        if librarySection == .notes || selectedFolder != nil {
+            return FolderPath.containsNotebook(notebook.folderName, at: selectedFolder ?? "")
+        }
         guard let selectedFolder else { return true }
         return notebook.folderName == selectedFolder
     }
@@ -225,11 +282,10 @@ struct LibraryView: View {
     }
 
     private var hasActiveFilters: Bool {
-        selectedFolder != nil || !selectedTags.isEmpty
+        !selectedTags.isEmpty
     }
 
     private func clearFilters() {
-        selectedFolder = nil
         selectedTags.removeAll()
     }
 
@@ -245,23 +301,50 @@ struct LibraryView: View {
             .sorted { $0.page.modifiedAt > $1.page.modifiedAt }
     }
 
-    var body: some View { libraryNavigation }
+    var body: some View { folderPresentations }
+
+    private var folderPresentations: some View {
+        libraryNavigation
+            .sheet(item: $customizingFolder) { folder in FolderColourSheet(folder: folder) }
+            .alert("Rename Folder", isPresented: Binding(
+                get: { renamingFolder != nil }, set: { if !$0 { renamingFolder = nil } }
+            )) {
+                TextField("Folder name", text: $folderNameDraft)
+                    .accessibilityIdentifier("rename-folder-name")
+                Button("Cancel", role: .cancel) { renamingFolder = nil }
+                Button("Save") { renameFolder() }
+                    .disabled(folderNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .confirmationDialog("Move \"\(folderToDelete?.name ?? "")\" to Trash?", isPresented: Binding(
+                get: { folderToDelete != nil }, set: { if !$0 { folderToDelete = nil } }
+            ), titleVisibility: .visible) {
+                Button("Move to Trash", role: .destructive) {
+                    if let folder = folderToDelete { performFolderAction { try NotebookFolders.trash(folder, in: context) } }
+                    folderToDelete = nil
+                }
+                Button("Cancel", role: .cancel) { folderToDelete = nil }
+            } message: {
+                Text("This moves the folder and its contents to Trash. You can restore them later.")
+            }
+    }
 
     /// Main library content. Extracted from `libraryNavigation` because the
     /// combined body exceeded what the SwiftUI type-checker will solve.
     @ViewBuilder
     private var libraryContent: some View {
-        ZStack {
+        VStack(spacing: 0) {
+            if librarySection == .notes || selectedFolder != nil { folderBreadcrumbs }
+            ZStack {
             Color(.systemGroupedBackground).ignoresSafeArea()
             if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 searchResults
             } else if librarySection.showsPages {
                 bookmarksContent
-            } else if sectionNotebooks.isEmpty {
+            } else if sectionNotebooks.isEmpty && visibleFolders.isEmpty {
                 VStack(spacing: 0) {
                     tagFilterBar
                     Spacer(minLength: 0)
-                    if hasActiveFilters {
+                    if hasActiveFilters || selectedFolder != nil {
                         filteredEmptyState
                     } else {
                         emptyState
@@ -272,13 +355,23 @@ struct LibraryView: View {
                 ScrollView {
                     tagFilterBar
                     LazyVGrid(columns: columns, spacing: 28) {
+                        ForEach(visibleFolders) { folder in
+                            folderTile(folder)
+                        }
                         ForEach(sectionNotebooks) { notebook in
                             VStack(spacing: 0) {
                                 NavigationLink(value: NotebookDestination(notebookID: notebook.stableID)) {
                                     NotebookCover(notebook: notebook)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(NotebookLiftButtonStyle())
                                 .disabled(librarySection == .trash)
+                                .draggable(NotebookDragPayload(notebookID: notebook.stableID)) {
+                                    NotebookCover(notebook: notebook)
+                                        .frame(width: 200)
+                                        .rotationEffect(.degrees(-2))
+                                        .shadow(color: .black.opacity(0.2), radius: 16, y: 10)
+                                }
+                                .accessibilityIdentifier("library-notebook-\(notebook.stableID)")
 
                                 if librarySection == .trash, let trashedAt = notebook.trashedAt {
                                     Text(TrashRetention.deletedLabel(trashedAt))
@@ -300,12 +393,69 @@ struct LibraryView: View {
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("More actions for \(notebook.title)")
                             }
+                            .transition(.scale(scale: 0.7).combined(with: .opacity))
                         }
                     }
                     .padding(28)
                 }
             }
+            }
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: sectionNotebooks.map(\.stableID))
+        .animation(.easeInOut(duration: 0.2), value: selectedFolder)
+    }
+
+    private func folderTile(_ folder: NotebookFolder) -> some View {
+        VStack(spacing: 0) {
+            LibraryFolderTile(path: folder.path,
+                              notebookCount: notebooks.filter { $0.folderName == folder.path && (folder.trashedAt != nil || $0.trashedAt == nil) }.count,
+                              folderCount: folders.filter { $0.parentPath == folder.path && (folder.trashedAt != nil || !NotebookFolders.isTrashed($0.path, in: folders)) }.count,
+                              colorHex: folder.colorHex, isFavorite: folder.isFavorite,
+                              acceptsDrops: NotebookFolders.isAvailable(folder.path, in: folders),
+                              onOpen: { openFolder(folder.path) }, onMove: moveNotebooks)
+                .disabled(folder.trashedAt != nil)
+            if let date = folder.trashedAt {
+                Text(TrashRetention.deletedLabel(date)).font(.caption2).foregroundStyle(.secondary)
+                Text("Removed in \(TrashRetention.daysRemaining(date)) days").font(.caption2).foregroundStyle(.tertiary)
+            }
+            Menu { folderActions(for: folder) } label: {
+                Image(systemName: "ellipsis.circle").font(.title3).foregroundStyle(.secondary)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("More actions for \(folder.name)")
+            .accessibilityIdentifier("library-folder-actions-\(folder.path)")
+        }
+        .transition(.scale(scale: 0.9).combined(with: .opacity))
+    }
+
+    private var folderBreadcrumbs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                breadcrumb("", label: librarySection == .archive ? "Archive" : "Notes", icon: librarySection == .archive ? "archivebox" : "books.vertical")
+                ForEach(FolderPath.ancestors(including: selectedFolder ?? ""), id: \.self) { path in
+                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                    breadcrumb(path, label: FolderPath.name(of: path), icon: "folder")
+                }
+            }
+            .padding(.horizontal, 28)
+        }
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    private func breadcrumb(_ path: String, label: String, icon: String) -> some View {
+        Button {
+            if path.isEmpty && librarySection == .archive { selectLibrarySection(.archive) }
+            else { openFolder(path) }
+        } label: {
+            Label(label, systemImage: icon)
+                .font(.subheadline.weight(path == (selectedFolder ?? "") ? .semibold : .regular))
+                .padding(.horizontal, 8).frame(minHeight: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("library-location-\(path.isEmpty ? "root" : path)")
+        .modifier(NotebookFolderDropTarget(path: path, onMove: moveNotebooks))
     }
 
     // The library body is split into stages. As one chained expression it
@@ -330,11 +480,52 @@ struct LibraryView: View {
                     }
                 }
         }
+        .onOpenURL { url in
+            showingSettings = false
+            showingNewNotebook = false
+            showingNewFolder = false
+            showingDocumentImporter = false
+            showingBackupImporter = false
+            showingShare = false
+            incomingDocuments.append(IncomingDocument(url: url))
+        }
+        .task(id: incomingDocuments.first?.id) {
+            guard !incomingDocuments.isEmpty else { return }
+            chosenImportFolder = nil
+            showingImportDestination = true
+        }
+        .sheet(isPresented: $showingImportDestination, onDismiss: completeImportDecision) {
+            if let document = incomingDocuments.first {
+                ImportDestinationPicker(fileName: document.url.lastPathComponent, folders: allFolders) { path in
+                    chosenImportFolder = path
+                    showingImportDestination = false
+                }
+            }
+        }
+        .overlay {
+            if isImportingDocument {
+                ZStack {
+                    Color.black.opacity(0.2).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Importing Document…").font(.subheadline.weight(.medium))
+                    }
+                    .padding(24)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+                .accessibilityIdentifier("document-import-progress")
+            }
+        }
+        .alert("Document Import Failed", isPresented: Binding(
+            get: { documentImportError != nil }, set: { if !$0 { documentImportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { documentImportError = nil }
+        } message: { Text(documentImportError ?? "") }
     }
 
     private var libraryStageA: some View {
         libraryContent
-        .navigationTitle(horizontalSizeClass == .regular ? librarySection.label : "BetterNotes")
+        .navigationTitle(libraryTitle)
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search notebooks, text, handwriting")
         .onSubmit(of: .search) { performSearch() }
         .onChange(of: searchText) { _, newValue in
@@ -362,12 +553,22 @@ struct LibraryView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
+                HStack(spacing: 4) {
+                if let selectedFolder {
+                    Button {
+                        let parent = FolderPath.parent(of: selectedFolder)
+                        if parent.isEmpty && librarySection == .archive { selectLibrarySection(.archive) }
+                        else { openFolder(parent) }
+                    } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
+                    .accessibilityLabel("Parent Folder")
+                    .accessibilityIdentifier("library-parent-folder")
+                }
                 if horizontalSizeClass == .compact {
                     Menu {
                         Section("Library Section") {
                             ForEach(LibrarySection.allCases, id: \.self) { section in
                                 Button {
-                                    librarySection = section
+                                    selectLibrarySection(section)
                                 } label: {
                                     Label(section.label, systemImage: librarySection == section ? "checkmark" : section.icon)
                                 }
@@ -382,13 +583,37 @@ struct LibraryView: View {
                                 }
                             }
                         }
+                        if !allFolders.isEmpty {
+                            Section("Folders") {
+                                Button("Notes", systemImage: "books.vertical") { openFolder("") }
+                                ForEach(allFolders, id: \.self) { folder in
+                                    Button(folder, systemImage: selectedFolder == folder ? "folder.fill" : "folder") {
+                                        openFolder(folder)
+                                    }
+                                }
+                            }
+                        }
                     } label: {
                         Label(librarySection.label, systemImage: librarySection.icon)
                     }
                 }
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 4) {
+                    Button {
+                        newFolderName = ""
+                        showingNewFolder = true
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
+                            .font(.title3)
+                            .frame(width: 44, height: 44)
+                            .accessibilityHidden(true)
+                    }
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("Add Folder")
+                    .accessibilityIdentifier("library-add-folder")
+
                     Button {
                         showingNewNotebook = true
                     } label: {
@@ -402,7 +627,7 @@ struct LibraryView: View {
                     .accessibilityIdentifier("library-new-notebook")
 
                     Menu {
-                        if librarySection == .trash && !sectionNotebooks.isEmpty {
+                        if librarySection == .trash && (!sectionNotebooks.isEmpty || !visibleFolders.isEmpty) {
                             Section("Trash") {
                                 Button("Empty Trash", systemImage: "trash.slash", role: .destructive) {
                                     confirmingEmptyTrash = true
@@ -416,6 +641,9 @@ struct LibraryView: View {
                             }
                             Button("Import BetterNotes Backup", systemImage: "square.and.arrow.down") {
                                 showingBackupImporter = true
+                            }
+                            Button("Import Document", systemImage: "doc.badge.plus") {
+                                showingDocumentImporter = true
                             }
                         }
                         Section("App") {
@@ -439,18 +667,31 @@ struct LibraryView: View {
     private var libraryStageB: some View {
         libraryStageA
         .sheet(isPresented: $showingNewNotebook) {
-            NewNotebookSheet()
+            NewNotebookSheet(folderName: creationFolder)
         }
         .sheet(isPresented: $showingSettings) {
             BetterNotesSettingsSheet()
         }
         .fileImporter(
             isPresented: $showingBackupImporter,
-            allowedContentTypes: [UTType(filenameExtension: "betternotes") ?? .json],
+            allowedContentTypes: [.betterNotesArchive],
             allowsMultipleSelection: false
         ) { result in
             importBackup(result)
         }
+        .fileImporter(isPresented: $showingDocumentImporter,
+                      allowedContentTypes: DocumentImporter.supportedTypes,
+                      allowsMultipleSelection: true) { result in
+            do { incomingDocuments.append(contentsOf: try result.get().map { IncomingDocument(url: $0) }) }
+            catch { documentImportError = error.localizedDescription }
+        }
+        .alert("New Folder", isPresented: $showingNewFolder) {
+            TextField("Folder name", text: $newFolderName)
+                .accessibilityIdentifier("new-folder-name")
+            Button("Cancel", role: .cancel) {}
+            Button("Create") { createFolder() }
+                .disabled(newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: { Text("Choose a name for your folder.") }
     }
 
     private var libraryStageC: some View {
@@ -460,18 +701,24 @@ struct LibraryView: View {
             isPresented: $confirmingEmptyTrash,
             titleVisibility: .visible
         ) {
-            Button("Delete \(sectionNotebooks.count) Notebooks", role: .destructive) {
+            Button("Empty Trash", role: .destructive) {
                 emptyTrash()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This permanently removes every notebook in the trash and cannot be undone.")
+            Text("This permanently removes every folder and notebook in the trash, including folder contents, and cannot be undone.")
         }
         .sheet(item: $movingToFolderNotebook) { notebook in
             MoveToFolderSheet(notebook: notebook, existingFolders: allFolders)
         }
         .task {
+            do { try NotebookFolders.preserveMemberships(in: context) }
+            catch { operationError = error.localizedDescription }
             await corpusStore.rebuild(notebooks: notebooks)
+        }
+        .onChange(of: notebooks.map(\.folderName)) { _, _ in
+            do { try NotebookFolders.preserveMemberships(in: context) }
+            catch { operationError = error.localizedDescription }
         }
         .task {
             purgeExpiredTrash()
@@ -591,23 +838,12 @@ struct LibraryView: View {
         }
     }
 
-    /// Horizontal chip row for tag filtering, plus the active-folder chip so
-    /// compact widths (which have no sidebar) can still clear a folder.
+    /// Tags filter the current location; breadcrumbs handle folder navigation.
     @ViewBuilder
     private var tagFilterBar: some View {
         if !allTags.isEmpty || hasActiveFilters {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    if let selectedFolder {
-                        Button {
-                            self.selectedFolder = nil
-                        } label: {
-                            Label(selectedFolder, systemImage: "folder.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityLabel("Clear folder filter \(selectedFolder)")
-                    }
-
                     ForEach(allTags, id: \.self) { tag in
                         let isOn = selectedTags.contains(tag)
                         Button {
@@ -636,9 +872,17 @@ struct LibraryView: View {
 
     private var filteredEmptyState: some View {
         ContentUnavailableView {
-            Label("No Matching Notebooks", systemImage: "line.3.horizontal.decrease.circle")
+            if selectedFolder != nil && selectedTags.isEmpty && librarySection == .notes {
+                Label("This Folder Is Empty", systemImage: "folder")
+            } else {
+                Label("No Matching Notebooks", systemImage: "line.3.horizontal.decrease.circle")
+            }
         } description: {
-            Text("No notebooks in \(librarySection.label) match the current folder and tag filters.")
+            if let selectedFolder, selectedTags.isEmpty, librarySection == .notes {
+                Text("Create or import a notebook to add it to \(selectedFolder).")
+            } else {
+                Text("No notebooks in \(librarySection.label) match the current folder and tag filters.")
+            }
         } actions: {
             Button("Clear Filters", action: clearFilters)
                 .buttonStyle(.borderedProminent)
@@ -683,12 +927,12 @@ struct LibraryView: View {
             Section("Library") {
                 ForEach(LibrarySection.allCases, id: \.self) { section in
                     Button {
-                        librarySection = section
+                        selectLibrarySection(section)
                     } label: {
                         HStack {
                             Label(section.label, systemImage: section.icon)
                             Spacer()
-                            if librarySection == section {
+                            if librarySection == section && selectedFolder == nil {
                                 Image(systemName: "checkmark")
                                     .foregroundStyle(.tint)
                             }
@@ -696,33 +940,23 @@ struct LibraryView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityAddTraits(librarySection == section ? .isSelected : [])
+                    .accessibilityAddTraits(librarySection == section && selectedFolder == nil ? .isSelected : [])
+                    .modifier(NotebookFolderDropTarget(path: "", onMove: { ids, path in
+                        section == .notes && moveNotebooks(ids, to: path)
+                    }))
                 }
             }
 
             if !allFolders.isEmpty {
                 Section("Folders") {
-                    Button {
-                        selectedFolder = nil
-                    } label: {
-                        HStack {
-                            Label("All Folders", systemImage: "tray.full")
-                            Spacer()
-                            if selectedFolder == nil {
-                                Image(systemName: "checkmark").foregroundStyle(.tint)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(selectedFolder == nil ? .isSelected : [])
-
                     ForEach(allFolders, id: \.self) { folder in
                         Button {
-                            selectedFolder = (selectedFolder == folder) ? nil : folder
+                            openFolder(folder)
                         } label: {
                             HStack {
-                                Label(folder, systemImage: "folder")
+                                Label(FolderPath.name(of: folder), systemImage: "folder")
+                                    .foregroundStyle(Color(hex: folders.first { $0.path == folder }?.colorHex ?? "4A6FA5") ?? .accentColor)
+                                    .padding(.leading, CGFloat(folder.split(separator: "/").count - 1) * 12)
                                 Spacer()
                                 Text("\(folderCount(folder))")
                                     .font(.caption)
@@ -736,6 +970,8 @@ struct LibraryView: View {
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(selectedFolder == folder ? .isSelected : [])
                         .accessibilityIdentifier("library-folder-\(folder)")
+                        .contextMenu { if let record = folders.first(where: { $0.path == folder }) { folderActions(for: record) } }
+                        .modifier(NotebookFolderDropTarget(path: folder, onMove: moveNotebooks))
                     }
                 }
             }
@@ -943,7 +1179,7 @@ struct LibraryView: View {
             do {
                 let eligible = notebooks.filter {
                     $0.trashedAt == nil && (filters.notebookID == nil || filters.notebookID == $0.stableID)
-                        && (filters.includeArchived || !$0.isArchived)
+                        && (filters.includeArchived || !$0.isEffectivelyArchived)
                 }
                 try await ocrService.refresh(pages: eligible.flatMap(\.pages).filter {
                     $0.trashedAt == nil && (!filters.bookmarkedOnly || $0.isBookmarked)
@@ -1042,7 +1278,7 @@ struct LibraryView: View {
                 Button(notebook.isFavorite ? "Remove from Favorites" : "Add to Favorites", systemImage: notebook.isFavorite ? "star.slash" : "star") {
                     toggleFavorite(notebook)
                 }
-                Button(notebook.isArchived ? "Move to Notes" : "Archive", systemImage: "archivebox") {
+                Button(notebook.isEffectivelyArchived ? "Move to Notes" : "Archive", systemImage: "archivebox") {
                     toggleArchive(notebook)
                 }
                 Button("Move to Folder", systemImage: "folder") {
@@ -1218,7 +1454,7 @@ private struct NotebookWorkspaceView: View {
     }
 
     private var availableNotebooks: [Notebook] {
-        notebooks.filter { $0.trashedAt == nil && !$0.isArchived && !openTabIDs.contains($0.stableID) }
+        notebooks.filter { $0.trashedAt == nil && !$0.isEffectivelyArchived && !openTabIDs.contains($0.stableID) }
     }
 
     private func openNotebook(_ notebook: Notebook) {
@@ -1343,6 +1579,7 @@ private var emptyState: some View {
     }
 
     private func restoreNotebook(_ notebook: Notebook) {
+        if NotebookFolders.isTrashed(notebook.folderName, in: folders) { notebook.folderName = "" }
         notebook.trashedAt = nil
         notebook.modifiedAt = .now
         if saveChanges(), recentlyTrashedNotebook?.id == notebook.id {
@@ -1351,18 +1588,38 @@ private var emptyState: some View {
     }
 
     private func emptyTrash() {
-        for notebook in notebooks where notebook.trashedAt != nil {
-            context.delete(notebook)
-        }
-        _ = saveChanges()
+        do {
+            let roots = folders.filter { folder in
+                folder.trashedAt != nil && !folders.contains { $0 !== folder && $0.trashedAt != nil && FolderPath.contains(folder.path, in: $0.path) }
+            }
+            let separateNotebooks = notebooks.filter { notebook in
+                notebook.trashedAt != nil && !roots.contains { FolderPath.contains(notebook.folderName, in: $0.path) }
+            }
+            for folder in roots { try NotebookFolders.removeContents(of: folder, in: context) }
+            for notebook in separateNotebooks { context.delete(notebook) }
+            recentlyTrashedNotebook = nil
+            _ = saveChanges()
+        } catch { operationError = error.localizedDescription }
     }
 
     /// Removes notebooks and pages that have sat in the trash past the
     /// retention window. Runs once when the library appears.
     private func purgeExpiredTrash() {
         var didChange = false
-        for notebook in notebooks {
-            if let trashedAt = notebook.trashedAt, TrashRetention.isExpired(trashedAt) {
+        let expired = folders.filter { folder in
+            guard let date = folder.trashedAt else { return false }
+            return TrashRetention.isExpired(date) && !folders.contains { $0 !== folder && $0.trashedAt != nil && FolderPath.contains(folder.path, in: $0.path) }
+        }
+        let remainingNotebooks = notebooks.filter { notebook in
+            !expired.contains { FolderPath.contains(notebook.folderName, in: $0.path) }
+        }
+        let retainedTrashPaths = folders.filter { $0.trashedAt != nil }.map(\.path)
+        do {
+            for folder in expired { try NotebookFolders.removeContents(of: folder, in: context); didChange = true }
+        } catch { operationError = error.localizedDescription }
+        for notebook in remainingNotebooks {
+            if let trashedAt = notebook.trashedAt, TrashRetention.isExpired(trashedAt),
+               !retainedTrashPaths.contains(where: { FolderPath.contains(notebook.folderName, in: $0) }) {
                 context.delete(notebook)
                 didChange = true
                 continue
@@ -1386,7 +1643,10 @@ private var emptyState: some View {
     }
 
     private func toggleArchive(_ notebook: Notebook) {
-        notebook.isArchived.toggle()
+        if notebook.isEffectivelyArchived {
+            notebook.isArchived = false
+            if NotebookFolders.isArchived(notebook.folderName, in: folders) { notebook.folderName = "" }
+        } else { notebook.isArchived = true }
         notebook.modifiedAt = .now
         _ = saveChanges()
     }
@@ -1409,22 +1669,146 @@ private var emptyState: some View {
     private func importBackup(_ result: Result<[URL], Error>) {
         do {
             guard let url = try result.get().first else { return }
-            let notebook = try CloudTranslator.importArchive(from: url, into: context)
-            notebookPath.append(NotebookDestination(notebookID: notebook.stableID))
-            librarySection = .notes
+            incomingDocuments.append(IncomingDocument(url: url))
         } catch {
             backupImportError = error.localizedDescription
         }
     }
 
+    @ViewBuilder
+    private func folderActions(for folder: NotebookFolder) -> some View {
+        if folder.trashedAt != nil {
+            Button("Restore", systemImage: "arrow.uturn.backward") {
+                performFolderAction { try NotebookFolders.restore(folder, in: context) }
+            }
+        } else {
+            Section("Organize") {
+                Button(folder.isFavorite ? "Remove from Favorites" : "Add to Favorites", systemImage: folder.isFavorite ? "star.slash" : "star") {
+                    let old = folder.isFavorite
+                    performFolderAction {
+                        folder.isFavorite.toggle()
+                        do { try context.save() } catch { folder.isFavorite = old; throw error }
+                    }
+                }
+                Button(folder.isArchived ? "Move to Notes" : "Archive", systemImage: "archivebox") {
+                    let old = folder.isArchived
+                    performFolderAction {
+                        folder.isArchived.toggle()
+                        do { try context.save() } catch { folder.isArchived = old; throw error }
+                    }
+                }
+            }
+            Section("Edit") {
+                Button("Rename", systemImage: "pencil") { folderNameDraft = folder.name; renamingFolder = folder }
+                Button("Customize Colour", systemImage: "paintbrush.pointed") { customizingFolder = folder }
+            }
+            Section("Delete") {
+                Button("Move to Trash", systemImage: "trash", role: .destructive) { folderToDelete = folder }
+            }
+        }
+    }
+
+    private func performFolderAction(_ action: () throws -> Void) {
+        do {
+            try withAnimation(.easeInOut(duration: 0.2), action)
+            if let selectedFolder {
+                if NotebookFolders.isTrashed(selectedFolder, in: folders) { openFolder("") }
+                else { librarySection = NotebookFolders.isArchived(selectedFolder, in: folders) ? .archive : .notes }
+            }
+            NotificationCenter.default.post(name: .noteCorpusDidChange, object: nil)
+        } catch { operationError = error.localizedDescription }
+    }
+
+    private func renameFolder() {
+        guard let folder = renamingFolder else { return }
+        let old = folder.path
+        performFolderAction {
+            try NotebookFolders.rename(folder, to: folderNameDraft, in: context)
+            if let selectedFolder {
+                self.selectedFolder = FolderPath.replacingAncestor(in: selectedFolder, from: old, to: folder.path)
+            }
+        }
+        renamingFolder = nil
+    }
+
+    private func createFolder() {
+        do {
+            _ = try NotebookFolders.create(newFolderName, in: context, parentPath: creationFolder)
+            if librarySection != .notes { openFolder("") }
+        } catch { operationError = error.localizedDescription }
+    }
+
+    private func openFolder(_ path: String) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            selectedFolder = path.isEmpty ? nil : path
+            selectedTags.removeAll()
+            searchText = ""
+            librarySection = NotebookFolders.isArchived(path, in: folders) ? .archive : .notes
+        }
+    }
+
+    private func selectLibrarySection(_ section: LibrarySection) {
+        if section == .notes { openFolder(""); return }
+        selectedFolder = nil
+        librarySection = section
+    }
+
+    private func moveNotebooks(_ ids: [UUID], to path: String) -> Bool {
+        do {
+            let moved = try withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                try NotebookFolders.move(notebookIDs: ids, to: path, in: context)
+            }
+            if moved { NotificationCenter.default.post(name: .noteCorpusDidChange, object: nil) }
+            return moved
+        } catch {
+            operationError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Start only after the destination sheet has finished dismissing. This
+    /// avoids racing a fast import against the next queued file's sheet.
+    private func completeImportDecision() {
+        guard let document = incomingDocuments.first else { return }
+        guard let destination = chosenImportFolder else {
+            incomingDocuments.removeFirst()
+            return
+        }
+        chosenImportFolder = nil
+        Task { @MainActor in
+            await importDocument(document.url, folderName: destination)
+            if incomingDocuments.first?.id == document.id { incomingDocuments.removeFirst() }
+        }
+    }
+
+    @MainActor
+    private func importDocument(_ url: URL, folderName: String) async {
+        isImportingDocument = true
+        defer { isImportingDocument = false }
+        do {
+            let notebook = try await DocumentImporter.importDocument(from: url, into: context, folderName: folderName)
+            try NotebookFolders.preserveMemberships(in: context)
+            NotificationCenter.default.post(name: .noteCorpusDidChange, object: nil)
+            librarySection = .notes
+            selectedFolder = folderName.isEmpty ? nil : folderName
+            selectedTags.removeAll()
+            searchText = ""
+            notebookPath = [NotebookDestination(notebookID: notebook.stableID)]
+        } catch is CancellationError {
+            // The view's task was cancelled; no partial notebook is inserted.
+        } catch { documentImportError = error.localizedDescription }
+    }
+
     private func createQuickNote() {
         let notebook: Notebook
         if let existing = notebooks.first(where: {
-            $0.title == "Quick Notes" && $0.trashedAt == nil && !$0.isArchived
+            $0.title == "Quick Notes" && $0.trashedAt == nil && !$0.isEffectivelyArchived
+                && $0.folderName == creationFolder
         }) {
             notebook = existing
         } else {
             notebook = Notebook(title: "Quick Notes", coverColorHex: "355C7D", coverEmoji: "📝")
+            notebook.folderName = creationFolder
             context.insert(notebook)
         }
         let page = Page(index: notebook.pages.filter { $0.trashedAt == nil }.count)
@@ -1482,6 +1866,7 @@ private var emptyState: some View {
 }
 
 private struct NewNotebookSheet: View {
+    var folderName: String = ""
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
@@ -1608,6 +1993,7 @@ private struct NewNotebookSheet: View {
             coverEmoji: selectedEmoji
         )
         let page = Page(index: 0)
+        notebook.folderName = folderName
         notebook.defaultLineStyle = selectedLineStyle.rawValue
         page.lineStyle = selectedLineStyle.rawValue
         page.notebook = notebook
@@ -1662,13 +2048,13 @@ private struct MoveToFolderSheet: View {
 
                 Section("New Folder") {
                     TextField("Folder name", text: $newFolder)
-                    Button("Create and Move") { apply(newFolder) }
+                    Button("Create and Move", action: createAndMove)
                         .disabled(newFolder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
                 if !notebook.folderName.isEmpty {
                     Section {
-                        Button("Remove from Folder", role: .destructive) { apply("") }
+                        Button("Move to Notes", systemImage: "books.vertical") { apply("") }
                     }
                 }
             }
@@ -1691,17 +2077,24 @@ private struct MoveToFolderSheet: View {
     }
 
     private func apply(_ folder: String) {
-        notebook.folderName = folder.trimmingCharacters(in: .whitespacesAndNewlines)
-        notebook.modifiedAt = .now
         do {
             guard let context = notebook.modelContext else {
                 throw NotebookEditError.notebookUnavailable
             }
-            try context.save()
+            _ = try NotebookFolders.move(notebookIDs: [notebook.stableID], to: folder, in: context)
+            NotificationCenter.default.post(name: .noteCorpusDidChange, object: nil)
             dismiss()
         } catch {
             saveError = error.localizedDescription
         }
+    }
+
+    private func createAndMove() {
+        do {
+            guard let context = notebook.modelContext else { throw NotebookEditError.notebookUnavailable }
+            let folder = try NotebookFolders.create(newFolder, in: context, parentPath: notebook.folderName)
+            apply(folder.path)
+        } catch { saveError = error.localizedDescription }
     }
 }
 
@@ -1793,6 +2186,7 @@ private enum NotebookEditError: LocalizedError {
 struct BetterNotesSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = true
+    @AppStorage(AppPreferenceKey.scribbleToErase) private var scribbleToErase = true
     @AppStorage(AppPreferenceKey.pencilDoubleTapEnabled) private var pencilDoubleTapEnabled = true
     @AppStorage(AppPreferenceKey.pencilDoubleTapTool) private var pencilDoubleTapToolRaw = DrawingTool.eraser.rawValue
     @AppStorage(AppPreferenceKey.librarySort) private var librarySort = LibrarySort.modified.rawValue
@@ -1809,10 +2203,12 @@ struct BetterNotesSettingsSheet: View {
                     Toggle(isOn: $allowsFingerDrawing) {
                         Label("Draw with Finger", systemImage: "hand.draw")
                     }
+                    Toggle("Scribble to Erase", systemImage: "scribble", isOn: $scribbleToErase)
+                        .accessibilityIdentifier("scribble-to-erase")
                 } header: {
                     Text("Input")
                 } footer: {
-                    Text("When this is off, fingers scroll pages and operate controls. Apple Pencil still draws.")
+                    Text("When finger drawing is off, fingers scroll pages and operate controls. Apple Pencil still draws. With Scribble to Erase on, scratch back and forth over handwriting with the pen or pencil to erase crossed strokes. Undo restores them.")
                 }
 
                 Section("Library") {

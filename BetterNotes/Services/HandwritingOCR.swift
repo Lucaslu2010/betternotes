@@ -17,13 +17,42 @@ enum HandwritingOCR {
 
     private static let worker = Worker()
 
-    static func scan(from inkData: Data?, pageSize: CGSize, region: CGRect? = nil) async -> [Line] {
+    static func scan(from inkData: Data?, pageSize: CGSize, region: CGRect? = nil, detectingMarker: Bool = false) async -> [Line] {
         let cancellation = RecognitionCancellation()
         return await withTaskCancellationHandler {
-            await worker.scan(inkData: inkData, pageSize: pageSize, region: region, cancellation: cancellation)
+            await worker.scan(inkData: inkData, pageSize: pageSize, region: region, detectingMarker: detectingMarker, cancellation: cancellation)
         } onCancel: {
             cancellation.cancel()
         }
+    }
+
+    /// Vision can split punctuation from the words, or the two marks from
+    /// each other. Reassemble observations on the same visual row first.
+    static func questionLine(in lines: [Line]) -> Line? {
+        for line in lines.reversed() {
+            let row = lines.filter { abs($0.bounds.midY - line.bounds.midY) <= max($0.bounds.height, line.bounds.height) * 0.5 }
+                .sorted { $0.bounds.minX < $1.bounds.minX }
+            let text = row.map(\.text).joined(separator: " ")
+            if HandwrittenQuestion.question(in: text) != nil {
+                return Line(text: text, bounds: row.reduce(CGRect.null) { $0.union($1.bounds) })
+            }
+        }
+        return nil
+    }
+
+    static func questionRegion(for line: Line, pageSize: CGSize) -> CGRect {
+        // A suffix marker must include the words to its left as well.
+        CGRect(x: 0, y: line.bounds.minY, width: pageSize.width, height: line.bounds.height)
+            .insetBy(dx: 0, dy: -max(12, line.bounds.height * 0.35))
+            .intersection(CGRect(origin: .zero, size: pageSize))
+    }
+
+    static func recentLineRegion(in drawing: PKDrawing, pageSize: CGSize) -> CGRect? {
+        guard let last = drawing.strokes.last else { return nil }
+        let bounds = last.renderBounds
+        return CGRect(x: 0, y: bounds.minY, width: pageSize.width, height: bounds.height)
+            .insetBy(dx: 0, dy: -max(48, bounds.height))
+            .intersection(CGRect(origin: .zero, size: pageSize))
     }
 
     /// OCR refresh needs only text, not the full-resolution crop produced by
@@ -48,7 +77,7 @@ enum HandwritingOCR {
     /// All local OCR and image preparation share one worker. No detached
     /// recognitions survive cancellation and accumulate full-page bitmaps.
     private actor Worker {
-        func scan(inkData: Data?, pageSize: CGSize, region: CGRect?, cancellation: RecognitionCancellation) -> [Line] {
+        func scan(inkData: Data?, pageSize: CGSize, region: CGRect?, detectingMarker: Bool, cancellation: RecognitionCancellation) -> [Line] {
             let activity = MemoryDiagnostics.begin("vision-ink", details: "bytes=\(inkData?.count ?? 0)")
             defer { activity.end() }
             return autoreleasepool {
@@ -59,7 +88,7 @@ enum HandwritingOCR {
                 guard OCRImageBudget.isValid(rect.size), !cancellation.isCancelled else { return [] }
                 let image = renderImage(for: normalized, rect: rect, scale: renderScale(for: rect))
                 guard let cgImage = image.cgImage, !cancellation.isCancelled else { return [] }
-                return performRecognition(on: cgImage, cancellation: cancellation).map { line in
+                return performRecognition(on: cgImage, detectingMarker: detectingMarker, cancellation: cancellation).map { line in
                     Line(text: line.text, bounds: CGRect(
                         x: rect.minX + line.bounds.minX * rect.width,
                         y: rect.minY + (1 - line.bounds.maxY) * rect.height,
@@ -121,7 +150,7 @@ enum HandwritingOCR {
         }
     }
 
-    private static func performRecognition(on cgImage: CGImage, cancellation: RecognitionCancellation) -> [Line] {
+    private static func performRecognition(on cgImage: CGImage, detectingMarker: Bool = false, cancellation: RecognitionCancellation) -> [Line] {
         let request = VNRecognizeTextRequest()
         guard cancellation.install(request) else { return [] }
         defer { cancellation.finish() }
@@ -130,9 +159,9 @@ enum HandwritingOCR {
             request.automaticallyDetectsLanguage = true
         }
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
+        request.usesLanguageCorrection = !detectingMarker
         request.customWords = ["??", "？？"]
-        request.minimumTextHeight = 0.02
+        request.minimumTextHeight = detectingMarker ? 0.005 : 0.02
         request.preferBackgroundProcessing = false
         do {
             try VNImageRequestHandler(cgImage: cgImage, orientation: .up, options: [:]).perform([request])

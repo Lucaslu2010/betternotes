@@ -77,13 +77,37 @@ final class OCRPipelineTests: XCTestCase {
         XCTAssertThrowsError(try OCRClient.transcription(from: truncated, format: .visionChat))
     }
 
-    func testQuestionMarkerMustStartALine() {
+    func testQuestionMarkerCanStartOrEndALine() {
         XCTAssertEqual(HandwrittenQuestion.question(in: "Lecture\n?? Why does entropy increase?"), "Why does entropy increase?")
         XCTAssertEqual(HandwrittenQuestion.question(in: "# ？？ 什么是熵？"), "什么是熵？")
         XCTAssertEqual(HandwrittenQuestion.question(in: "? ? Explain this"), "Explain this")
         XCTAssertEqual(HandwrittenQuestion.question(in: "??"), "")
-        XCTAssertNil(HandwrittenQuestion.question(in: "Is this right??"))
+        XCTAssertEqual(HandwrittenQuestion.question(in: "Is this right??"), "Is this right")
+        XCTAssertEqual(HandwrittenQuestion.question(in: "什么是熵 ？ ？"), "什么是熵")
+        XCTAssertEqual(HandwrittenQuestion.question(in: "Explain this ??"), "Explain this")
         XCTAssertNil(HandwrittenQuestion.question(in: "? Explain this"))
+        XCTAssertNil(HandwrittenQuestion.question(in: "Is this right?"))
+        XCTAssertNil(HandwrittenQuestion.question(in: "Words ?? inside a sentence"))
+    }
+
+    func testQuestionDetectionJoinsSplitPunctuationOnTheSameRow() throws {
+        let lines: [HandwritingOCR.Line] = [
+            .init(text: "Explain entropy", bounds: CGRect(x: 30, y: 100, width: 200, height: 30)),
+            .init(text: "?", bounds: CGRect(x: 250, y: 100, width: 15, height: 30)),
+            .init(text: "?", bounds: CGRect(x: 275, y: 102, width: 15, height: 28)),
+            .init(text: "Unrelated row", bounds: CGRect(x: 30, y: 160, width: 200, height: 30))
+        ]
+        let line = try XCTUnwrap(HandwritingOCR.questionLine(in: lines))
+        XCTAssertEqual(HandwrittenQuestion.question(in: line.text), "Explain entropy")
+        XCTAssertEqual(line.bounds, CGRect(x: 30, y: 100, width: 260, height: 30))
+    }
+
+    func testQuestionCropIncludesWordsToTheLeftOfASuffixMarker() {
+        let line = HandwritingOCR.Line(text: "??", bounds: CGRect(x: 500, y: 100, width: 40, height: 30))
+        let region = HandwritingOCR.questionRegion(for: line, pageSize: CGSize(width: 600, height: 800))
+        XCTAssertEqual(region.minX, 0)
+        XCTAssertEqual(region.maxX, 600)
+        XCTAssertTrue(region.contains(CGRect(x: 30, y: 100, width: 500, height: 30)))
     }
 
     func testPaddleRequestUsesTokenAuthenticationAndBase64Image() async throws {
@@ -321,7 +345,7 @@ final class OCRPipelineTests: XCTestCase {
         XCTAssertTrue(unarchived.isEmpty)
     }
 
-    func testQuestionWindowOpensBeforeOCRAndUpdatesTheSameDraft() async throws {
+    func testInlineQuestionAppearsBeforeOCRAndRequiresConfirmationToOpenAssistant() async throws {
         let context = try makeContext()
         let page = Page()
         page.inkData = drawing().dataRepresentation()
@@ -335,32 +359,111 @@ final class OCRPipelineTests: XCTestCase {
         defer { observer.cancel() }
         editor.recognizeQuestion(questionRequest(page), using: service, context: context)
         let pendingID = editor.handwrittenQuestion?.id
-        XCTAssertTrue(editor.isAssistantPresented)
+        XCTAssertFalse(editor.isAssistantPresented)
+        XCTAssertNotNil(editor.questionAnchor(for: page.persistentModelID))
+        XCTAssertFalse(editor.shouldSubmitQuestion)
+        editor.confirmQuestion()
+        XCTAssertFalse(editor.isAssistantPresented, "Recognition must finish before Answer is enabled")
         XCTAssertEqual(editor.handwrittenQuestion?.phase, .recognizing)
         XCTAssertTrue(editor.handwrittenQuestion?.isRecognizing == true)
         await fulfillment(of: [completed], timeout: 3)
         XCTAssertEqual(editor.handwrittenQuestion?.id, pendingID)
         XCTAssertEqual(editor.handwrittenQuestion?.text, "Why does entropy increase?")
+        XCTAssertFalse(editor.isAssistantPresented, "OCR completion must not interrupt writing")
         XCTAssertEqual(MockAIURLProtocol.recordedRequests().count, 1, "The draft should not wait for full-note OCR")
+        editor.confirmQuestion()
+        XCTAssertTrue(editor.isAssistantPresented)
+        XCTAssertTrue(editor.shouldSubmitQuestion)
+        XCTAssertNil(editor.questionAnchor(for: page.persistentModelID))
     }
 
-    func testQuestionRecognitionFailureStaysVisibleInTheWindow() async throws {
+    func testQuestionRecognitionFailureStaysInTheInlineLabel() async throws {
         let context = try makeContext()
         let page = Page()
         page.inkData = drawing().dataRepresentation()
         context.insert(page)
         let service = try questionService(stub: .init(statusCode: 429))
         let editor = EditorActionState()
-        let failed = expectation(description: "OCR failure shown in question window")
+        let failed = expectation(description: "OCR failure shown in inline label")
         let observer = editor.$handwrittenQuestion.compactMap { $0 }.sink { draft in
             if case .failed = draft.phase { failed.fulfill() }
         }
         defer { observer.cancel() }
         editor.recognizeQuestion(questionRequest(page), using: service, context: context)
         await fulfillment(of: [failed], timeout: 3)
-        XCTAssertTrue(editor.isAssistantPresented)
+        XCTAssertFalse(editor.isAssistantPresented)
+        XCTAssertNotNil(editor.questionAnchor(for: page.persistentModelID))
         XCTAssertFalse(editor.handwrittenQuestion?.isRecognizing ?? true)
         XCTAssertEqual(editor.handwrittenQuestion?.text, "")
+    }
+
+    func testWritingOnAnotherRowDoesNotInvalidateTheInlineQuestion() async throws {
+        let context = try makeContext()
+        let page = Page()
+        let original = drawing()
+        page.inkData = original.dataRepresentation()
+        context.insert(page)
+        let service = try questionService(stub: .init(body: #"{"result":{"ocrResults":[{"prunedResult":{"rec_texts":["?? Explain entropy"]}}]}}"#, delay: 0.1))
+        let editor = EditorActionState()
+        let completed = expectation(description: "Question ready while writing continues elsewhere")
+        let observer = editor.$handwrittenQuestion.compactMap { $0 }.sink { draft in
+            if case .ready = draft.phase { completed.fulfill() }
+        }
+        defer { observer.cancel() }
+        let region = CGRect(x: 0, y: 0, width: 300, height: 100)
+        editor.recognizeQuestion(HandwrittenQuestionRequest(
+            page: page, inkData: page.inkData!, pageSize: page.pageOrientation.size,
+            region: region, fingerprint: "marker"
+        ), using: service, context: context)
+        let otherRow = original.transformed(using: CGAffineTransform(translationX: 0, y: 300))
+        page.inkData = PKDrawing(strokes: original.strokes + otherRow.strokes).dataRepresentation()
+        await fulfillment(of: [completed], timeout: 3)
+        XCTAssertEqual(editor.handwrittenQuestion?.text, "Explain entropy")
+        XCTAssertFalse(editor.isAssistantPresented)
+    }
+
+    func testQuestionFingerprintUsesStrokeContentInsteadOfDrawingArchiveIdentity() throws {
+        let original = drawing()
+        let region = CGRect(x: 0, y: 0, width: 300, height: 100)
+        let expected = QuestionInkFingerprint.make(in: original, region: region)
+        let decoded = try PKDrawing(data: original.dataRepresentation())
+        let rebuilt = PKDrawing(strokes: decoded.strokes)
+        XCTAssertEqual(QuestionInkFingerprint.make(in: rebuilt, region: region), expected)
+        let otherRow = original.transformed(using: CGAffineTransform(translationX: 0, y: 300))
+        let withMoreWriting = PKDrawing(strokes: original.strokes + otherRow.strokes)
+        XCTAssertEqual(QuestionInkFingerprint.make(in: withMoreWriting, region: region), expected)
+        let moved = original.transformed(using: CGAffineTransform(translationX: 10, y: 0))
+        XCTAssertNotEqual(QuestionInkFingerprint.make(in: moved, region: region), expected)
+        var erased = original.strokes[0]
+        erased.mask = UIBezierPath(rect: CGRect(x: 20, y: 20, width: 60, height: 40))
+        XCTAssertNotEqual(QuestionInkFingerprint.make(in: PKDrawing(strokes: [erased]), region: region), expected)
+    }
+
+    func testRetryReadsUpdatedQuestionInkInsteadOfRepeatingAStaleSnapshot() async throws {
+        let context = try makeContext()
+        let page = Page()
+        let original = drawing()
+        page.inkData = original.dataRepresentation()
+        context.insert(page)
+        let response = #"{"result":{"ocrResults":[{"prunedResult":{"rec_texts":["?? Updated question"]}}]}}"#
+        let service = try questionService(stub: .init(body: response, delay: 0.1))
+        MockAIURLProtocol.install([.init(body: response, delay: 0.1), .init(body: response, delay: 0.1)])
+        let editor = EditorActionState()
+        let rejected = expectation(description: "Actual change is detected")
+        let completed = expectation(description: "Retry uses the changed ink")
+        let observer = editor.$handwrittenQuestion.compactMap { $0 }.sink { draft in
+            if case .failed = draft.phase { rejected.fulfill() }
+            if case .ready = draft.phase { completed.fulfill() }
+        }
+        defer { observer.cancel() }
+        editor.recognizeQuestion(questionRequest(page), using: service, context: context)
+        page.inkData = original.transformed(using: CGAffineTransform(translationX: 10, y: 0)).dataRepresentation()
+        await fulfillment(of: [rejected], timeout: 3)
+        editor.retryQuestion(using: service, context: context)
+        await fulfillment(of: [completed], timeout: 3)
+        XCTAssertEqual(editor.handwrittenQuestion?.text, "Updated question")
+        XCTAssertEqual(MockAIURLProtocol.recordedRequests().count, 2)
+        XCTAssertFalse(editor.isAssistantPresented)
     }
 
     func testDismissalPreventsLateOCRFromReopeningTheQuestionWindow() async throws {

@@ -383,6 +383,7 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            if isZoomEnabled { updateInkViewport(in: contentView, scrollView: scrollView) }
             reportVisiblePageCenter(scrollView, pageSize: lastPageSize)
         }
 
@@ -548,25 +549,29 @@ struct ZoomablePageView<Content: View>: UIViewRepresentable {
 
         private func refreshRenderingScale(for scrollView: UIScrollView) {
             guard isZoomEnabled else { return }
-            let displayScale = scrollView.window?.screen.scale ?? (UITraitCollection.current.displayScale > 0 ? UITraitCollection.current.displayScale : 2)
-            let zoomedScale = displayScale * max(scrollView.zoomScale, 1)
-            let renderingScale = min(max(zoomedScale, displayScale), 8)
+            let renderingScale = scrollView.zoomScale
+            updateInkViewport(in: contentView, scrollView: scrollView)
             guard abs(renderingScale - lastRenderingScale) >= 0.1 else { return }
 
             lastRenderingScale = renderingScale
             applyRenderingScale(renderingScale, to: contentView)
         }
 
-        private func applyRenderingScale(_ scale: CGFloat, to view: UIView) {
-            view.contentScaleFactor = scale
-            view.layer.contentsScale = scale
-            view.layer.rasterizationScale = scale
-            view.layer.shouldRasterize = false
-
-            if view is PKCanvasView {
-                view.setNeedsDisplay()
+        private func updateInkViewport(in view: UIView, scrollView: UIScrollView) {
+            if let viewport = view as? InkCanvasViewport {
+                viewport.updateVisibleRect(viewport.convert(scrollView.bounds, from: scrollView))
+                return
             }
+            for child in view.subviews { updateInkViewport(in: child, scrollView: scrollView) }
+        }
 
+        private func applyRenderingScale(_ scale: CGFloat, to view: UIView) {
+            if let viewport = view as? InkCanvasViewport {
+                viewport.updateZoom(scale)
+                return
+            }
+            // PencilKit owns the scale of its private tile views. Overriding
+            // their contentsScale stretches tiles and adds allocations.
             for subview in view.subviews {
                 applyRenderingScale(scale, to: subview)
             }

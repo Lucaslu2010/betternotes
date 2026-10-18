@@ -52,6 +52,7 @@ struct AssistantView: View {
     var onCreateNote: (String) -> Void
     var onDismiss: () -> Void
     var initialQuestion: HandwrittenQuestionDraft? = nil
+    var autoSubmitInitialQuestion = false
     var onRetryQuestionRecognition: () -> Void = {}
     @Environment(\.modelContext) private var context
     @EnvironmentObject private var coordinator: AssistantCoordinator
@@ -76,6 +77,7 @@ struct AssistantView: View {
     @State private var recognitionError: String?
     @State private var preparationID = UUID()
     @State private var appliedQuestionID: UUID?
+    @State private var submittedQuestionID: UUID?
 
     private var isRecognizingQuestion: Bool { initialQuestion?.isRecognizing == true }
 
@@ -132,6 +134,12 @@ struct AssistantView: View {
                     appliedQuestionID = draft.id
                 }
                 applyQuestionDraft(draft)
+                if autoSubmitInitialQuestion, submittedQuestionID != draft.id,
+                   case .ready(let question) = draft.phase {
+                    submittedQuestionID = draft.id
+                    composerFocused = false
+                    submit(question)
+                }
             }
             .sheet(isPresented: $showingProviderSettings) {
                 NavigationStack { AIProviderSettingsSheet(service: aiService) }

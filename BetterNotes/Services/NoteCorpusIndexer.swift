@@ -313,6 +313,7 @@ final class NoteCorpusStore: ObservableObject {
     static func sources(from notebooks: [Notebook]) -> [NoteCorpusSource] {
         var sources: [NoteCorpusSource] = []
         for notebook in notebooks where notebook.trashedAt == nil {
+            let isArchived = notebook.isEffectivelyArchived
             func add(_ kind: NoteSourceKind, _ label: String, _ text: String, page: Page? = nil, ordinal: Int = 0) {
                 let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !value.isEmpty else { return }
@@ -326,7 +327,7 @@ final class NoteCorpusStore: ObservableObject {
                     text: value,
                     modifiedAt: page?.modifiedAt ?? notebook.modifiedAt,
                     isBookmarked: page?.isBookmarked ?? false,
-                    isArchived: notebook.isArchived,
+                    isArchived: isArchived,
                     sourceOrdinal: ordinal
                 ))
             }

@@ -125,8 +125,12 @@ enum HandwrittenQuestion {
     static func question(in text: String) -> String? {
         for line in text.components(separatedBy: .newlines) {
             let line = line.trimmingCharacters(in: .whitespaces)
-            guard let marker = line.range(of: #"^(?:#{1,6}\s*)?[?？]\s*[?？]"#, options: .regularExpression) else { continue }
-            return String(line[marker.upperBound...]).trimmingCharacters(in: .whitespaces)
+            if let marker = line.range(of: #"^(?:#{1,6}\s*)?[?？]\s*[?？]+"#, options: .regularExpression) {
+                return String(line[marker.upperBound...]).trimmingCharacters(in: .whitespaces)
+            }
+            if let marker = line.range(of: #"[?？]\s*[?？]+\s*$"#, options: .regularExpression) {
+                return String(line[..<marker.lowerBound]).trimmingCharacters(in: .whitespaces)
+            }
         }
         return nil
     }
