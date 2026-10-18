@@ -66,10 +66,10 @@ enum NotebookFolders {
         case emptyName, duplicateName, invalidName, unavailableFolder
         var errorDescription: String? {
             switch self {
-            case .emptyName: return "Enter a folder name."
-            case .duplicateName: return "A folder with this name already exists."
-            case .invalidName: return "Use a folder name without a slash; the names “.” and “..” are not allowed."
-            case .unavailableFolder: return "This folder is no longer available."
+            case .emptyName: return AppLocalization.text("Enter a folder name.")
+            case .duplicateName: return AppLocalization.text("A folder with this name already exists.")
+            case .invalidName: return AppLocalization.text("Use a folder name without a slash; the names “.” and “..” are not allowed.")
+            case .unavailableFolder: return AppLocalization.text("This folder is no longer available.")
             }
         }
     }

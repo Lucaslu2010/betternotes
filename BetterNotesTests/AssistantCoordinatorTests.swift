@@ -246,7 +246,8 @@ final class AssistantCoordinatorTests: XCTestCase {
         indexer: NoteCorpusIndexer,
         responseTimeout: Duration = .seconds(60)
     ) throws -> InkAnswerCoordinator {
-        let settings = AISettingsStore(defaults: defaults, ephemeralKey: configured ? "test-key" : "")
+        let settings = AISettingsStore(defaults: defaults, keychainService: suiteName,
+                                       ephemeralKey: configured ? "test-key" : "")
         if configured {
             try settings.update(apiKey: nil, baseURL: "https://example.com/v1", model: "test-model")
         }

@@ -284,10 +284,14 @@ final class DocumentSupportTests: XCTestCase {
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<Notebook>()), 0)
     }
 
-    func testBuiltBundleRegistersExactlyTheSupportedDocumentTypes() throws {
+    func testBuiltBundleRegistersOnlyTheBackupDocumentType() throws {
         let declarations = try XCTUnwrap(Bundle.main.infoDictionary?["CFBundleDocumentTypes"] as? [[String: Any]])
         let registered = Set(declarations.flatMap { $0["LSItemContentTypes"] as? [String] ?? [] })
-        XCTAssertEqual(registered, Set(DocumentImporter.supportedTypes.map(\.identifier)))
+        // Only BetterNotes backups are claimed system-wide. PDFs and images are
+        // opened through the in-app importer so BetterNotes does not become an
+        // alternate handler for them.
+        XCTAssertEqual(registered, [UTType.betterNotesArchive.identifier])
+        XCTAssertTrue(registered.isSubset(of: Set(DocumentImporter.supportedTypes.map(\.identifier))))
         XCTAssertEqual(Bundle.main.infoDictionary?["LSSupportsOpeningDocumentsInPlace"] as? Bool, true)
         XCTAssertEqual(UTType(filenameExtension: "betternotes"), .betterNotesArchive)
         let decoders = Set(CGImageSourceCopyTypeIdentifiers() as? [String] ?? [])

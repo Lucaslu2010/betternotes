@@ -14,9 +14,9 @@ enum DocumentImporter {
         case unsupportedType, unreadableImage, noPages
         var errorDescription: String? {
             switch self {
-            case .unsupportedType: return "Open a PDF, BetterNotes backup, or supported image file."
-            case .unreadableImage: return "The selected image could not be opened."
-            case .noPages: return "The document does not contain any readable pages."
+            case .unsupportedType: return AppLocalization.text("Open a PDF, BetterNotes backup, or supported image file.")
+            case .unreadableImage: return AppLocalization.text("The selected image could not be opened.")
+            case .noPages: return AppLocalization.text("The document does not contain any readable pages.")
             }
         }
     }
