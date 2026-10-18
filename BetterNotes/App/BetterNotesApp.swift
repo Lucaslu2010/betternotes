@@ -18,8 +18,32 @@ struct BetterNotesApp: App {
         MemoryDiagnostics.shared.start()
         let arguments = CommandLine.arguments
         let isUITesting = arguments.contains("-ui-testing")
+        let defaults = UserDefaults.standard
+        let testPreferencesKey = "uiTesting.originalPreferences"
+        if !isUITesting, let original = defaults.dictionary(forKey: testPreferencesKey) {
+            for (key, value) in original["values"] as? [String: Any] ?? [:] {
+                defaults.set(value, forKey: key)
+            }
+            for key in original["missing"] as? [String] ?? [] { defaults.removeObject(forKey: key) }
+            defaults.removeObject(forKey: testPreferencesKey)
+        }
         if isUITesting {
-            let defaults = UserDefaults.standard
+            // Device tests use an isolated notes store; restore the preferences
+            // they pin too, when the user's normal app is next launched.
+            if defaults.dictionary(forKey: testPreferencesKey) == nil {
+                let keys = ["ocr.provider", AppPreferenceKey.scrollMode, AppPreferenceKey.toolbarDock,
+                            AppPreferenceKey.toolbarHintSeen, AppPreferenceKey.panHintSeen,
+                            AppPreferenceKey.fingerHintSeen, AppPreferenceKey.lassoHintSeen,
+                            AppPreferenceKey.assistantEnabled, AppPreferenceKey.searchAnswersEnabled,
+                            AppPreferenceKey.automaticWritingSuggestions, AppPreferenceKey.allowsFingerDrawing]
+                var values: [String: Any] = [:]
+                var missing: [String] = []
+                for key in keys {
+                    if let value = defaults.object(forKey: key) { values[key] = value }
+                    else { missing.append(key) }
+                }
+                defaults.set(["values": values, "missing": missing], forKey: testPreferencesKey)
+            }
             defaults.set(OCRProvider.local.rawValue, forKey: "ocr.provider")
             let scrollMode: ScrollMode = arguments.contains("-ui-testing-vertical-scroll") ? .verticalScroll : .singlePage
             defaults.set(scrollMode.rawValue, forKey: AppPreferenceKey.scrollMode)
@@ -61,6 +85,7 @@ struct BetterNotesApp: App {
         ))
         let schema = Schema([
             Notebook.self,
+            NotebookFolder.self,
             Page.self,
             PageElement.self,
             AssistantThread.self,

@@ -21,6 +21,7 @@ final class EditorActionState: ObservableObject {
     @Published var presentedPanel: EditorPresentedPanel?
     @Published var isAssistantPresented = false
     @Published var handwrittenQuestion: HandwrittenQuestionDraft?
+    @Published private(set) var shouldSubmitQuestion = false
     private var questionRecognitionTask: Task<Void, Never>?
     private var questionRequest: HandwrittenQuestionRequest?
 
@@ -31,9 +32,10 @@ final class EditorActionState: ObservableObject {
     func recognizeQuestion(_ request: HandwrittenQuestionRequest, using ocr: OCRService, context: ModelContext) {
         questionRecognitionTask?.cancel()
         questionRequest = request
+        shouldSubmitQuestion = false
         let draft = HandwrittenQuestionDraft(phase: .recognizing)
         handwrittenQuestion = draft
-        isAssistantPresented = true
+        MemoryDiagnostics.record("question-label shown recognition-started")
         // Remember detection immediately, including a bare marker. Reopening
         // the editor must not present the same question again after dismissal.
         request.page.lastHandwrittenQuestionFingerprint = request.fingerprint
@@ -42,29 +44,61 @@ final class EditorActionState: ObservableObject {
             do {
                 let text = try await ocr.recognizeInk(request.inkData, pageSize: request.pageSize, region: request.region)
                 try Task.checkCancellation()
-                guard let self, self.isAssistantPresented, self.handwrittenQuestion?.id == draft.id else { return }
+                guard let self, self.handwrittenQuestion?.id == draft.id else { return }
                 guard request.page.modelContext != nil, request.page.trashedAt == nil,
-                      request.page.inkData == request.inkData,
+                      Self.questionInkIsUnchanged(request),
                       request.page.pageOrientation.size == request.pageSize else {
-                    self.handwrittenQuestion = HandwrittenQuestionDraft(id: draft.id, phase: .failed("The page changed while the question was being read. Try again."))
+                    self.handwrittenQuestion = HandwrittenQuestionDraft(id: draft.id, phase: .failed("The question changed while it was being read. Try again."))
                     return
                 }
                 let question = HandwrittenQuestion.question(in: text) ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !question.isEmpty else { throw OCRError.emptyQuestion }
                 self.handwrittenQuestion = HandwrittenQuestionDraft(id: draft.id, phase: .ready(question))
+                MemoryDiagnostics.record("question-label recognition-ready")
             } catch is CancellationError {
-                guard let self, self.isAssistantPresented, self.handwrittenQuestion?.id == draft.id else { return }
+                guard let self, self.handwrittenQuestion?.id == draft.id else { return }
                 self.handwrittenQuestion = HandwrittenQuestionDraft(id: draft.id, phase: .failed("Question recognition was cancelled. Try again."))
             } catch {
-                guard let self, self.isAssistantPresented, self.handwrittenQuestion?.id == draft.id else { return }
+                guard let self, self.handwrittenQuestion?.id == draft.id else { return }
                 self.handwrittenQuestion = HandwrittenQuestionDraft(id: draft.id, phase: .failed(error.localizedDescription))
+                MemoryDiagnostics.record("question-label recognition-failed")
             }
         }
     }
 
+    private static func questionInkIsUnchanged(_ request: HandwrittenQuestionRequest) -> Bool {
+        if request.page.inkData == request.inkData { return true }
+        guard let current = request.page.inkData,
+              let original = try? PKDrawing(data: request.inkData),
+              let drawing = try? PKDrawing(data: current) else { return false }
+        // Writing elsewhere on the page must not invalidate an inline prompt.
+        return QuestionInkFingerprint.make(in: original, region: request.region)
+            == QuestionInkFingerprint.make(in: drawing, region: request.region)
+    }
+
+    func questionAnchor(for pageID: PersistentIdentifier) -> CGRect? {
+        guard !isAssistantPresented, handwrittenQuestion != nil,
+              let questionRequest, questionRequest.page.persistentModelID == pageID else { return nil }
+        return questionRequest.anchorBounds ?? questionRequest.region
+    }
+
+    func confirmQuestion() {
+        guard case .ready(let question) = handwrittenQuestion?.phase, !question.isEmpty else { return }
+        shouldSubmitQuestion = true
+        isAssistantPresented = true
+        MemoryDiagnostics.record("question-label answer-confirmed")
+    }
+
     func retryQuestion(using ocr: OCRService, context: ModelContext) {
-        guard let questionRequest else { return }
-        recognizeQuestion(questionRequest, using: ocr, context: context)
+        guard let questionRequest, let ink = questionRequest.page.inkData,
+              let drawing = try? PKDrawing(data: ink), questionRequest.page.trashedAt == nil else { return }
+        MemoryDiagnostics.record("question-label retry-current-ink")
+        recognizeQuestion(HandwrittenQuestionRequest(
+            page: questionRequest.page, inkData: ink, pageSize: questionRequest.page.pageOrientation.size,
+            region: questionRequest.region,
+            fingerprint: QuestionInkFingerprint.make(in: drawing, region: questionRequest.region),
+            anchorBounds: questionRequest.anchorBounds
+        ), using: ocr, context: context)
     }
 
     func dismissQuestion() {
@@ -72,6 +106,7 @@ final class EditorActionState: ObservableObject {
         questionRecognitionTask = nil
         questionRequest = nil
         handwrittenQuestion = nil
+        shouldSubmitQuestion = false
         isAssistantPresented = false
     }
 }
@@ -112,6 +147,7 @@ struct NotebookView: View {
     @EnvironmentObject private var ocrService: OCRService
     @Query(sort: \Notebook.modifiedAt, order: .reverse) private var allNotebooks: [Notebook]
     @AppStorage(AppPreferenceKey.allowsFingerDrawing) private var allowsFingerDrawing = true
+    @AppStorage(AppPreferenceKey.scribbleToErase) private var scribbleToErase = true
     @AppStorage(AppPreferenceKey.toolbarDock) private var toolbarDockRaw = ToolbarDock.top.rawValue
     @AppStorage(AppPreferenceKey.toolbarHintSeen) private var toolbarHintSeen = false
     @AppStorage(AppPreferenceKey.panHintSeen) private var panHintSeen = false
@@ -200,8 +236,9 @@ struct NotebookView: View {
                         canUndo: $editorCanUndo,
                         canRedo: $editorCanRedo,
                         canReplaceSelectedText: $editorCanReplaceSelectedText,
-                        tool: $editorTool,
+                        tool: editorTool,
                         toolSettings: toolSettings,
+                        questionState: editorState,
                         command: $editorCommand,
                         pageTurnDirection: pageTurnDirection,
                         onPageSwipe: handlePageSwipe,
@@ -458,8 +495,9 @@ struct NotebookView: View {
                         canUndo: $editorCanUndo,
                         canRedo: $editorCanRedo,
                         canReplaceSelectedText: $editorCanReplaceSelectedText,
-                        tool: $editorTool,
+                        tool: editorTool,
                         toolSettings: toolSettings,
+                        questionState: editorState,
                         command: $editorCommand,
                         pageTurnDirection: pageTurnDirection,
                         onPageSwipe: { _ in },
@@ -595,6 +633,9 @@ struct NotebookView: View {
             }
 
             Section("Handwriting") {
+                Toggle("Scribble to Erase", systemImage: "scribble", isOn: $scribbleToErase)
+                    .disabled(isReadOnly)
+                    .accessibilityIdentifier("scribble-to-erase")
                 Button("Recognize Handwriting", systemImage: "text.viewfinder") {
                     sendEditorCommand(.recognizeHandwriting)
                 }
@@ -701,7 +742,8 @@ struct NotebookView: View {
                     editorState.isAssistantPresented = false
                     editorState.dismissQuestion()
                 },
-                initialQuestion: editorState.handwrittenQuestion,
+                initialQuestion: editorState.shouldSubmitQuestion ? editorState.handwrittenQuestion : nil,
+                autoSubmitInitialQuestion: editorState.shouldSubmitQuestion,
                 onRetryQuestionRecognition: { editorState.retryQuestion(using: ocrService, context: context) }
             )
         }
@@ -854,7 +896,7 @@ struct NotebookView: View {
                         throw PDFImportError.unreadableDocument
                     }
                     for (offset, importedPage) in importedPages.enumerated() {
-                        let page = makePage(from: importedPage, index: startIndex + offset)
+                        let page = PDFImporter.makePage(from: importedPage, index: startIndex + offset)
                         page.notebook = notebook
                         notebook.pages.append(page)
                     }
@@ -872,31 +914,6 @@ struct NotebookView: View {
         }
     }
 
-    private func makePage(from importedPage: PDFImporter.ImportedPage, index: Int) -> Page {
-        let page = Page(index: index)
-        page.orientation = importedPage.orientation
-        page.lineStyle = PageLineStyle.blank.rawValue
-        page.backgroundHex = "FFFFFF"
-        page.pdfText = importedPage.extractedText
-        page.ocrStorageVersion = 1
-        page.ocrUpdatedAt = importedPage.extractedText.isEmpty ? nil : Date.now
-
-        if let imageData = importedPage.imageData {
-            let frame = importedPage.imageFrame
-            let element = PageElement(
-                type: .image,
-                x: frame.midX,
-                y: frame.midY,
-                width: frame.width,
-                height: frame.height
-            )
-            element.imageData = imageData
-            element.isLocked = true
-            element.page = page
-            page.appendElement(element)
-        }
-        return page
-    }
 
     // MARK: - Page-level actions
 

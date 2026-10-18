@@ -9,6 +9,11 @@ final class PencilInputCanvasView: PKCanvasView {
     var elementInteractionRects: [CGRect] = []
     var fingerDrawingAllowed = false
 
+    func pagePoint(from point: CGPoint) -> CGPoint {
+        CGPoint(x: (point.x + contentOffset.x) / zoomScale,
+                y: (point.y + contentOffset.y) / zoomScale)
+    }
+
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard event?.type == .touches else {
             return super.hitTest(point, with: event)
@@ -19,16 +24,243 @@ final class PencilInputCanvasView: PKCanvasView {
         // element controls can still receive them.
         let containsPencil = event?.allTouches?.contains(where: { $0.type == .pencil }) == true
         if !containsPencil {
-            // Convert the point from the superview (zoomed content) coordinate
-            // space to the canvas's own local (page) coordinate space. Without
-            // this, elementInteractionRects (which are page-local) don't match
-            // hitTest points (which are in zoomed space) at zoom ≠ 1.0.
-            let localPoint = convert(point, from: superview)
+            // hitTest already supplies canvas-local viewport coordinates.
+            let localPoint = pagePoint(from: point)
             if elementInteractionRects.contains(where: { $0.contains(localPoint) }) {
                 return nil
             }
         }
         return super.hitTest(point, with: event)
+    }
+}
+
+/// Gives PencilKit the real display zoom, while keeping the SwiftUI page and
+/// all ink/selection coordinates at their original size. Magnifying a canvas
+/// whose native zoom stays at 1 only stretches its existing raster tiles.
+final class InkCanvasViewport: UIView {
+    private static let renderQueue = DispatchQueue(label: "BetterNotes.ink-viewport", qos: .userInitiated)
+    let canvas: PKCanvasView
+    private let displayImage = UIImageView()
+    private let selectionContainer = UIView()
+    private let selectionImage = UIImageView()
+    private let hiddenInkMask = CAShapeLayer()
+    private var visibleRect: CGRect = .zero
+    private var hasViewportMeasurement = false
+    private var rasterIsCurrent = false
+    private var renderGeneration = 0
+    private var pendingRender: DispatchWorkItem?
+    private var previewsSelection = false
+    var inkOpacity: CGFloat = 1 { didSet { updatePresentation() } }
+    private var pageSize: CGSize = .zero
+    private var requestedZoom: CGFloat = 1
+    private var appliedZoom: CGFloat = 0
+    var isUsingTool = false {
+        didSet {
+            if isUsingTool {
+                pendingRender?.cancel()
+                renderGeneration &+= 1
+                rasterIsCurrent = false
+            } else {
+                layoutCanvas()
+                scheduleRaster()
+            }
+            updatePresentation()
+        }
+    }
+
+    init(canvas: PKCanvasView) {
+        self.canvas = canvas
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        addSubview(canvas)
+        displayImage.isUserInteractionEnabled = false
+        addSubview(displayImage)
+        selectionContainer.isUserInteractionEnabled = false
+        selectionContainer.layer.anchorPoint = .zero
+        selectionContainer.layer.position = .zero
+        selectionContainer.addSubview(selectionImage)
+        addSubview(selectionContainer)
+        hiddenInkMask.path = CGMutablePath()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit { pendingRender?.cancel() }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !isHidden, isUserInteractionEnabled, alpha > 0.01,
+              self.point(inside: point, with: event) else { return nil }
+        // Display images never intercept input. Preserve the canvas's nil
+        // result over page elements and when the SwiftUI lasso owns input.
+        return canvas.hitTest(canvas.convert(point, from: self), with: event)
+    }
+
+    func update(pageSize: CGSize, zoom: CGFloat) {
+        guard pageSize.width > 0, pageSize.height > 0 else { return }
+        if self.pageSize != pageSize {
+            self.pageSize = pageSize
+            appliedZoom = 0
+        }
+        updateZoom(zoom)
+    }
+
+    func updateZoom(_ zoom: CGFloat) {
+        guard zoom.isFinite, zoom > 0 else { return }
+        let next = min(max(zoom, 0.1), 8)
+        let changed = abs(requestedZoom - next) > 0.001
+        requestedZoom = next
+        layoutCanvas()
+        if changed { scheduleRaster() }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutCanvas()
+        if !hasViewportMeasurement, let window, !bounds.isEmpty {
+            updateVisibleRect(convert(window.bounds, from: window))
+        }
+    }
+
+    private func layoutCanvas() {
+        guard !isUsingTool, pageSize.width > 0, pageSize.height > 0,
+              abs(appliedZoom - requestedZoom) > 0.001 else { return }
+        let zoom = requestedZoom
+        appliedZoom = zoom
+        let viewportSize = CGSize(width: pageSize.width * zoom, height: pageSize.height * zoom)
+        canvas.transform = .identity
+        canvas.frame = CGRect(origin: .zero, size: viewportSize)
+        canvas.minimumZoomScale = 0.1
+        canvas.maximumZoomScale = 8
+        canvas.setZoomScale(zoom, animated: false)
+        canvas.contentSize = viewportSize
+        canvas.contentInsetAdjustmentBehavior = .never
+        canvas.contentInset = .zero
+        canvas.contentOffset = .zero
+        // The outer scroll view already supplies this magnification. Cancel
+        // it for the viewport, so only PencilKit's native ink zoom remains.
+        canvas.transform = CGAffineTransform(scaleX: 1 / zoom, y: 1 / zoom)
+        canvas.center = CGPoint(x: pageSize.width / 2, y: pageSize.height / 2)
+    }
+
+    func updateVisibleRect(_ rect: CGRect) {
+        hasViewportMeasurement = true
+        let clipped = rect.intersection(CGRect(origin: .zero, size: pageSize))
+        guard clipped != visibleRect else { return }
+        visibleRect = clipped
+        if clipped.isNull || clipped.isEmpty {
+            pendingRender?.cancel()
+            renderGeneration &+= 1
+            displayImage.image = nil
+            rasterIsCurrent = false
+            updatePresentation()
+        } else { scheduleRaster() }
+    }
+
+    func drawingDidChange() {
+        rasterIsCurrent = false
+        displayImage.isHidden = true
+        renderGeneration &+= 1
+        pendingRender?.cancel()
+        if !isUsingTool { scheduleRaster() }
+        updatePresentation()
+    }
+
+    private func scheduleRaster() {
+        guard !isUsingTool, !previewsSelection, !visibleRect.isEmpty, !visibleRect.isNull else { return }
+        pendingRender?.cancel()
+        renderGeneration &+= 1
+        let generation = renderGeneration
+        rasterIsCurrent = false
+        updatePresentation()
+        let drawing = canvas.drawing
+        let rect = visibleRect.insetBy(dx: -8 / requestedZoom, dy: -8 / requestedZoom)
+            .intersection(CGRect(origin: .zero, size: pageSize))
+        let scale = InkRasterBudget.scale(for: rect.size, requested: requestedZoom * (window?.screen.scale ?? 2))
+        let work = DispatchWorkItem { [weak self] in
+            autoreleasepool {
+                let image = Self.rasterize(drawing, rect: rect, scale: scale)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.renderGeneration == generation, !self.isUsingTool, !self.previewsSelection else { return }
+                    self.displayImage.image = image
+                    self.displayImage.frame = rect
+                    self.rasterIsCurrent = true
+                    self.updatePresentation()
+                    MemoryDiagnostics.record("ink-raster scale=\(scale) pixels=\(image.cgImage?.width ?? 0)x\(image.cgImage?.height ?? 0)")
+                }
+            }
+        }
+        pendingRender = work
+        Self.renderQueue.asyncAfter(deadline: .now() + 0.035, execute: work)
+    }
+
+    private func updatePresentation() {
+        canvas.alpha = inkOpacity
+        displayImage.alpha = inkOpacity
+        displayImage.isHidden = isUsingTool || (!rasterIsCurrent && !previewsSelection)
+        // A transparent layer mask hides old native tiles without disabling
+        // UIKit hit testing, unlike setting the canvas alpha close to zero.
+        canvas.layer.mask = (rasterIsCurrent || previewsSelection) && !isUsingTool ? hiddenInkMask : nil
+        selectionContainer.isHidden = !previewsSelection
+    }
+
+    private static func rasterize(_ drawing: PKDrawing, rect: CGRect, scale: CGFloat) -> UIImage {
+        guard !drawing.strokes.isEmpty else { return UIImage() }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        format.opaque = false
+        format.preferredRange = .standard
+        var image = UIImage()
+        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+            image = UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in
+                drawing.image(from: rect, scale: scale).draw(in: CGRect(origin: .zero, size: rect.size))
+            }
+        }
+        return image
+    }
+
+    func beginSelectionPreview(indices: Set<Int>) {
+        let strokes = canvas.drawing.strokes
+        let selected = PKDrawing(strokes: strokes.enumerated().filter { indices.contains($0.offset) }.map(\.element))
+        guard !selected.strokes.isEmpty else { return }
+        pendingRender?.cancel()
+        renderGeneration &+= 1
+        previewsSelection = true
+        let base = PKDrawing(strokes: strokes.enumerated().filter { !indices.contains($0.offset) }.map(\.element))
+        let rect = visibleRect.isEmpty || visibleRect.isNull ? bounds : visibleRect
+        let displayScale = requestedZoom * (window?.screen.scale ?? 2)
+        displayImage.image = Self.rasterize(base, rect: rect, scale: InkRasterBudget.scale(for: rect.size, requested: displayScale))
+        displayImage.frame = rect
+        let selectedRect = selected.bounds.insetBy(dx: -2, dy: -2)
+        selectionImage.image = Self.rasterize(selected, rect: selectedRect, scale: InkRasterBudget.scale(for: selectedRect.size, requested: displayScale))
+        selectionImage.frame = selectedRect
+        selectionContainer.bounds = CGRect(origin: .zero, size: pageSize)
+        selectionContainer.layer.position = .zero
+        selectionContainer.transform = .identity
+        updatePresentation()
+    }
+
+    func updateSelectionPreview(transform: CGAffineTransform) {
+        guard previewsSelection else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        selectionContainer.layer.setAffineTransform(transform)
+        CATransaction.commit()
+    }
+
+    func endSelectionPreview() {
+        previewsSelection = false
+        selectionImage.image = nil
+        selectionContainer.transform = .identity
+        rasterIsCurrent = false
+        drawingDidChange()
+    }
+}
+
+enum InkRasterBudget {
+    static func scale(for size: CGSize, requested: CGFloat) -> CGFloat {
+        guard size.width > 0, size.height > 0 else { return 1 }
+        return min(max(requested, 0.1), 16, 4096 / max(size.width, size.height),
+                   sqrt(6_000_000 / (size.width * size.height)))
     }
 }
 
@@ -46,27 +278,34 @@ final class PencilStrokeObserverGestureRecognizer: UIGestureRecognizer, UIGestur
         touches.first { observedTouchTypes.contains($0.type) }
     }
 
+    private func pageLocation(of touch: UITouch, in view: UIView) -> CGPoint {
+        let point = touch.location(in: view)
+        guard let canvas = view as? PKCanvasView else { return point }
+        return CGPoint(x: (point.x + canvas.contentOffset.x) / canvas.zoomScale,
+                       y: (point.y + canvas.contentOffset.y) / canvas.zoomScale)
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let touch = observedTouch(in: touches), let view else {
             state = .failed
             return
         }
         state = .began
-        onBegan?(touch.location(in: view), touch.type)
+        onBegan?(pageLocation(of: touch, in: view), touch.type)
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let touch = observedTouch(in: touches), let view else { return }
         let samples = event.coalescedTouches(for: touch) ?? [touch]
         for sample in samples {
-            onMoved?(sample.location(in: view))
+            onMoved?(pageLocation(of: sample, in: view))
         }
         state = .changed
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
         if let touch = observedTouch(in: touches), let view {
-            onEnded?(touch.location(in: view))
+            onEnded?(pageLocation(of: touch, in: view))
         }
         state = .ended
     }
@@ -103,6 +342,9 @@ struct PaperCanvas: UIViewRepresentable {
     let inkData: Data?
     let beautifiesHandwriting: Bool
     let canvasInkOpacity: CGFloat
+    var scribbleToErase = false
+    var pageSize: CGSize = .zero
+    var pageZoomScale: CGFloat = 1
     var onDrawingChange: ((Int) -> Void)?
     var onToolUseChange: ((Bool) -> Void)?
     var onShapePreviewChange: ((PKDrawing?) -> Void)?
@@ -114,7 +356,7 @@ struct PaperCanvas: UIViewRepresentable {
         return c
     }
 
-    func makeUIView(context: Context) -> PKCanvasView {
+    func makeUIView(context: Context) -> InkCanvasViewport {
         let c = canvasView
         c.drawingPolicy = allowsFingerDrawing ? .anyInput : .pencilOnly
         if let interactiveCanvas = c as? PencilInputCanvasView {
@@ -129,17 +371,12 @@ struct PaperCanvas: UIViewRepresentable {
         c.overrideUserInterfaceStyle = .light
         c.alpha = canvasInkOpacity
         c.clipsToBounds = false
-        // The PKCanvasView is nested inside ZoomablePageView's UIScrollView.
-        // Disable the canvas's own scroll/zoom so the outer scroll view handles
-        // pinch-to-zoom and panning. Otherwise the inner scroll view swallows
-        // the gestures and does nothing (its zoom is locked to 1.0).
+        // Outer scrolling owns pan and pinch gestures. InkCanvasViewport
+        // updates PencilKit's native zoom without enabling competing gestures.
         c.isScrollEnabled = false
         c.bounces = false
         c.alwaysBounceHorizontal = false
         c.alwaysBounceVertical = false
-        c.minimumZoomScale = 1.0
-        c.maximumZoomScale = 1.0
-        c.zoomScale = 1.0
         // Remove the canvas's built-in pinch/pan recognizers so they don't
         // compete with the outer UIScrollView.
         for gr in c.gestureRecognizers ?? [] {
@@ -166,10 +403,13 @@ struct PaperCanvas: UIViewRepresentable {
         c.delegate = context.coordinator
         context.coordinator.canvas = c
         context.coordinator.attachDrawingGesture(to: c)
-        return c
+        let viewport = InkCanvasViewport(canvas: c)
+        viewport.update(pageSize: pageSize, zoom: pageZoomScale)
+        return viewport
     }
 
-    func updateUIView(_ uiView: PKCanvasView, context: Context) {
+    func updateUIView(_ viewport: InkCanvasViewport, context: Context) {
+        let uiView = viewport.canvas
         context.coordinator.parent = self
         uiView.overrideUserInterfaceStyle = .light
         uiView.drawingPolicy = allowsFingerDrawing ? .anyInput : .pencilOnly
@@ -179,7 +419,7 @@ struct PaperCanvas: UIViewRepresentable {
         }
         uiView.isUserInteractionEnabled = context.coordinator.canvasAcceptsInput
         uiView.isScrollEnabled = false
-        uiView.alpha = canvasInkOpacity
+        viewport.inkOpacity = canvasInkOpacity
         // Re-disable pinch/pan on the inner canvas (PKCanvasView can re-enable
         // them internally on tool changes).
         for gr in uiView.gestureRecognizers ?? [] {
@@ -190,6 +430,7 @@ struct PaperCanvas: UIViewRepresentable {
         }
         context.coordinator.updateToolIfIdle(on: uiView)
         context.coordinator.attachDrawingGesture(to: uiView)
+        viewport.update(pageSize: pageSize, zoom: pageZoomScale)
     }
 
     /// Lightweight holder so parent SwiftUI views can reach the coordinator
@@ -207,6 +448,7 @@ struct PaperCanvas: UIViewRepresentable {
         private var shapeCommitClearTimer: Timer?
         private var lastStrokeCount: Int = 0
         private var isUsingTool = false
+        private(set) var lastInkEditWasScribble = false
         private var strokeCountAtToolBegin = 0
         private var drawingChangeObservedForToolUse = false
         private var pendingToolFinish: DispatchWorkItem?
@@ -282,12 +524,6 @@ struct PaperCanvas: UIViewRepresentable {
             return true
         }
 
-        // MARK: UIScrollViewDelegate
-
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-            nil
-        }
-
         func attachDrawingGesture(to canvas: PKCanvasView) {
             let observedTouchTypes: [UITouch.TouchType] = parent.allowsFingerDrawing ? [.pencil, .direct] : [.pencil]
             if let pencilObserver, pencilObserver.view === canvas {
@@ -352,6 +588,7 @@ struct PaperCanvas: UIViewRepresentable {
 
         // Called whenever the drawing changes (stroke added/erased).
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            (canvasView.superview as? InkCanvasViewport)?.drawingDidChange()
             let count = canvasView.drawing.strokes.count
 
             if isApplyingProgrammaticDrawing {
@@ -512,10 +749,12 @@ struct PaperCanvas: UIViewRepresentable {
             pendingToolFinish = nil
             toolFinishGeneration &+= 1
             skipsPendingHandwritingBeautification = false
+            lastInkEditWasScribble = false
             strokeCountAtToolBegin = canvas.drawing.strokes.count
             drawingChangeObservedForToolUse = false
             let wasUsingTool = isUsingTool
             isUsingTool = true
+            (canvas.superview as? InkCanvasViewport)?.isUsingTool = true
             if !wasUsingTool { parent.onToolUseChange?(true) }
             committedShapePreview = nil
             shapeCommitClearTimer?.invalidate()
@@ -544,7 +783,15 @@ struct PaperCanvas: UIViewRepresentable {
                     return
                 }
                 self.isUsingTool = false
-                if self.pendingShapeCommit != nil {
+                // Classify before removing the scratch stroke. Even a scratch
+                // on blank space is a gesture, not newly written question text.
+                self.lastInkEditWasScribble = self.parent.scribbleToErase
+                    && (self.parent.tool == .pen || self.parent.tool == .pencil)
+                    && ScribbleEraser.containsScratch(in: canvas.drawing, newStrokesFrom: self.strokeCountAtToolBegin)
+                if self.eraseScribbledInk(on: canvas) {
+                    self.clearShapeRecognitionState(hidesPreview: true)
+                    self.committedShapePreview = nil
+                } else if self.pendingShapeCommit != nil {
                     _ = self.commitPendingShapeIfPossible(on: canvas)
                 } else if !self.skipsPendingHandwritingBeautification {
                     self.finalizeHandwritingBeautification(on: canvas)
@@ -552,10 +799,19 @@ struct PaperCanvas: UIViewRepresentable {
                 self.strokeCountAtToolBegin = canvas.drawing.strokes.count
                 self.drawingChangeObservedForToolUse = false
                 self.updateToolIfIdle(on: canvas)
+                (canvas.superview as? InkCanvasViewport)?.isUsingTool = false
                 self.parent.onToolUseChange?(false)
             }
             pendingToolFinish = work
             DispatchQueue.main.asyncAfter(deadline: .now() + strokeSettlingDelay, execute: work)
+        }
+
+        private func eraseScribbledInk(on canvas: PKCanvasView) -> Bool {
+            guard parent.scribbleToErase, parent.tool == .pen || parent.tool == .pencil,
+                  let drawing = ScribbleEraser.erasing(in: canvas.drawing, newStrokesFrom: strokeCountAtToolBegin) else { return false }
+            performProgrammaticDrawingChange(on: canvas) { canvas.drawing = drawing }
+            MemoryDiagnostics.record("scribble-erase applied")
+            return true
         }
 
         private func scheduleShapeHoldIfNeeded(on canvas: PKCanvasView) {
@@ -713,6 +969,7 @@ struct PaperCanvas: UIViewRepresentable {
             toolFinishGeneration &+= 1
             clearShapeRecognitionState(hidesPreview: true)
             isCapturingPencilStroke = false
+            (canvas?.superview as? InkCanvasViewport)?.isUsingTool = false
             committedShapePreview = nil
             shapeCommitClearTimer?.invalidate()
             shapeCommitClearTimer = nil

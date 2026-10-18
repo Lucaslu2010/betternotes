@@ -42,7 +42,8 @@ struct CloudTranslator {
     }
 
     @MainActor
-    static func importArchive(from url: URL, into context: ModelContext) throws -> Notebook {
+    static func importArchive(from url: URL, into context: ModelContext,
+                              configure: ((Notebook) throws -> Void)? = nil) throws -> Notebook {
         let hasAccess = url.startAccessingSecurityScopedResource()
         defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
 
@@ -73,7 +74,13 @@ struct CloudTranslator {
         notebook.coverStyle = archive["coverStyle"] as? String ?? notebook.coverStyle
         notebook.coverEmoji = archive["coverEmoji"] as? String
         notebook.modifiedAt = .now
-        try context.save()
+        do {
+            try configure?(notebook)
+            try context.save()
+        } catch {
+            context.delete(notebook)
+            throw error
+        }
         return notebook
     }
 

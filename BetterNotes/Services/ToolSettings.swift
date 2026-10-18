@@ -5,6 +5,7 @@ enum AppPreferenceKey {
     static let allowsFingerDrawing = "drawing.allowsFingerDrawing"
     static let librarySort = "library.sort"
     static let beautifyHandwriting = "beautifyHandwriting"
+    static let scribbleToErase = "drawing.scribbleToErase"
     static let recentColors = "drawing.recentColors"
     static let toolbarDock = "drawing.toolbarDock"
     static let toolbarHintSeen = "hints.toolbar"
@@ -157,6 +158,10 @@ final class ToolSettings: ObservableObject {
     func setLassoMode(_ mode: LassoMode) {
         lassoMode = mode
         save()
+    }
+
+    func restoreLastLassoMode() {
+        lassoMode = LassoMode(rawValue: defaults.string(forKey: "lassoMode") ?? "") ?? .freeform
     }
 
     // MARK: - Persistence

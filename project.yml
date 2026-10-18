@@ -35,6 +35,35 @@ targets:
     platform: iOS
     sources:
       - path: BetterNotes
+    info:
+      path: BetterNotes/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: BetterNotes Notebook
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.betternotes.archive]
+          - CFBundleTypeName: PDF Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [com.adobe.pdf]
+          - CFBundleTypeName: Image
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.jpeg, public.png, public.heic, public.heif, public.tiff, com.compuserve.gif, com.microsoft.bmp, org.webmproject.webp]
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.betternotes.notebook-reference
+            UTTypeDescription: BetterNotes Notebook Reference
+            UTTypeConformsTo: [public.data]
+          - UTTypeIdentifier: com.betternotes.archive
+            UTTypeDescription: BetterNotes Notebook
+            UTTypeConformsTo: [public.json]
+            UTTypeTagSpecification:
+              public.filename-extension: [betternotes]
+              public.mime-type: application/vnd.betternotes.notebook+json
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kenny-lhs.betternotes

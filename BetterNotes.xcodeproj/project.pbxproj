@@ -8,7 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		01FE4BB0FD601019F0EBC66C /* SelectionDragTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01AF38A79B5366DCACF56ACD /* SelectionDragTests.swift */; };
+		046A0A83702E61B8A172CF2D /* DocumentImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B85A1739C346569F1B05C948 /* DocumentImporter.swift */; };
 		0809B336543872AFD912699C /* ShapeSnapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C5BFE47307307284FF1B9AD /* ShapeSnapper.swift */; };
+		0B397AF2BC2A3E7977791131 /* FolderBrowserComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C4D385C6509D1319EE1BE4F /* FolderBrowserComponents.swift */; };
+		0F3E69BBF235D4A0EDCFC204 /* ScribbleEraser.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCB14076BB0D2BDC9E052E2F /* ScribbleEraser.swift */; };
 		0F841C4FE53B600AC37A1525 /* MemoryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38E4C2EC1FC1546AA12FEC6 /* MemoryDiagnostics.swift */; };
 		0FDC6F9D16C0F789CF90836C /* AISettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C97B96E06B2A05D1D9BC5D4 /* AISettingsStore.swift */; };
 		12C4278C52430D845597B682 /* AudioRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69A1CF0A4F483F531B8F7EA5 /* AudioRecorderTests.swift */; };
@@ -17,8 +20,10 @@
 		1A927009E157D561A4FEE0F0 /* AISettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB821B78D8A3425010FB5E95 /* AISettingsStoreTests.swift */; };
 		1B9B2A7F9AC0FAA41A6A96A1 /* PaperCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4DDA00C3E975F5E0D7E6F5 /* PaperCanvas.swift */; };
 		1CAFEDD32144C411E473E931 /* CloudTranslator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C360D63E1308ED129819F87 /* CloudTranslator.swift */; };
+		20713C4F10657FA9502D5617 /* NotebookFolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1462CC93981286A8655C02B7 /* NotebookFolder.swift */; };
 		2288F3894347D7BB190C696A /* MockAIURLProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CDCC5ED911AF06EF94DF8D4 /* MockAIURLProtocol.swift */; };
 		23E2CC0B2CC09DB4F02FD7D5 /* StoreMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30773D9EBE464E834F2685AB /* StoreMigrationTests.swift */; };
+		255562826BCD0F3E84176624 /* InkInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5089C663575B007F3DC382B1 /* InkInteractionTests.swift */; };
 		2634F118EA4ED8447899B1E9 /* HandwritingBeautifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60E66A386D1B3CC0ECB76AA9 /* HandwritingBeautifier.swift */; };
 		287BB88399A7DCEA55B6BBC0 /* legacy-v1.store in Resources */ = {isa = PBXBuildFile; fileRef = 563646E5ED1AC7851262D660 /* legacy-v1.store */; };
 		2F427A2DEDBA1EE7A4AED6CD /* OCRSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5E1CD94F0DE4BCADE4EED8C /* OCRSettingsView.swift */; };
@@ -64,6 +69,7 @@
 		F90D016E36A8D96021B52610 /* HandwritingBeautifierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B36460D0868B4FA985BACC6C /* HandwritingBeautifierTests.swift */; };
 		FAD64325682445952C2534B5 /* AssistantModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EF226152A84AF8B89181F81 /* AssistantModels.swift */; };
 		FC7C3CFD85729B5D3B737A8E /* PDFImporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADB14BEF98A361B80935F12 /* PDFImporterTests.swift */; };
+		FE241F8B93DDEDE1C2AE7762 /* DocumentSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDFE1B085C49B3F6EA76AEE4 /* DocumentSupportTests.swift */; };
 		FFFAB2DCE0F826C18BE63280 /* PDFImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CAE7B92B7BB61B2D0FDEBD4 /* PDFImporter.swift */; };
 /* End PBXBuildFile section */
 
@@ -90,6 +96,7 @@
 		0C360D63E1308ED129819F87 /* CloudTranslator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudTranslator.swift; sourceTree = "<group>"; };
 		0E4DDA00C3E975F5E0D7E6F5 /* PaperCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaperCanvas.swift; sourceTree = "<group>"; };
 		133EFA490882782DF2154975 /* BetterNotesUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BetterNotesUITests.swift; sourceTree = "<group>"; };
+		1462CC93981286A8655C02B7 /* NotebookFolder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookFolder.swift; sourceTree = "<group>"; };
 		18A9DC811E7A3AE9807FEB31 /* ZoomablePageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomablePageView.swift; sourceTree = "<group>"; };
 		2255D911B9B1E85F0096184A /* OCRClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRClient.swift; sourceTree = "<group>"; };
 		22C76EC076F87C80C6B8A287 /* BetterNotesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BetterNotesApp.swift; sourceTree = "<group>"; };
@@ -102,8 +109,10 @@
 		440EB54F96D06708FE84410D /* BetterNotesTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BetterNotesTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		475067FD8E90D5DE0BA1B3EB /* AIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIClient.swift; sourceTree = "<group>"; };
 		4B66873371464A347F0B858A /* HandwritingOCR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandwritingOCR.swift; sourceTree = "<group>"; };
+		4C4D385C6509D1319EE1BE4F /* FolderBrowserComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderBrowserComponents.swift; sourceTree = "<group>"; };
 		4CDCC5ED911AF06EF94DF8D4 /* MockAIURLProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockAIURLProtocol.swift; sourceTree = "<group>"; };
 		4F4CF82F055B083CE7D0EA8A /* SmartImageExtractorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartImageExtractorTests.swift; sourceTree = "<group>"; };
+		5089C663575B007F3DC382B1 /* InkInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InkInteractionTests.swift; sourceTree = "<group>"; };
 		50DF0F3E47FD225BB3020A4A /* PDFExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFExport.swift; sourceTree = "<group>"; };
 		54F20F5BD67D3EF53E0BCB1F /* AssistantView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantView.swift; sourceTree = "<group>"; };
 		563646E5ED1AC7851262D660 /* legacy-v1.store */ = {isa = PBXFileReference; path = "legacy-v1.store"; sourceTree = "<group>"; };
@@ -130,6 +139,7 @@
 		A9CEC020FC2A2F025421FB72 /* SmartImageExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmartImageExtractor.swift; sourceTree = "<group>"; };
 		B27AA21B9D0D53D1E34683AE /* Notebook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notebook.swift; sourceTree = "<group>"; };
 		B36460D0868B4FA985BACC6C /* HandwritingBeautifierTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandwritingBeautifierTests.swift; sourceTree = "<group>"; };
+		B85A1739C346569F1B05C948 /* DocumentImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentImporter.swift; sourceTree = "<group>"; };
 		BA8F436377C7C7ECBE303EB2 /* BetterNotes.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BetterNotes.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB821B78D8A3425010FB5E95 /* AISettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISettingsStoreTests.swift; sourceTree = "<group>"; };
 		BF03EEC0715CC804E4BDE771 /* BetterNotesUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BetterNotesUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -143,9 +153,12 @@
 		D7BBB5CB4CAE2256362B701E /* ElementOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElementOverlay.swift; sourceTree = "<group>"; };
 		DB6E06CF172354818AA9E115 /* AIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIModels.swift; sourceTree = "<group>"; };
 		DD1B12A31579ACED17E943EB /* SelectionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionModels.swift; sourceTree = "<group>"; };
+		DDFE1B085C49B3F6EA76AEE4 /* DocumentSupportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSupportTests.swift; sourceTree = "<group>"; };
 		E38E4C2EC1FC1546AA12FEC6 /* MemoryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDiagnostics.swift; sourceTree = "<group>"; };
 		EDE6FBDD43FBE1B7A41689EF /* ShapeSnapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShapeSnapperTests.swift; sourceTree = "<group>"; };
+		F55958F071AD6E982CB1665A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F9420AFAE4376DD44C82472F /* OCRSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRSettingsStore.swift; sourceTree = "<group>"; };
+		FCB14076BB0D2BDC9E052E2F /* ScribbleEraser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScribbleEraser.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -167,6 +180,7 @@
 			isa = PBXGroup;
 			children = (
 				BFF8A603D6FB89AB4A4F2CB3 /* Assets.xcassets */,
+				F55958F071AD6E982CB1665A /* Info.plist */,
 				5DD98C9407E250E3325D54ED /* PrivacyInfo.xcprivacy */,
 				23C730BE34BB577E4E3F86D7 /* App */,
 				3377BC71B89CDB1003A06CBF /* Models */,
@@ -201,6 +215,7 @@
 			children = (
 				9EF226152A84AF8B89181F81 /* AssistantModels.swift */,
 				B27AA21B9D0D53D1E34683AE /* Notebook.swift */,
+				1462CC93981286A8655C02B7 /* NotebookFolder.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -221,8 +236,10 @@
 				5D58001999285418656D51F4 /* AssistantCoordinatorTests.swift */,
 				69A1CF0A4F483F531B8F7EA5 /* AudioRecorderTests.swift */,
 				5A030ECA598B25CCEDA0D514 /* BetterNotesTests.swift */,
+				DDFE1B085C49B3F6EA76AEE4 /* DocumentSupportTests.swift */,
 				643FF339D6F3269076E50A47 /* ElementLayerOrderTests.swift */,
 				B36460D0868B4FA985BACC6C /* HandwritingBeautifierTests.swift */,
+				5089C663575B007F3DC382B1 /* InkInteractionTests.swift */,
 				338C818BADBEBF918D328916 /* OCRPipelineTests.swift */,
 				3A0EFDAC47218CC2198BD5C2 /* PDFExportTests.swift */,
 				7ADB14BEF98A361B80935F12 /* PDFImporterTests.swift */,
@@ -281,6 +298,7 @@
 				C45F8AFD04B897523D202E60 /* AssistantCoordinator.swift */,
 				2EAD9CBD6DD15548A6BEF595 /* AudioRecorder.swift */,
 				0C360D63E1308ED129819F87 /* CloudTranslator.swift */,
+				B85A1739C346569F1B05C948 /* DocumentImporter.swift */,
 				60E66A386D1B3CC0ECB76AA9 /* HandwritingBeautifier.swift */,
 				4B66873371464A347F0B858A /* HandwritingOCR.swift */,
 				E38E4C2EC1FC1546AA12FEC6 /* MemoryDiagnostics.swift */,
@@ -292,6 +310,7 @@
 				758AAE5428FCE999058FBFCB /* PageOperations.swift */,
 				50DF0F3E47FD225BB3020A4A /* PDFExport.swift */,
 				9CAE7B92B7BB61B2D0FDEBD4 /* PDFImporter.swift */,
+				FCB14076BB0D2BDC9E052E2F /* ScribbleEraser.swift */,
 				DD1B12A31579ACED17E943EB /* SelectionModels.swift */,
 				3C5BFE47307307284FF1B9AD /* ShapeSnapper.swift */,
 				A9CEC020FC2A2F025421FB72 /* SmartImageExtractor.swift */,
@@ -314,6 +333,7 @@
 			isa = PBXGroup;
 			children = (
 				56368ED9EA30DB68183F25B5 /* CoverCustomizationSheet.swift */,
+				4C4D385C6509D1319EE1BE4F /* FolderBrowserComponents.swift */,
 				C830D7073F7B9C3BFCCA1BDB /* LibraryView.swift */,
 				A48C7A01F7D06D1931F26481 /* NotebookCover.swift */,
 			);
@@ -458,8 +478,10 @@
 				4E7313EBCD6D100F59F6EB18 /* AssistantCoordinatorTests.swift in Sources */,
 				12C4278C52430D845597B682 /* AudioRecorderTests.swift in Sources */,
 				3CCA392BD4D28C372BB1A856 /* BetterNotesTests.swift in Sources */,
+				FE241F8B93DDEDE1C2AE7762 /* DocumentSupportTests.swift in Sources */,
 				CCF3DD11BDEDBC5543514143 /* ElementLayerOrderTests.swift in Sources */,
 				F90D016E36A8D96021B52610 /* HandwritingBeautifierTests.swift in Sources */,
+				255562826BCD0F3E84176624 /* InkInteractionTests.swift in Sources */,
 				2288F3894347D7BB190C696A /* MockAIURLProtocol.swift in Sources */,
 				C0CEB2C71563A5222461301D /* OCRPipelineTests.swift in Sources */,
 				19BE556A99507BA4F3292A1A /* PDFExportTests.swift in Sources */,
@@ -487,8 +509,10 @@
 				1CAFEDD32144C411E473E931 /* CloudTranslator.swift in Sources */,
 				CF695A9D56F0880E592647F8 /* CoverCustomizationSheet.swift in Sources */,
 				3456DEB0750154054DE6F78C /* DisableInteractivePop.swift in Sources */,
+				046A0A83702E61B8A172CF2D /* DocumentImporter.swift in Sources */,
 				17FCFD08A8441ABE52EA6CDC /* EditorToolbar.swift in Sources */,
 				8733568C0D7DF890122F6604 /* ElementOverlay.swift in Sources */,
+				0B397AF2BC2A3E7977791131 /* FolderBrowserComponents.swift in Sources */,
 				2634F118EA4ED8447899B1E9 /* HandwritingBeautifier.swift in Sources */,
 				A24A2A4E870DB73B07BD3874 /* HandwritingOCR.swift in Sources */,
 				B156E028502D4CC2E2BB4A87 /* LibraryView.swift in Sources */,
@@ -496,6 +520,7 @@
 				4257189E498123A969B5CF06 /* NoteCorpusIndexer.swift in Sources */,
 				DE83A34015F850E96BFA0E6B /* Notebook.swift in Sources */,
 				73F2738AAF71D2F095645044 /* NotebookCover.swift in Sources */,
+				20713C4F10657FA9502D5617 /* NotebookFolder.swift in Sources */,
 				88CFF48756BC0B6E0B3ED3AF /* NotebookView.swift in Sources */,
 				9101882E5ACD564449073E3B /* OCRClient.swift in Sources */,
 				9FEF6687A545E37956B9710B /* OCRService.swift in Sources */,
@@ -509,6 +534,7 @@
 				7A669A78C5E67CCC43581CAD /* PageOperations.swift in Sources */,
 				1B9B2A7F9AC0FAA41A6A96A1 /* PaperCanvas.swift in Sources */,
 				AA4007797837FB96E87A5DED /* PencilDoubleTapInteraction.swift in Sources */,
+				0F3E69BBF235D4A0EDCFC204 /* ScribbleEraser.swift in Sources */,
 				ABC0D06A481FAEB3B84FC013 /* SelectionModels.swift in Sources */,
 				0809B336543872AFD912699C /* ShapeSnapper.swift in Sources */,
 				874DA9AB01D629F5292E1B12 /* SmartImageExtractor.swift in Sources */,
@@ -704,6 +730,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = BetterNotes/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "BetterNotes uses the camera when you choose to scan a document into a note.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "BetterNotes uses the microphone to record audio memos in your notes.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "BetterNotes needs access to your photo library to insert images into notes.";
@@ -763,6 +790,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = BetterNotes/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "BetterNotes uses the camera when you choose to scan a document into a note.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "BetterNotes uses the microphone to record audio memos in your notes.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "BetterNotes needs access to your photo library to insert images into notes.";
