@@ -434,6 +434,7 @@ final class BetterNotesUITests: XCTestCase {
         let title = uniqueTitle("OCR Settings Return")
         openNotebook(named: title)
         openEditorSettings()
+        selectSettingsSection("ai")
         app.buttons["OCR Settings"].tap()
         let provider = app.buttons["ocr-provider-picker"]
         XCTAssertTrue(provider.waitForExistence(timeout: 5))
@@ -977,7 +978,7 @@ final class BetterNotesUITests: XCTestCase {
 
     func testEmptyFolderSurvivesRelaunch() {
         let name = uniqueTitle("Courses")
-        app.buttons["library-new-folder"].tap()
+        app.buttons["library-add-folder"].tap()
         let field = app.textFields["new-folder-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertTrue(focus(field))
@@ -1864,8 +1865,15 @@ final class BetterNotesUITests: XCTestCase {
         settings.tap()
     }
 
+    /// Settings are split into pages; the AI and OCR controls live on "ai".
+    private func selectSettingsSection(_ page: String) {
+        let section = app.descendants(matching: .any)["settings-section-\(page)"].firstMatch
+        if section.waitForExistence(timeout: 3), section.isHittable { section.tap() }
+    }
+
     private func openAIProviderSettings() {
-        let form = app.descendants(matching: .any)["app-settings-form"].firstMatch
+        selectSettingsSection("ai")
+        let form = app.descendants(matching: .any)["settings-detail-ai"].firstMatch
         XCTAssertTrue(form.waitForExistence(timeout: 4))
         let provider = app.buttons["AI Provider Settings"]
         for _ in 0..<3 {

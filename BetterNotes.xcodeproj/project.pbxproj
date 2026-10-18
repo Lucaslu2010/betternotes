@@ -109,6 +109,7 @@
 		4D7E4F22A0632736D554EE3E /* DocumentSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 439110AE255C07CD531625E8 /* DocumentSupportTests.swift */; };
 		32CA444FDCE4CE129D3D073B /* NotebookFolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86484A32C164FF6EB1EA7A6C /* NotebookFolder.swift */; };
 		6BCA2B5A259234ABA79AB001 /* MemoryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 316969B81C75EAE41FA448F6 /* MemoryDiagnostics.swift */; };
+		FC4E2AB7B1E1CC2E359BE186 /* NearbyFolderSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C255506C1AA92B876DBD5B5 /* NearbyFolderSyncTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -232,6 +233,7 @@
 		07059C371083BBF4A1F79824 /* InkInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InkInteractionTests.swift; sourceTree = "<group>"; };
 		F841F8BA29BDE15F13BE9567 /* OCRPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRPipelineTests.swift; sourceTree = "<group>"; };
 		439110AE255C07CD531625E8 /* DocumentSupportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSupportTests.swift; sourceTree = "<group>"; };
+		4C255506C1AA92B876DBD5B5 /* NearbyFolderSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyFolderSyncTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -334,6 +336,7 @@
 		6011C17F1DF8449217F14C4A /* BetterNotesTests */ = {
 			isa = PBXGroup;
 			children = (
+				4C255506C1AA92B876DBD5B5 /* NearbyFolderSyncTests.swift */,
 				439110AE255C07CD531625E8 /* DocumentSupportTests.swift */,
 				F841F8BA29BDE15F13BE9567 /* OCRPipelineTests.swift */,
 				07059C371083BBF4A1F79824 /* InkInteractionTests.swift */,
@@ -688,6 +691,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FC4E2AB7B1E1CC2E359BE186 /* NearbyFolderSyncTests.swift in Sources */,
 				4D7E4F22A0632736D554EE3E /* DocumentSupportTests.swift in Sources */,
 				77BF734C8E8AB84EF2192C1F /* OCRPipelineTests.swift in Sources */,
 				AB119E1B73E1B4DB5D869527 /* InkInteractionTests.swift in Sources */,

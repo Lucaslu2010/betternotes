@@ -481,6 +481,30 @@ final class OCRPipelineTests: XCTestCase {
         XCTAssertNil(editor.handwrittenQuestion)
     }
 
+    func testEveryMarkerRowIsACandidateNotJustTheLowestOne() {
+        let lines: [HandwritingOCR.Line] = [
+            .init(text: "?? Old question", bounds: CGRect(x: 30, y: 100, width: 200, height: 30)),
+            .init(text: "Plain notes", bounds: CGRect(x: 30, y: 160, width: 200, height: 30)),
+            .init(text: "Newer question ??", bounds: CGRect(x: 30, y: 220, width: 200, height: 30))
+        ]
+        let rows = HandwritingOCR.questionLines(in: lines)
+        XCTAssertEqual(rows.map(\.bounds.minY), [100, 220])
+        XCTAssertEqual(HandwritingOCR.questionLine(in: lines)?.bounds.minY, 220)
+    }
+
+    func testHandledQuestionsAreRememberedPerPageWithoutDuplicates() {
+        let page = Page()
+        XCTAssertTrue(page.handledQuestionFingerprints.isEmpty)
+        page.markQuestionHandled("a")
+        page.markQuestionHandled("b")
+        page.markQuestionHandled("a")
+        XCTAssertEqual(page.handledQuestionFingerprints, ["a", "b"])
+        for index in 0..<30 { page.markQuestionHandled("q\(index)") }
+        XCTAssertEqual(page.handledQuestionFingerprints.count, 16)
+        XCTAssertTrue(page.handledQuestionFingerprints.contains("q29"))
+        XCTAssertFalse(page.handledQuestionFingerprints.contains("a"))
+    }
+
     private func questionService(stub: MockAIURLProtocol.Stub) throws -> OCRService {
         try settings.save(provider: .custom, endpoint: "https://example.com/ocr", token: "token", format: .paddleOCR, model: "")
         MockAIURLProtocol.install([stub])
