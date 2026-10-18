@@ -35,6 +35,7 @@ enum PDFImporter {
 
         var importedPages: [ImportedPage] = []
         for pdfPageIndex in 0..<document.pageCount {
+            try Task.checkCancellation()
             // Wrap each page in an autoreleasepool so the full-resolution
             // UIImage is released immediately after JPEG encoding, not held
             // in memory until the loop ends. Without this, importing a 100+
@@ -60,6 +61,27 @@ enum PDFImporter {
         }
 
         return importedPages
+    }
+
+    @MainActor
+    static func makePage(from importedPage: ImportedPage, index: Int) -> Page {
+        let page = Page(index: index)
+        page.orientation = importedPage.orientation
+        page.lineStyle = PageLineStyle.blank.rawValue
+        page.backgroundHex = "FFFFFF"
+        page.pdfText = importedPage.extractedText
+        page.ocrStorageVersion = 1
+        page.ocrUpdatedAt = importedPage.extractedText.isEmpty ? nil : Date.now
+        if let imageData = importedPage.imageData {
+            let frame = importedPage.imageFrame
+            let element = PageElement(type: .image, x: frame.midX, y: frame.midY,
+                                      width: frame.width, height: frame.height)
+            element.imageData = imageData
+            element.isLocked = true
+            element.page = page
+            page.appendElement(element)
+        }
+        return page
     }
 
     /// The size a page actually draws at. A PDF page carries a `/Rotate`

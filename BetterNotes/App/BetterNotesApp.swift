@@ -5,7 +5,7 @@ import SwiftData
 struct BetterNotesApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppPreferenceKey.language) private var language = AppLanguage.english.rawValue
-    let modelContainer: ModelContainer
+    let modelContainer: ModelContainer?
     let startupError: String?
     let recoveryURL: URL?
     @StateObject private var aiSettings: AISettingsStore
@@ -14,11 +14,23 @@ struct BetterNotesApp: App {
     @StateObject private var assistantCoordinator: AssistantCoordinator
     @StateObject private var inkAnswerCoordinator: InkAnswerCoordinator
     @StateObject private var nearbySync = NearbySyncCoordinator()
+    @StateObject private var ocrSettings: OCRSettingsStore
+    @StateObject private var ocrService: OCRService
 
     init() {
+        MemoryDiagnostics.shared.start()
         let arguments = CommandLine.arguments
         let isUITesting = arguments.contains("-ui-testing")
         let isUnitTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        let defaults = UserDefaults.standard
+        let testPreferencesKey = "uiTesting.originalPreferences"
+        if !isUITesting, let original = defaults.dictionary(forKey: testPreferencesKey) {
+            for (key, value) in original["values"] as? [String: Any] ?? [:] {
+                defaults.set(value, forKey: key)
+            }
+            for key in original["missing"] as? [String] ?? [] { defaults.removeObject(forKey: key) }
+            defaults.removeObject(forKey: testPreferencesKey)
+        }
         // Finger drawing shipped defaulting to on; that shipped default is
         // now off. Changing an @AppStorage default only changes what a
         // never-written key reads as -- every device that ever launched the
@@ -27,12 +39,31 @@ struct BetterNotesApp: App {
         // app. Force it once, the first time this build runs, and never
         // touch it again so a later manual toggle sticks.
         let fingerDrawingMigrationKey = "migration.fingerDrawingDefaultOff.v1"
-        if !isUITesting, !UserDefaults.standard.bool(forKey: fingerDrawingMigrationKey) {
-            UserDefaults.standard.set(false, forKey: AppPreferenceKey.allowsFingerDrawing)
-            UserDefaults.standard.set(true, forKey: fingerDrawingMigrationKey)
+        if !isUITesting, !defaults.bool(forKey: fingerDrawingMigrationKey) {
+            defaults.set(false, forKey: AppPreferenceKey.allowsFingerDrawing)
+            defaults.set(true, forKey: fingerDrawingMigrationKey)
         }
         if isUITesting {
-            let defaults = UserDefaults.standard
+            // Device tests use an isolated notes store; restore the preferences
+            // they pin too, when the user's normal app is next launched.
+            if defaults.dictionary(forKey: testPreferencesKey) == nil {
+                let keys = ["ocr.provider", AppPreferenceKey.scrollMode, AppPreferenceKey.toolbarDock,
+                            AppPreferenceKey.toolbarHintSeen, AppPreferenceKey.panHintSeen,
+                            AppPreferenceKey.fingerHintSeen, AppPreferenceKey.lassoHintSeen,
+                            AppPreferenceKey.assistantEnabled, AppPreferenceKey.searchAnswersEnabled,
+                            AppPreferenceKey.inkQuestionsEnabled, AppPreferenceKey.language,
+                            AppPreferenceKey.allowsFingerDrawing]
+                var values: [String: Any] = [:]
+                var missing: [String] = []
+                for key in keys {
+                    if let value = defaults.object(forKey: key) { values[key] = value }
+                    else { missing.append(key) }
+                }
+                defaults.set(["values": values, "missing": missing], forKey: testPreferencesKey)
+            }
+            defaults.set(OCRProvider.local.rawValue, forKey: "ocr.provider")
+            let scrollMode: ScrollMode = arguments.contains("-ui-testing-vertical-scroll") ? .verticalScroll : .singlePage
+            defaults.set(scrollMode.rawValue, forKey: AppPreferenceKey.scrollMode)
             let toolbarDock: ToolbarDock = arguments.contains("-ui-testing-bottom-toolbar") ? .bottom : .top
             defaults.set(toolbarDock.rawValue, forKey: AppPreferenceKey.toolbarDock)
             defaults.set(true, forKey: AppPreferenceKey.toolbarHintSeen)
@@ -43,7 +74,6 @@ struct BetterNotesApp: App {
             defaults.set(true, forKey: AppPreferenceKey.searchAnswersEnabled)
             defaults.set(true, forKey: AppPreferenceKey.inkQuestionsEnabled)
             defaults.set(AppLanguage.english.rawValue, forKey: AppPreferenceKey.language)
-            defaults.set(ScrollMode.singlePage.rawValue, forKey: AppPreferenceKey.scrollMode)
             // Not pinned on every launch, because a test relaunches the app to
             // prove the choice persists; a test that needs the default asks.
             if arguments.contains("-ui-testing-reset-conflict-policy") {
@@ -65,6 +95,9 @@ struct BetterNotesApp: App {
             ? UITestingAIStub.makeSettings(defaults: .standard)
             : AISettingsStore()
         let client = usesStubbedAI ? AIClient(session: UITestingAIStub.makeSession()) : AIClient()
+        let recognitionSettings = OCRSettingsStore()
+        _ocrSettings = StateObject(wrappedValue: recognitionSettings)
+        _ocrService = StateObject(wrappedValue: OCRService(settings: recognitionSettings))
         let corpus = NoteCorpusStore()
         _aiSettings = StateObject(wrappedValue: settings)
         _aiService = StateObject(wrappedValue: AIService(settingsStore: settings, client: client))
@@ -81,6 +114,7 @@ struct BetterNotesApp: App {
         ))
         let schema = Schema([
             Notebook.self,
+            NotebookFolder.self,
             Page.self,
             PageElement.self,
             AssistantThread.self,
@@ -114,20 +148,11 @@ struct BetterNotesApp: App {
                 startupError = nil
             }
         } catch {
-            // Never delete a user's notes to recover from a migration failure.
-            // Use a temporary in-memory container so the recovery UI can still launch.
+            // Recovery has no model dependencies. Do not try to open the broken
+            // schema again (or force-unwrap a fallback) just to present it.
+            modelContainer = nil
             startupError = error.localizedDescription
             recoveryURL = startupSnapshot ?? StoreRecovery.createSnapshotIfPresent(for: config.url, force: true)
-            // Use try? instead of try! — if even the in-memory container fails
-            // (e.g. schema is fundamentally broken), show the recovery view
-            // with a nil container rather than crashing.
-            let fallback = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-            if let recovered = try? ModelContainer(for: schema, configurations: [fallback]) {
-                modelContainer = recovered
-            } else {
-                // Absolute last resort: create with minimal config.
-                modelContainer = try! ModelContainer(for: schema)
-            }
         }
     }
 
@@ -136,8 +161,9 @@ struct BetterNotesApp: App {
             Group {
                 if let startupError {
                     StoreRecoveryView(errorMessage: startupError, recoveryURL: recoveryURL)
-                } else {
+                } else if let modelContainer {
                     LibraryView()
+                        .modelContainer(modelContainer)
                         .task { if nearbySync.isPaired { nearbySync.start(context: modelContainer.mainContext) } }
                         .onChange(of: scenePhase) { _, phase in
                             if phase == .active, nearbySync.isPaired {
@@ -146,18 +172,21 @@ struct BetterNotesApp: App {
                                 nearbySync.stop()
                             }
                         }
+                } else {
+                    StoreRecoveryView(errorMessage: "The notes database could not be opened.", recoveryURL: recoveryURL)
                 }
             }
             .environment(\.locale, Locale(identifier: language))
             .nearbyDeletionPrompt()
         }
-        .modelContainer(modelContainer)
         .environmentObject(aiSettings)
         .environmentObject(aiService)
         .environmentObject(corpusStore)
         .environmentObject(assistantCoordinator)
         .environmentObject(inkAnswerCoordinator)
         .environmentObject(nearbySync)
+        .environmentObject(ocrSettings)
+        .environmentObject(ocrService)
     }
 
     private static func argumentValue(after flag: String, in arguments: [String]) -> String? {

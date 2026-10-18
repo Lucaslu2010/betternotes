@@ -94,6 +94,22 @@
 		FC7C3CFD85729B5D3B737A8E /* PDFImporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ADB14BEF98A361B80935F12 /* PDFImporterTests.swift */; };
 		FDE6DCEAC715D055A5F0AE6F /* TextAlign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4866C4560E08723601F01FEA /* TextAlign.swift */; };
 		FFFAB2DCE0F826C18BE63280 /* PDFImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CAE7B92B7BB61B2D0FDEBD4 /* PDFImporter.swift */; };
+		3AE4AD07F66A646EA6073E2D /* NotebookFolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86484A32C164FF6EB1EA7A6C /* NotebookFolder.swift */; };
+		00AF66E9130D97253765A29A /* DocumentImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1952ECCD617617A17D890050 /* DocumentImporter.swift */; };
+		47E3526DFFC9723103D0E393 /* MemoryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 316969B81C75EAE41FA448F6 /* MemoryDiagnostics.swift */; };
+		9EB60CFDA3FB482C18268A41 /* OCRClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 083963A98225447C87FC5FE8 /* OCRClient.swift */; };
+		6C3581175EF207954BB2C555 /* OCRService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5683503F640FD1AD1BFDF330 /* OCRService.swift */; };
+		FEB4745D6FC7365B75BD8846 /* OCRSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4104F17D01F59AC30FD13F82 /* OCRSettingsStore.swift */; };
+		3F1A873F504660493B4A6ACF /* ScribbleEraser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD790F0F2576536C58319EF /* ScribbleEraser.swift */; };
+		903717E0139487FC62A87AB2 /* PencilDoubleTapInteraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10FE8CFCD0493E939F5B3896 /* PencilDoubleTapInteraction.swift */; };
+		8BAB0DAF5D4A8A68A98719CC /* FolderBrowserComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47D48275F418F3FF4A79596B /* FolderBrowserComponents.swift */; };
+		F16A3A6739C3C92A0EA5BD59 /* OCRSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D9D20D6B530269B0C42A24E /* OCRSettingsView.swift */; };
+		AB119E1B73E1B4DB5D869527 /* InkInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07059C371083BBF4A1F79824 /* InkInteractionTests.swift */; };
+		77BF734C8E8AB84EF2192C1F /* OCRPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F841F8BA29BDE15F13BE9567 /* OCRPipelineTests.swift */; };
+		4D7E4F22A0632736D554EE3E /* DocumentSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 439110AE255C07CD531625E8 /* DocumentSupportTests.swift */; };
+		32CA444FDCE4CE129D3D073B /* NotebookFolder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86484A32C164FF6EB1EA7A6C /* NotebookFolder.swift */; };
+		6BCA2B5A259234ABA79AB001 /* MemoryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 316969B81C75EAE41FA448F6 /* MemoryDiagnostics.swift */; };
+		FC4E2AB7B1E1CC2E359BE186 /* NearbyFolderSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C255506C1AA92B876DBD5B5 /* NearbyFolderSyncTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -204,6 +220,20 @@
 		FBDCB322180D889440D7F01F /* UITestingAIStub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestingAIStub.swift; sourceTree = "<group>"; };
 		FE0830DAC5A0AF978CC5BF81 /* MacInkRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacInkRenderer.swift; sourceTree = "<group>"; };
 		FFC73892DB3EED9585932563 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		86484A32C164FF6EB1EA7A6C /* NotebookFolder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookFolder.swift; sourceTree = "<group>"; };
+		1952ECCD617617A17D890050 /* DocumentImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentImporter.swift; sourceTree = "<group>"; };
+		316969B81C75EAE41FA448F6 /* MemoryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryDiagnostics.swift; sourceTree = "<group>"; };
+		083963A98225447C87FC5FE8 /* OCRClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRClient.swift; sourceTree = "<group>"; };
+		5683503F640FD1AD1BFDF330 /* OCRService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRService.swift; sourceTree = "<group>"; };
+		4104F17D01F59AC30FD13F82 /* OCRSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRSettingsStore.swift; sourceTree = "<group>"; };
+		7AD790F0F2576536C58319EF /* ScribbleEraser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScribbleEraser.swift; sourceTree = "<group>"; };
+		10FE8CFCD0493E939F5B3896 /* PencilDoubleTapInteraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PencilDoubleTapInteraction.swift; sourceTree = "<group>"; };
+		47D48275F418F3FF4A79596B /* FolderBrowserComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderBrowserComponents.swift; sourceTree = "<group>"; };
+		8D9D20D6B530269B0C42A24E /* OCRSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRSettingsView.swift; sourceTree = "<group>"; };
+		07059C371083BBF4A1F79824 /* InkInteractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InkInteractionTests.swift; sourceTree = "<group>"; };
+		F841F8BA29BDE15F13BE9567 /* OCRPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCRPipelineTests.swift; sourceTree = "<group>"; };
+		439110AE255C07CD531625E8 /* DocumentSupportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentSupportTests.swift; sourceTree = "<group>"; };
+		4C255506C1AA92B876DBD5B5 /* NearbyFolderSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyFolderSyncTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -234,6 +264,7 @@
 		1778FCF0E4FEA367B94A93C6 /* Components */ = {
 			isa = PBXGroup;
 			children = (
+				10FE8CFCD0493E939F5B3896 /* PencilDoubleTapInteraction.swift */,
 				5E736AC66E70892E8815C40B /* DisableInteractivePop.swift */,
 				C123572A38F6C31E4880C86C /* EditorToolbar.swift */,
 				D7BBB5CB4CAE2256362B701E /* ElementOverlay.swift */,
@@ -264,6 +295,7 @@
 		2292D8B5BE42CD2A1F8DA2C8 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				8D9D20D6B530269B0C42A24E /* OCRSettingsView.swift */,
 				54F20F5BD67D3EF53E0BCB1F /* AssistantView.swift */,
 				1778FCF0E4FEA367B94A93C6 /* Components */,
 				B6E59406F0B00DB2FC7C85B3 /* Editor */,
@@ -283,6 +315,7 @@
 		3377BC71B89CDB1003A06CBF /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				86484A32C164FF6EB1EA7A6C /* NotebookFolder.swift */,
 				9EF226152A84AF8B89181F81 /* AssistantModels.swift */,
 				B27AA21B9D0D53D1E34683AE /* Notebook.swift */,
 				2BAF6DC547124D2DBE7357BC /* RichTextCodec.swift */,
@@ -303,6 +336,10 @@
 		6011C17F1DF8449217F14C4A /* BetterNotesTests */ = {
 			isa = PBXGroup;
 			children = (
+				4C255506C1AA92B876DBD5B5 /* NearbyFolderSyncTests.swift */,
+				439110AE255C07CD531625E8 /* DocumentSupportTests.swift */,
+				F841F8BA29BDE15F13BE9567 /* OCRPipelineTests.swift */,
+				07059C371083BBF4A1F79824 /* InkInteractionTests.swift */,
 				BB821B78D8A3425010FB5E95 /* AISettingsStoreTests.swift */,
 				A66C627DFE0C644BB091693B /* ArchiveRoundTripTests.swift */,
 				5D58001999285418656D51F4 /* AssistantCoordinatorTests.swift */,
@@ -367,6 +404,12 @@
 		C4311FE5D5CBAFC25A0CD2F9 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				7AD790F0F2576536C58319EF /* ScribbleEraser.swift */,
+				4104F17D01F59AC30FD13F82 /* OCRSettingsStore.swift */,
+				5683503F640FD1AD1BFDF330 /* OCRService.swift */,
+				083963A98225447C87FC5FE8 /* OCRClient.swift */,
+				316969B81C75EAE41FA448F6 /* MemoryDiagnostics.swift */,
+				1952ECCD617617A17D890050 /* DocumentImporter.swift */,
 				475067FD8E90D5DE0BA1B3EB /* AIClient.swift */,
 				DB6E06CF172354818AA9E115 /* AIModels.swift */,
 				CE41783670623346F60EA9ED /* AIService.swift */,
@@ -409,6 +452,7 @@
 		EE77E9FD02C8845F5397C54E /* Library */ = {
 			isa = PBXGroup;
 			children = (
+				47D48275F418F3FF4A79596B /* FolderBrowserComponents.swift */,
 				56368ED9EA30DB68183F25B5 /* CoverCustomizationSheet.swift */,
 				C830D7073F7B9C3BFCCA1BDB /* LibraryView.swift */,
 				A48C7A01F7D06D1931F26481 /* NotebookCover.swift */,
@@ -619,6 +663,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6BCA2B5A259234ABA79AB001 /* MemoryDiagnostics.swift in Sources */,
+				32CA444FDCE4CE129D3D073B /* NotebookFolder.swift in Sources */,
 				915AD0B7ECD03036F3A7E998 /* AIClient.swift in Sources */,
 				B63B3998F68204EB847CBE05 /* AIModels.swift in Sources */,
 				03A0288CAF013D389AEAA871 /* AISettingsStore.swift in Sources */,
@@ -645,6 +691,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FC4E2AB7B1E1CC2E359BE186 /* NearbyFolderSyncTests.swift in Sources */,
+				4D7E4F22A0632736D554EE3E /* DocumentSupportTests.swift in Sources */,
+				77BF734C8E8AB84EF2192C1F /* OCRPipelineTests.swift in Sources */,
+				AB119E1B73E1B4DB5D869527 /* InkInteractionTests.swift in Sources */,
 				1A927009E157D561A4FEE0F0 /* AISettingsStoreTests.swift in Sources */,
 				E82659EA722496AEE242EAB7 /* ArchiveRoundTripTests.swift in Sources */,
 				4E7313EBCD6D100F59F6EB18 /* AssistantCoordinatorTests.swift in Sources */,
@@ -671,6 +721,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F16A3A6739C3C92A0EA5BD59 /* OCRSettingsView.swift in Sources */,
+				8BAB0DAF5D4A8A68A98719CC /* FolderBrowserComponents.swift in Sources */,
+				903717E0139487FC62A87AB2 /* PencilDoubleTapInteraction.swift in Sources */,
+				3F1A873F504660493B4A6ACF /* ScribbleEraser.swift in Sources */,
+				FEB4745D6FC7365B75BD8846 /* OCRSettingsStore.swift in Sources */,
+				6C3581175EF207954BB2C555 /* OCRService.swift in Sources */,
+				9EB60CFDA3FB482C18268A41 /* OCRClient.swift in Sources */,
+				47E3526DFFC9723103D0E393 /* MemoryDiagnostics.swift in Sources */,
+				00AF66E9130D97253765A29A /* DocumentImporter.swift in Sources */,
+				3AE4AD07F66A646EA6073E2D /* NotebookFolder.swift in Sources */,
 				CC7D3EFB0C6079E58782E36C /* AIClient.swift in Sources */,
 				6F8FB01718CC7451DBB044D6 /* AIModels.swift in Sources */,
 				EF9072E946E7C2F8A55A2B0E /* AIService.swift in Sources */,

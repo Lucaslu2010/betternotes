@@ -16,11 +16,11 @@ final class AssistantCoordinatorTests: XCTestCase {
         super.setUp()
         suiteName = "AssistantCoordinatorTests-\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suiteName)
-        AISettingsStore(defaults: defaults).clear()
+        AISettingsStore(defaults: defaults, keychainService: suiteName).clear()
     }
 
     override func tearDown() {
-        AISettingsStore(defaults: defaults).clear()
+        AISettingsStore(defaults: defaults, keychainService: suiteName).clear()
         defaults.removePersistentDomain(forName: suiteName)
         super.tearDown()
     }
@@ -50,7 +50,8 @@ final class AssistantCoordinatorTests: XCTestCase {
     private func makeCoordinator(client: AIClient,
                                  configured: Bool,
                                  indexer: NoteCorpusIndexer) throws -> AssistantCoordinator {
-        let settings = AISettingsStore(defaults: defaults, ephemeralKey: configured ? "test-key" : "")
+        let settings = AISettingsStore(defaults: defaults, keychainService: suiteName,
+                                       ephemeralKey: configured ? "test-key" : "")
         if configured {
             try settings.update(apiKey: nil, baseURL: "https://example.com/v1", model: "test-model")
         }
@@ -245,7 +246,8 @@ final class AssistantCoordinatorTests: XCTestCase {
         indexer: NoteCorpusIndexer,
         responseTimeout: Duration = .seconds(60)
     ) throws -> InkAnswerCoordinator {
-        let settings = AISettingsStore(defaults: defaults, ephemeralKey: configured ? "test-key" : "")
+        let settings = AISettingsStore(defaults: defaults, keychainService: suiteName,
+                                       ephemeralKey: configured ? "test-key" : "")
         if configured {
             try settings.update(apiKey: nil, baseURL: "https://example.com/v1", model: "test-model")
         }

@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 final class BetterNotesUITests: XCTestCase {
     private var app: XCUIApplication!
@@ -11,6 +12,105 @@ final class BetterNotesUITests: XCTestCase {
         app.launchArguments.append("-ui-testing")
         app.launchArguments.append(contentsOf: ["-ui-testing-store-id", UUID().uuidString])
         app.launch()
+    }
+
+    func testAddFolderButtonCreatesPersistentEmptyFolderAndContainsNewNotebook() {
+        let name = uniqueTitle("School Folder")
+        let folderButton = app.buttons["library-add-folder"]
+        let notebookButton = app.buttons["library-new-notebook"]
+        XCTAssertTrue(folderButton.waitForExistence(timeout: 5))
+        XCTAssertLessThan(folderButton.frame.midX, notebookButton.frame.midX)
+        folderButton.tap()
+        let field = app.alerts.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText(name)
+        app.alerts.buttons["Create"].tap()
+        let folderTile = app.buttons["library-folder-tile-\(name)"]
+        XCTAssertTrue(folderTile.waitForExistence(timeout: 4))
+        folderTile.tap()
+        XCTAssertTrue(app.staticTexts["This Folder Is Empty"].waitForExistence(timeout: 4))
+        app.terminate()
+        app.launch()
+        let folder = app.buttons["library-folder-tile-\(name)"]
+        XCTAssertTrue(folder.waitForExistence(timeout: 5), "The empty folder disappeared after relaunch")
+        folder.tap()
+        let notebookName = uniqueTitle("Folder Notebook")
+        createNotebook(named: notebookName)
+        XCTAssertTrue(app.buttons[notebookName].firstMatch.waitForExistence(timeout: 4))
+        app.terminate()
+        app.launch()
+        app.buttons["library-folder-tile-\(name)"].tap()
+        XCTAssertTrue(app.buttons[notebookName].firstMatch.waitForExistence(timeout: 4),
+                      "A notebook created inside the folder lost its membership")
+        attachScreenshot(named: "Library folder and add buttons")
+    }
+
+    func testOpeningPDFDocumentURLCreatesAndOpensANotebook() throws {
+        let title = uniqueTitle("Open In PDF")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(title).appendingPathExtension("pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let data = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 400, height: 600)).pdfData { context in
+            context.beginPage()
+            ("Shared document" as NSString).draw(at: CGPoint(x: 40, y: 40), withAttributes: [.font: UIFont.systemFont(ofSize: 20)])
+        }
+        try data.write(to: url)
+        app.open(url)
+        let confirm = app.buttons["document-import-confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10), "The import did not ask where to save")
+        XCTAssertTrue(app.buttons["document-import-location-root"].isSelected)
+        confirm.tap()
+        let editor = app.descendants(matching: .any)["notebook-title"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 15))
+        XCTAssertEqual(editor.label, title)
+        XCTAssertTrue(app.scrollViews["page-canvas"].exists)
+        attachScreenshot(named: "PDF received through document URL")
+    }
+
+    func testDraggingNotebookIntoFolderHidesItFromRootAndPersistsMembership() {
+        let folderName = uniqueTitle("Drag Folder")
+        app.buttons["library-add-folder"].tap()
+        let field = app.alerts.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 3))
+        field.tap()
+        field.typeText(folderName)
+        app.alerts.buttons["Create"].tap()
+        let notebookName = uniqueTitle("Move This Notebook")
+        createNotebook(named: notebookName)
+        let notebook = app.buttons[notebookName].firstMatch
+        let folder = app.buttons["library-folder-tile-\(folderName)"]
+        XCTAssertTrue(notebook.waitForExistence(timeout: 4))
+        XCTAssertTrue(folder.waitForExistence(timeout: 4))
+        notebook.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+            .press(forDuration: 0.8,
+                   thenDragTo: folder.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)),
+                   withVelocity: .slow, thenHoldForDuration: 0.25)
+        let disappeared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: notebook)
+        XCTAssertEqual(XCTWaiter.wait(for: [disappeared], timeout: 5), .completed)
+        folder.tap()
+        XCTAssertTrue(app.buttons[notebookName].firstMatch.waitForExistence(timeout: 4))
+        app.buttons["library-location-root"].tap()
+        XCTAssertFalse(app.buttons[notebookName].exists)
+        app.terminate()
+        app.launch()
+        app.buttons["library-folder-tile-\(folderName)"].tap()
+        XCTAssertTrue(app.buttons[notebookName].firstMatch.waitForExistence(timeout: 4))
+    }
+
+    func testCancellingImportDestinationDoesNotCreateNotebook() throws {
+        let title = uniqueTitle("Cancelled Import")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(title).appendingPathExtension("pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 400, height: 600))
+            .pdfData { $0.beginPage() }.write(to: url)
+        app.open(url)
+        XCTAssertTrue(app.buttons["document-import-confirm"].waitForExistence(timeout: 10))
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["library-new-notebook"].waitForExistence(timeout: 4))
+        XCTAssertFalse(app.buttons[title].exists)
+        app.terminate()
+        app.launch()
+        XCTAssertFalse(app.buttons[title].exists)
     }
 
     func testCreateNotebookAndReachPrimaryEditorControls() {
@@ -223,6 +323,27 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
     }
 
+    func testVerticalPinchScalesThePageBoxWithTheWritingArea() {
+        app.terminate()
+        app.launchArguments.append("-ui-testing-vertical-scroll")
+        app.launch()
+        openNotebook(named: uniqueTitle("Vertical Zoom"))
+        let writingArea = app.scrollViews["notebook-canvas"]
+        XCTAssertTrue(writingArea.waitForExistence(timeout: 5))
+        let page = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'vertical-page-'")).firstMatch
+        XCTAssertTrue(page.waitForExistence(timeout: 5))
+        let pageBefore = page.frame
+        let viewportBefore = writingArea.frame
+        writingArea.pinch(withScale: 1.6, velocity: 1)
+        let expanded = NSPredicate { _, _ in page.frame.width > pageBefore.width * 1.3 }
+        expectation(for: expanded, evaluatedWith: page)
+        waitForExpectations(timeout: 5)
+        XCTAssertGreaterThan(page.frame.height, pageBefore.height * 1.3)
+        XCTAssertEqual(writingArea.frame.width, viewportBefore.width, accuracy: 1)
+        XCTAssertEqual(writingArea.frame.height, viewportBefore.height, accuracy: 1)
+        attachScreenshot(named: "Vertical Notebook Zoom")
+    }
+
     func testAssistantCreatesAndReopensConversation() {
         app.terminate()
         app.launchArguments.append("-ui-testing-ai-stub")
@@ -255,6 +376,133 @@ final class BetterNotesUITests: XCTestCase {
         app.buttons["Explain the most important concept in"].tap()
         XCTAssertTrue(app.staticTexts["Explain the most important concept in these notes in simple terms."].exists)
         dismissAssistant()
+    }
+
+    func testProviderDraftStaysOpenWhenSwitchingAppsAndCanBeCancelled() {
+        let title = uniqueTitle("Settings Return")
+        openNotebook(named: title)
+        openEditorSettings()
+        openAIProviderSettings()
+        let model = app.textFields["ai-provider-model"]
+        XCTAssertTrue(model.waitForExistence(timeout: 5))
+        model.tap()
+        model.typeText("-unsaved-draft")
+        let draftModel = model.value as? String
+        let key = app.secureTextFields["ai-provider-key"]
+        key.tap()
+        key.typeText("test-unsaved-key")
+        let draftKey = key.value as? String
+        XCUIDevice.shared.press(.home)
+        XCUIApplication(bundleIdentifier: "com.apple.mobilesafari").activate()
+        app.activate()
+        XCTAssertTrue(model.waitForExistence(timeout: 5))
+        XCTAssertEqual(model.value as? String, draftModel)
+        XCTAssertEqual(key.value as? String, draftKey)
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["AI Provider Settings"].waitForExistence(timeout: 4))
+        app.buttons["Done"].tap()
+        XCTAssertEqual(app.descendants(matching: .any)["notebook-title"].label, title)
+        openEditorSettings()
+        openAIProviderSettings()
+        XCTAssertTrue(model.waitForExistence(timeout: 4))
+        XCTAssertNotEqual(model.value as? String, draftModel, "Cancel saved an unsaved draft")
+        app.buttons["Cancel"].tap()
+        app.buttons["Done"].tap()
+    }
+
+    func testDrawingPanelsCanCloseAndReopen() {
+        openNotebook(named: uniqueTitle("Dismiss Panels"))
+        for _ in 0..<2 {
+            app.buttons["Ink Color"].tap()
+            let colorDone = app.buttons["ink-color-done"]
+            XCTAssertTrue(colorDone.waitForExistence(timeout: 4))
+            colorDone.tap()
+            XCTAssertTrue(app.buttons["Stroke Thickness"].waitForExistence(timeout: 4))
+            app.buttons["Stroke Thickness"].tap()
+            let sizeDone = app.buttons["stroke-size-done"]
+            XCTAssertTrue(sizeDone.waitForExistence(timeout: 4))
+            sizeDone.tap()
+        }
+        openToolbarMenu(named: "More")
+        app.buttons["Page Info"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 4))
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["Ink Color"].waitForExistence(timeout: 4))
+    }
+
+    func testOCRDraftSurvivesSwitchingAppsAndReturningFromSetupGuide() {
+        let title = uniqueTitle("OCR Settings Return")
+        openNotebook(named: title)
+        openEditorSettings()
+        selectSettingsSection("ai")
+        app.buttons["OCR Settings"].tap()
+        let provider = app.buttons["ocr-provider-picker"]
+        XCTAssertTrue(provider.waitForExistence(timeout: 5))
+        provider.tap()
+        app.buttons["Custom OCR"].tap()
+        let endpoint = app.textFields["ocr-endpoint"]
+        XCTAssertTrue(endpoint.waitForExistence(timeout: 5))
+        endpoint.tap()
+        endpoint.typeText("https://example.invalid/unsaved-ocr")
+        let draftEndpoint = endpoint.value as? String
+        let token = app.secureTextFields["ocr-token"]
+        token.tap()
+        token.typeText("test-unsaved-ocr-token")
+        let draftToken = token.value as? String
+        XCUIDevice.shared.press(.home)
+        XCUIApplication(bundleIdentifier: "com.apple.mobilesafari").activate()
+        app.activate()
+        XCTAssertTrue(endpoint.waitForExistence(timeout: 5))
+        XCTAssertEqual(endpoint.value as? String, draftEndpoint)
+        XCTAssertEqual(token.value as? String, draftToken)
+        app.buttons["Set Up a Free PaddleOCR API Token"].tap()
+        let back = app.navigationBars.buttons["OCR Settings"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.tap()
+        XCTAssertTrue(endpoint.waitForExistence(timeout: 5))
+        XCTAssertEqual(endpoint.value as? String, draftEndpoint)
+        XCTAssertEqual(token.value as? String, draftToken)
+        app.buttons["Cancel"].tap()
+        app.buttons["Done"].tap()
+        XCTAssertEqual(app.descendants(matching: .any)["notebook-title"].label, title)
+    }
+
+    func testNotebookCanOpenAndReopenWithoutReturningToLibrary() {
+        let title = uniqueTitle("Open Regression")
+        createNotebook(named: title)
+        createNotebook(named: uniqueTitle("More Recent Notebook"))
+        for _ in 0..<3 {
+            let notebook = app.buttons[title].firstMatch
+            XCTAssertTrue(notebook.waitForExistence(timeout: 5))
+            notebook.tap()
+            let heading = app.descendants(matching: .any)["notebook-title"]
+            XCTAssertTrue(heading.waitForExistence(timeout: 5))
+            XCTAssertEqual(heading.label, title)
+            XCTAssertTrue(app.buttons["Pen"].waitForExistence(timeout: 5))
+            app.buttons["Back"].tap()
+        }
+    }
+
+    func testPencilProSettingsOfferEveryToolAndPersistChoice() {
+        openToolbarMenu(named: "More")
+        app.buttons["Settings"].tap()
+        let picker = app.buttons["pencil-double-tap-tool"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'Apple Pencil Pro only.'")).firstMatch.exists)
+        picker.tap()
+        for tool in ["pen", "pencil", "marker", "eraser", "lasso"] {
+            XCTAssertTrue(app.buttons["pencil-double-tap-option-\(tool)"].waitForExistence(timeout: 3))
+        }
+        app.buttons["pencil-double-tap-option-lasso"].tap()
+        app.buttons["Done"].tap()
+        openToolbarMenu(named: "More")
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        XCTAssertTrue(picker.label.contains("Lasso") || (picker.value as? String)?.contains("Lasso") == true)
+        // Restore the default after verifying persistence.
+        picker.tap()
+        app.buttons["pencil-double-tap-option-eraser"].tap()
+        app.buttons["Done"].tap()
     }
 
     func testTemplatePreviewsAndConsolidatedHandwritingMenu() {
@@ -319,7 +567,7 @@ final class BetterNotesUITests: XCTestCase {
         // nothing at all.
         openNotebook(named: uniqueTitle("Outline Frame"))
         app.buttons["Lasso"].tap()
-        app.buttons["Selection Shape"].tap()
+        app.buttons["Lasso"].tap() // Tap the active tool again to choose its mode.
         app.buttons["Rect"].tap()
         insertShape(named: "Rectangle")
 
@@ -351,7 +599,7 @@ final class BetterNotesUITests: XCTestCase {
     func testInsertedInkCanMoveAndPasteFromBlankCanvas() {
         openNotebook(named: uniqueTitle("Selection Paste"))
         app.buttons["Lasso"].tap()
-        app.buttons["Selection Shape"].tap()
+        app.buttons["Lasso"].tap() // Tap the active tool again to choose its mode.
         app.buttons["Rect"].tap()
         insertShape(named: "Rectangle")
 
@@ -730,7 +978,7 @@ final class BetterNotesUITests: XCTestCase {
 
     func testEmptyFolderSurvivesRelaunch() {
         let name = uniqueTitle("Courses")
-        app.buttons["library-new-folder"].tap()
+        app.buttons["library-add-folder"].tap()
         let field = app.textFields["new-folder-name"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertTrue(focus(field))
@@ -810,6 +1058,60 @@ final class BetterNotesUITests: XCTestCase {
 
     @discardableResult
     // MARK: - Handwriting
+
+    func testLassoSelectsInkOnFirstTapInBothModes() {
+        checkFirstTapLasso(vertical: false)
+    }
+
+    func testVerticalLassoSelectsInkOnFirstTapInBothModes() {
+        checkFirstTapLasso(vertical: true)
+    }
+
+    private func checkFirstTapLasso(vertical: Bool) {
+        if vertical { app.launchArguments.append("-ui-testing-vertical-scroll") }
+        for mode in ["freeform", "rectangle"] {
+            app.terminate()
+            app.launchArguments.append(contentsOf: ["-lassoMode", mode])
+            app.launch()
+            openNotebook(named: uniqueTitle("First Tap Lasso \(mode)"))
+            let canvas = app.scrollViews[vertical ? "notebook-canvas" : "page-canvas"]
+            let visibleInk = inkCanvas.frame.intersection(canvas.frame)
+            func point(_ x: CGFloat, _ y: CGFloat) -> XCUICoordinate {
+                canvas.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                    dx: visibleInk.minX - canvas.frame.minX + visibleInk.width * x,
+                    dy: visibleInk.minY - canvas.frame.minY + visibleInk.height * y))
+            }
+            point(0.32, 0.30).press(forDuration: 0.01, thenDragTo: point(0.62, 0.34),
+                                    withVelocity: .slow, thenHoldForDuration: 0)
+
+            let lasso = app.buttons["drawing-tool-lasso"]
+            lasso.tap()
+            XCTAssertTrue(lasso.isSelected, "The first tap did not activate Lasso")
+            // A line crossing the ink also intersects the freeform polygon's
+            // edges, so this checks routing without choosing a mode again.
+            point(0.22, 0.20)
+                .press(forDuration: 0.01,
+                       thenDragTo: point(0.74, 0.56),
+                       withVelocity: .slow, thenHoldForDuration: 0)
+            XCTAssertTrue(app.descendants(matching: .any)["selection-outline"].waitForExistence(timeout: 5),
+                          "First-tap \(mode) lasso did not select the drawn stroke")
+            attachScreenshot(named: "First-tap \(mode) selection")
+
+            // Pencil users commonly turn finger drawing off. Lasso must still
+            // own one-finger selection rather than letting the page pan.
+            openToolbarMenu(named: "More")
+            app.buttons["Draw with Finger"].tap()
+            app.buttons["Pen"].tap()
+            lasso.tap()
+            point(0.22, 0.20)
+                .press(forDuration: 0.01,
+                       thenDragTo: point(0.74, 0.56),
+                       withVelocity: .slow, thenHoldForDuration: 0)
+            XCTAssertTrue(app.descendants(matching: .any)["selection-outline"].waitForExistence(timeout: 5),
+                          "First-tap \(mode) lasso failed with finger drawing disabled")
+            app.launchArguments.removeLast(2)
+        }
+    }
 
     /// Draw, lasso, then resize by a handle.
     ///
@@ -1014,6 +1316,8 @@ final class BetterNotesUITests: XCTestCase {
         attachScreenshot(named: "after-drawing")
 
         app.buttons["Lasso"].tap()
+        app.buttons["Lasso"].tap()
+        app.buttons["Rect"].tap()
         let canvas = app.scrollViews["page-canvas"]
         canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.22, dy: 0.20))
             .press(
@@ -1494,7 +1798,8 @@ final class BetterNotesUITests: XCTestCase {
         let notebook = app.buttons[title].firstMatch
         XCTAssertTrue(notebook.waitForExistence(timeout: 5))
         notebook.tap()
-        XCTAssertTrue(app.scrollViews["page-canvas"].waitForExistence(timeout: 8))
+        let canvasID = app.launchArguments.contains("-ui-testing-vertical-scroll") ? "notebook-canvas" : "page-canvas"
+        XCTAssertTrue(app.scrollViews[canvasID].waitForExistence(timeout: 8))
         return title
     }
 
@@ -1551,6 +1856,32 @@ final class BetterNotesUITests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: 3), "Missing overflowed toolbar menu: \(label)")
         XCTAssertTrue(menu.isHittable, "Overflowed toolbar menu is not reachable: \(label)")
         menu.tap()
+    }
+
+    private func openEditorSettings() {
+        openToolbarMenu(named: "More")
+        let settings = app.buttons["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 4))
+        settings.tap()
+    }
+
+    /// Settings are split into pages; the AI and OCR controls live on "ai".
+    private func selectSettingsSection(_ page: String) {
+        let section = app.descendants(matching: .any)["settings-section-\(page)"].firstMatch
+        if section.waitForExistence(timeout: 3), section.isHittable { section.tap() }
+    }
+
+    private func openAIProviderSettings() {
+        selectSettingsSection("ai")
+        let form = app.descendants(matching: .any)["settings-detail-ai"].firstMatch
+        XCTAssertTrue(form.waitForExistence(timeout: 4))
+        let provider = app.buttons["AI Provider Settings"]
+        for _ in 0..<3 {
+            if provider.exists && provider.isHittable { break }
+            form.swipeUp()
+        }
+        XCTAssertTrue(provider.waitForExistence(timeout: 4))
+        provider.tap()
     }
 
     private func uniqueTitle(_ prefix: String) -> String {

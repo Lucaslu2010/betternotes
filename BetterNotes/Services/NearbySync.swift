@@ -30,6 +30,9 @@ private struct NearbySyncPackage: Codable {
     let deletions: [NearbySyncDeletion]?
     /// Deletions from the peer's last package that this device has dealt with.
     let deletionsHandled: [UUID]?
+    /// The sender's folders. Absent from devices that predate folder sync, in
+    /// which case folders are left alone rather than read as deleted.
+    let folders: [NearbySyncFolder]?
 }
 
 private struct NearbySyncMessage: Codable {
@@ -587,9 +590,11 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
                                        archive: archive, sharedHash: sharedHash,
                                        modifiedAt: notebook.modifiedAt.timeIntervalSince1970)
             }
+            try NotebookFolders.preserveMemberships(in: context)
+            let folders = try NearbyFolderSync.snapshot(in: context)
             lastSentHashes = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.hash) })
-            lastLocalDigest = Self.hash(Data(entries.sorted { $0.id.uuidString < $1.id.uuidString }
-                .map { $0.id.uuidString + $0.hash }.joined().utf8))
+            lastLocalDigest = Self.hash(Data((entries.sorted { $0.id.uuidString < $1.id.uuidString }
+                .map { $0.id.uuidString + $0.hash }.joined() + Self.folderDigest(folders)).utf8))
             let deletions = NearbyDeletionLog.pending()
             lastSentDeletionIDs = Set(deletions.map(\.id))
             let package = NearbySyncPackage(version: 5, deviceID: deviceID,
@@ -597,7 +602,8 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
                                             accepted: acceptedIncoming,
                                             conflictPolicy: conflictPolicy.rawValue,
                                             deletions: deletions,
-                                            deletionsHandled: deletionsHandledIncoming)
+                                            deletionsHandled: deletionsHandledIncoming,
+                                            folders: folders)
             acceptedIncoming.removeAll()
             deletionsHandledIncoming.removeAll()
             let data = try JSONEncoder().encode(package)
@@ -724,6 +730,12 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
             }
             deferredNotebookIDs = deferred
             deferredCount = deferred.count
+            if let remoteFolders = package.folders {
+                let folderKey = "nearbySync.folders.\(peerKey)"
+                let baseline = UserDefaults.standard.stringArray(forKey: folderKey).map(Set.init)
+                let merged = try NearbyFolderSync.merge(remoteFolders, baseline: baseline, in: context)
+                UserDefaults.standard.set(merged.sorted(), forKey: folderKey)
+            }
             let handledDeletions = try processDeletions(package.deletions ?? [], peerKey: peerKey)
             lastReceiveSummary = "\(imported) new, \(updated) updated, \(conflicts) conflict copies"
             status = "Received \(lastReceiveSummary) from \(remoteName)."
@@ -863,7 +875,16 @@ final class NearbySyncCoordinator: NSObject, ObservableObject {
         let components = try notebooks.map { notebook in
             notebook.stableID.uuidString + Self.hash(try CloudTranslator.syncArchiveData(for: notebook))
         }.sorted()
-        return Self.hash(Data(components.joined().utf8))
+        try NotebookFolders.preserveMemberships(in: context)
+        let folders = Self.folderDigest(try NearbyFolderSync.snapshot(in: context))
+        return Self.hash(Data((components.joined() + folders).utf8))
+    }
+
+    /// Folder state belongs in the change digest so an edit that touches no
+    /// notebook (a new empty folder, a colour) still triggers an exchange.
+    private static func folderDigest(_ folders: [NearbySyncFolder]) -> String {
+        folders.map { "\($0.path)|\($0.colorHex)|\($0.isFavorite)|\($0.isArchived)|\($0.trashedAt ?? 0)|\($0.modifiedAt)" }
+            .joined(separator: "\n")
     }
 
     static func hash(_ data: Data) -> String {

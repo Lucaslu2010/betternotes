@@ -8,6 +8,10 @@ enum PageOperations {
         page.inkData = source.inkData
         page.ocrText = source.ocrText
         page.ocrUpdatedAt = source.ocrUpdatedAt
+        page.pdfText = source.pdfText
+        page.ocrStorageVersion = source.ocrStorageVersion
+        page.ocrInkFingerprint = source.ocrInkFingerprint
+        page.ocrProviderIdentity = source.ocrProviderIdentity
         page.backgroundHex = source.backgroundHex
         page.lineStyle = source.lineStyle
         page.lineThickness = source.lineThickness

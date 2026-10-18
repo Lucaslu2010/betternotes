@@ -33,12 +33,18 @@ actor NoteCorpusIndexer {
               let data = try? Data(contentsOf: persistenceURL),
               let stored = try? JSONDecoder().decode(PersistedIndex.self, from: data),
               stored.version == Self.indexVersion else { return }
-        self.chunksByID = Dictionary(uniqueKeysWithValues: stored.chunks.map { ($0.id, $0) })
+        // This is a rebuildable cache. Duplicate entries in an interrupted or
+        // older cache must not trap and prevent the notes app from launching.
+        self.chunksByID = Dictionary(stored.chunks.map { ($0.id, $0) }, uniquingKeysWith: { old, new in
+            new.modifiedAt >= old.modifiedAt ? new : old
+        })
     }
 
     var chunkCount: Int { chunksByID.count }
 
     func rebuild(from sources: [NoteCorpusSource]) {
+        let activity = MemoryDiagnostics.begin("index-rebuild", details: "sources=\(sources.count)")
+        defer { activity.end() }
         var rebuilt: [String: NoteChunk] = [:]
         rebuilt.reserveCapacity(sources.count * 2)
 
@@ -50,7 +56,13 @@ actor NoteCorpusIndexer {
                     "\(source.notebookTitle)|\(source.pageTitle ?? "")|\(source.label)|\(passage)"
                 )
                 if let existing = chunksByID[id], existing.fingerprint == fingerprint {
-                    rebuilt[id] = existing
+                    rebuilt[id] = NoteChunk(
+                        id: existing.id, notebookID: source.notebookID, pageID: source.pageID,
+                        notebookTitle: source.notebookTitle, pageTitle: source.pageTitle,
+                        sourceKind: source.sourceKind, label: source.label, text: existing.text,
+                        terms: existing.terms, embedding: existing.embedding, fingerprint: existing.fingerprint,
+                        modifiedAt: source.modifiedAt, isBookmarked: source.isBookmarked, isArchived: source.isArchived
+                    )
                     continue
                 }
                 let terms = Self.termFrequencies(in: passage)
@@ -79,6 +91,8 @@ actor NoteCorpusIndexer {
     }
 
     func search(_ query: SearchQuery) -> [SearchResult] {
+        let activity = MemoryDiagnostics.begin("index-search", details: "chunks=\(chunksByID.count)")
+        defer { activity.end() }
         let normalizedQuery = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let queryTerms = Self.tokenize(normalizedQuery)
         guard !queryTerms.isEmpty else { return [] }
@@ -299,6 +313,7 @@ final class NoteCorpusStore: ObservableObject {
     static func sources(from notebooks: [Notebook]) -> [NoteCorpusSource] {
         var sources: [NoteCorpusSource] = []
         for notebook in notebooks where notebook.trashedAt == nil {
+            let isArchived = notebook.isEffectivelyArchived
             func add(_ kind: NoteSourceKind, _ label: String, _ text: String, page: Page? = nil, ordinal: Int = 0) {
                 let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !value.isEmpty else { return }
@@ -312,7 +327,7 @@ final class NoteCorpusStore: ObservableObject {
                     text: value,
                     modifiedAt: page?.modifiedAt ?? notebook.modifiedAt,
                     isBookmarked: page?.isBookmarked ?? false,
-                    isArchived: notebook.isArchived,
+                    isArchived: isArchived,
                     sourceOrdinal: ordinal
                 ))
             }
@@ -322,7 +337,7 @@ final class NoteCorpusStore: ObservableObject {
             for page in notebook.pages where page.trashedAt == nil {
                 let pageLabel = page.title.isEmpty ? "Page \(page.index + 1)" : page.title
                 add(.pageTitle, "\(notebook.title) - \(pageLabel)", pageLabel, page: page)
-                add(.ocr, "\(notebook.title) - \(pageLabel) - OCR", page.ocrText, page: page)
+                add(.ocr, "\(notebook.title) - \(pageLabel) - OCR", page.searchableOCRText, page: page)
                 for (ordinal, element) in page.elements.sorted(by: { $0.createdAt < $1.createdAt }).enumerated() {
                     if let text = element.text {
                         let kind: NoteSourceKind

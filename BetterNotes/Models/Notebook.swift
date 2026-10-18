@@ -153,6 +153,13 @@ final class Page {
     var inkData: Data?
     var ocrText: String = ""
     var ocrUpdatedAt: Date?
+    /// PDF text is independent of ink recognition so refreshing handwriting
+    /// never removes the searchable content of an imported document.
+    var pdfText: String = ""
+    var ocrStorageVersion: Int = 0
+    var ocrInkFingerprint: String?
+    var ocrProviderIdentity: String?
+    var lastHandwrittenQuestionFingerprint: String?
     var createdAt: Date = Date.now
     var modifiedAt: Date = Date.now
     var trashedAt: Date?
@@ -163,6 +170,20 @@ final class Page {
     var elements: [PageElement] {
         get { storedElements ?? [] }
         set { storedElements = newValue }
+    }
+
+    /// Questions already offered on this page, so each is offered only once.
+    /// Stored in the single `lastHandwrittenQuestionFingerprint` column,
+    /// separated by "|", so no schema change is needed.
+    var handledQuestionFingerprints: Set<String> {
+        Set((lastHandwrittenQuestionFingerprint ?? "").split(separator: "|").map(String.init))
+    }
+
+    func markQuestionHandled(_ fingerprint: String) {
+        var all = (lastHandwrittenQuestionFingerprint ?? "").split(separator: "|").map(String.init)
+        guard !all.contains(fingerprint) else { return }
+        all.append(fingerprint)
+        lastHandwrittenQuestionFingerprint = all.suffix(16).joined(separator: "|")
     }
 
     // Page style
@@ -224,7 +245,28 @@ final class Page {
 
     var hasContent: Bool {
         if let ink = inkData, !ink.isEmpty { return true }
-        return !elements.isEmpty || !ocrText.isEmpty
+        return !elements.isEmpty || !searchableOCRText.isEmpty
+    }
+
+    var searchableOCRText: String {
+        [pdfText, ocrText].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
+    func prepareOCRStorage() {
+        guard ocrStorageVersion == 0 else { return }
+        // Older imports stored the PDF text on the page rather than its locked
+        // image. Preserve that legacy text before replacing ink recognition.
+        let size = pageOrientation.size
+        let hasLegacyPDF = elements.contains { element in
+            element.type == .image && element.isLocked && element.text == nil
+                && abs(element.posX - size.width / 2) < 1 && abs(element.posY - size.height / 2) < 1
+                && (abs(element.width - size.width) < 1 || abs(element.height - size.height) < 1)
+        }
+        if hasLegacyPDF && !ocrText.isEmpty {
+            pdfText = [pdfText, ocrText].filter { !$0.isEmpty }.joined(separator: "\n\n")
+            ocrText = ""
+        }
+        ocrStorageVersion = 1
     }
 
     var background: Color {
@@ -354,6 +396,8 @@ final class PageElement {
 
     // Image data
     var imageData: Data?
+    var ocrImageFingerprint: String?
+    var imageOCRProviderIdentity: String?
 
     // Audio recording
     var audioData: Data?
@@ -572,6 +616,8 @@ extension PageElement {
         copy.shapeKind = source.shapeKind
         copy.colorHex = source.colorHex
         copy.imageData = source.imageData
+        copy.ocrImageFingerprint = source.ocrImageFingerprint
+        copy.imageOCRProviderIdentity = source.imageOCRProviderIdentity
         copy.audioData = source.audioData
         copy.audioDuration = source.audioDuration
         copy.transcript = source.transcript
